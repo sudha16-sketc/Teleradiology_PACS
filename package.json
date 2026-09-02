@@ -1,0 +1,20 @@
+{
+  "name": "axis-pacs",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AXIS — Teleradiology PACS Workflow Platform",
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @axis/web dev",
+    "build": "pnpm --filter @axis/types build && pnpm --filter @axis/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @axis/api db:generate",
+    "db:migrate": "pnpm --filter @axis/api db:migrate",
+    "db:seed": "pnpm --filter @axis/api db:seed"
+  }
+}

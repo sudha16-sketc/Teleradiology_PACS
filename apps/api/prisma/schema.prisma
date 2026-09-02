@@ -1,0 +1,417 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  COORDINATOR
+  RADIOLOGIST
+  TECHNICIAN
+  HOSPITAL_USER
+}
+
+enum UserStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum Gender {
+  M
+  F
+  O
+  U
+}
+
+enum StudyPriority {
+  STAT
+  URGENT
+  ROUTINE
+}
+
+enum StudyStatus {
+  NEW
+  SUBMITTED
+  VALIDATED
+  UNASSIGNED
+  ASSIGNED
+  IN_READING
+  DRAFT_REPORT
+  FINAL
+  AMENDED
+  DELIVERED
+  CANCELLED
+}
+
+enum Modality {
+  CT
+  MRI
+  XR
+  US
+  NM
+  PET
+  MG
+  DX
+  CR
+  Fluoro
+}
+
+enum Subspecialty {
+  NEURO
+  MSK
+  CHEST
+  ABDOMEN
+  CARDIOVASCULAR
+  MAMMOGRAPHY
+  MUSCULOSKELETAL
+  GENERAL
+  PEDIATRIC
+  ONCOLOGY
+  INTERVENTIONAL
+}
+
+enum ReportStatus {
+  DRAFT
+  PENDING_SIGNOFF
+  FINAL
+  AMENDED
+}
+
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  STUDY_VIEWED
+  STUDY_DOWNLOADED
+  STUDY_ASSIGNED
+  STUDY_STATUS_CHANGED
+  REPORT_VIEWED
+  REPORT_CREATED
+  REPORT_EDITED
+  REPORT_SIGNED
+  REPORT_AMENDED
+  REPORT_FINALIZED
+  CRITICAL_FINDING_FLAGGED
+  CRITICAL_FINDING_ACKNOWLEDGED
+  USER_CREATED
+  USER_UPDATED
+  ROUTING_RULE_CHANGED
+  DELIVERY_ATTEMPTED
+  DELIVERY_FAILED
+  DELIVERY_COMPLETED
+}
+
+enum AuditResource {
+  STUDY
+  REPORT
+  USER
+  ROUTING_RULE
+  HOSPITAL
+  WORKLIST
+  DELIVERY
+  AI_JOB
+  AUTH
+}
+
+enum DeliveryStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  RETRYING
+}
+
+enum AIJobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum AITaskType {
+  ANATOMY_DETECTION
+  PATHOLOGY_SCREENING
+  MEASUREMENT
+  COMPARISON
+}
+
+model User {
+  id             String     @id @default(cuid())
+  email          String     @unique
+  displayName    String
+  role           UserRole
+  status         UserStatus @default(PENDING)
+  passwordHash   String
+  phone          String?
+  organization   String?
+  licenseNumber  String?
+  requestedRole  UserRole?
+  rejectionReason String?
+  approvedAt     DateTime?
+  approvedById   String?
+  hospitalId     String?
+  subspecialty   String?
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  hospital          Hospital?     @relation(fields: [hospitalId], references: [id])
+  approvedBy        User?         @relation("UserApproval", fields: [approvedById], references: [id])
+  approvedUsers     User[]        @relation("UserApproval")
+  assignedStudies   Study[]       @relation("AssignedRadiologist")
+  authoredReports   Report[]      @relation("ReportAuthor")
+  reportVersions    ReportVersion[] @relation("VersionAuthor")
+  auditLogs         AuditLog[]    @relation("AuditActor")
+  routingRules      RoutingRule[] @relation("RoutingRuleCreator")
+
+  @@index([status])
+  @@index([role])
+}
+
+model Hospital {
+  id        String    @id @default(cuid())
+  name      String
+  code      String    @unique
+  address   String?
+  timezone  String    @default("UTC")
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  users     User[]
+  sites     Site[]
+  patients  Patient[]
+  studies   Study[]
+  deliveryAttempts DeliveryAttempt[]
+}
+
+model Site {
+  id         String   @id @default(cuid())
+  hospitalId String
+  name       String
+  code       String
+  isActive   Boolean  @default(true)
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id])
+}
+
+model Patient {
+  id          String   @id @default(cuid())
+  patientId   String   @unique
+  displayName String
+  dateOfBirth DateTime?
+  gender      Gender?
+  hospitalId  String
+
+  hospital Hospital @relation(fields: [hospitalId], references: [id])
+  studies  Study[]
+}
+
+model Study {
+  id                    String          @id @default(cuid())
+  studyInstanceUid      String          @unique
+  patientId             String
+  accessionNumber       String          @unique
+  studyDate             DateTime
+  studyTime             String          @default("")
+  modality              Modality
+  bodyPart              String
+  hospitalId            String
+  referringPhysician    String          @default("")
+  studyDescription      String          @default("")
+  clinicalHistory       String          @default("")
+  priority              StudyPriority   @default(ROUTINE)
+  status                StudyStatus     @default(NEW)
+  subspecialty          Subspecialty    @default(GENERAL)
+  assignedRadiologistId String?
+  assignedBy            String?
+  receivedAt            DateTime?
+  assignedAt            DateTime?
+  reportingStartedAt    DateTime?
+  finalizedAt           DateTime?
+  dueAt                 DateTime?
+  seriesCount           Int             @default(0)
+  instanceCount         Int             @default(0)
+  slaDeadline           DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  patient                Patient         @relation(fields: [patientId], references: [id])
+  hospital               Hospital        @relation(fields: [hospitalId], references: [id])
+  assignedRadiologist    User?           @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
+  series                 Series[]
+  instances              Instance[]
+  worklistItem           WorklistItem?
+  reports                Report[]
+  deliveryAttempts       DeliveryAttempt[]
+  aiJobs                 AIJob[]
+
+  @@index([status])
+  @@index([hospitalId])
+  @@index([assignedRadiologistId])
+  @@index([priority])
+  @@index([studyDate])
+}
+
+model Series {
+  id                String   @id @default(cuid())
+  seriesInstanceUid String   @unique
+  studyId           String
+  modality          Modality
+  seriesNumber      Int
+  seriesDescription String   @default("")
+  instanceCount     Int      @default(0)
+  bodyPart          String   @default("")
+  createdAt         DateTime @default(now())
+
+  study     Study      @relation(fields: [studyId], references: [id])
+  instances Instance[]
+  aiJobs    AIJob[]
+}
+
+model Instance {
+  id              String   @id @default(cuid())
+  sopInstanceUid  String   @unique
+  seriesId        String
+  studyId         String
+  instanceNumber  Int
+  sopClassUid     String
+  createdAt       DateTime @default(now())
+
+  series   Series @relation(fields: [seriesId], references: [id])
+  study    Study  @relation(fields: [studyId], references: [id])
+  aiJobs   AIJob[]
+}
+
+model WorklistItem {
+  id           String    @id @default(cuid())
+  studyId      String    @unique
+  assignedAt   DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  tatMinutes   Int?
+  slaRemaining Int?
+
+  study Study @relation(fields: [studyId], references: [id])
+}
+
+model Report {
+  id                           String       @id @default(cuid())
+  studyId                      String
+  authorId                     String
+  status                       ReportStatus @default(DRAFT)
+  version                      Int          @default(1)
+  findings                     String       @default("")
+  impression                   String       @default("")
+  recommendations              String       @default("")
+  criticalFinding              Boolean      @default(false)
+  criticalFindingAcknowledged  Boolean      @default(false)
+  criticalFindingAcknowledgedBy String?
+  criticalFindingAcknowledgedAt DateTime?
+  signedOffBy                  String?
+  signedOffAt                  DateTime?
+  contentHash                  String
+  createdAt                    DateTime     @default(now())
+  updatedAt                    DateTime     @updatedAt
+
+  study              Study           @relation(fields: [studyId], references: [id])
+  author             User            @relation("ReportAuthor", fields: [authorId], references: [id])
+  versions           ReportVersion[]
+  deliveryAttempts   DeliveryAttempt[]
+
+  @@index([studyId])
+  @@index([status])
+}
+
+model ReportVersion {
+  id             String       @id @default(cuid())
+  reportId       String
+  version        Int
+  status         ReportStatus
+  findings       String
+  impression     String
+  recommendations String       @default("")
+  authorId       String
+  contentHash    String
+  createdAt      DateTime     @default(now())
+
+  report Report @relation(fields: [reportId], references: [id])
+  author User   @relation("VersionAuthor", fields: [authorId], references: [id])
+}
+
+model AuditLog {
+  id         String       @id @default(cuid())
+  actorId    String
+  actorName  String
+  actorRole  String
+  action     AuditAction
+  resource   AuditResource
+  resourceId String
+  timestamp  DateTime     @default(now())
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?
+
+  actor User @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([resource, resourceId])
+}
+
+model RoutingRule {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @default("")
+  priority    Int      @default(0)
+  isActive    Boolean  @default(true)
+  conditions  Json
+  actions     Json
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  creator User @relation("RoutingRuleCreator", fields: [createdBy], references: [id])
+}
+
+model DeliveryAttempt {
+  id            String        @id @default(cuid())
+  studyId       String
+  reportId      String
+  hospitalId    String
+  status        DeliveryStatus @default(PENDING)
+  attemptNumber Int           @default(1)
+  deliveredAt   DateTime?
+  errorMessage  String?
+  metadata      Json?
+  createdAt     DateTime      @default(now())
+
+  study    Study    @relation(fields: [studyId], references: [id])
+  report   Report   @relation(fields: [reportId], references: [id])
+  hospital Hospital @relation(fields: [hospitalId], references: [id])
+}
+
+model AIJob {
+  id             String     @id @default(cuid())
+  studyId        String
+  seriesId       String?
+  sopInstanceId  String?
+  taskType       AITaskType
+  status         AIJobStatus @default(QUEUED)
+  result         Json?
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime   @default(now())
+
+  study    Study      @relation(fields: [studyId], references: [id])
+  series   Series?    @relation(fields: [seriesId], references: [id])
+  instance Instance?  @relation(fields: [sopInstanceId], references: [id])
+
+  @@index([status])
+  @@index([studyId])
+}

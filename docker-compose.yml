@@ -1,0 +1,104 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: axis-postgres
+    environment:
+      POSTGRES_USER: axis
+      POSTGRES_PASSWORD: axis_dev
+      POSTGRES_DB: axis_pacs
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axis -d axis_pacs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: axis-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: axis-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: axis
+      RABBITMQ_DEFAULT_PASS: axis_dev
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orthanc:
+    image: jodogne/orthanc-plugins:1.12.6
+    container_name: axis-orthanc
+    ports:
+      - "8042:8042"
+      - "4242:4242"
+    volumes:
+      - ./infra/orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
+      - orthanc_data:/var/lib/orthanc/db
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8042/system || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: axis-keycloak
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HTTP_RELATIVE_PATH: /auth
+    command: start-dev
+    ports:
+      - "8180:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: axis-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  ohif:
+    image: ohif/app:v3.13.0
+    container_name: axis-ohif
+    cap_add:
+      - NET_BIND_SERVICE
+    depends_on:
+      - orthanc
+    ports:
+      - "3001:80"
+    volumes:
+      - ./infra/ohif/app-config.js:/usr/share/nginx/html/app-config.js:ro
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  orthanc_data:
+  keycloak_data:
+  minio_data:
