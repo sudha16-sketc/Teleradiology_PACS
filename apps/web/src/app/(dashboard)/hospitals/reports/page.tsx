@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { Report, StudyStatus } from "@axis/types";
-import { Search, Download, Loader2, RefreshCw } from "lucide-react";
+import { Search, Download, RefreshCw, Eye, Loader2, Check } from "lucide-react";
 import { clsx } from "clsx";
 import { apiClient } from "@/lib/api-client";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -19,6 +20,9 @@ export default function HospitalReportsPage() {
   const [reports, setReports] = useState<Report[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [busyUid, setBusyUid] = useState<string | null>(null);
+
+  const router = useRouter();
 
   const load = async () => {
     setIsLoading(true);
@@ -56,6 +60,20 @@ export default function HospitalReportsPage() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  };
+
+  const acceptReport = async (studyUid: string) => {
+    if (busyUid) return;
+    setBusyUid(studyUid);
+    try {
+      await apiClient.post(`/studies/${encodeURIComponent(studyUid)}/accept`);
+      await load();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Accept failed", e);
+    } finally {
+      setBusyUid(null);
+    }
   };
 
   if (hasError) {
@@ -147,7 +165,7 @@ export default function HospitalReportsPage() {
                     </td>
                     <td className="px-4 py-2.5">
                       <StatusBadge
-                        status={(r.study?.status ?? "FINAL") as StudyStatus}
+                        status={(r.study?.status ?? "MANAGER_APPROVED") as StudyStatus}
                       />
                     </td>
                     <td className="px-4 py-2.5 text-text-muted">
@@ -159,20 +177,51 @@ export default function HospitalReportsPage() {
                         : "—"}
                     </td>
                     <td className="px-4 py-2.5">
-                      <button
-                        onClick={() =>
-                          downloadPdf(
-                            r.study?.studyInstanceUid ?? "",
-                            r.study?.accessionNumber ?? "",
-                          )
-                        }
-                        className={clsx(
-                          "flex items-center gap-1 rounded bg-accent/10 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/20",
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          onClick={() =>
+                            downloadPdf(
+                              r.study?.studyInstanceUid ?? "",
+                              r.study?.accessionNumber ?? "",
+                            )
+                          }
+                          className={clsx(
+                            "flex items-center gap-1 rounded bg-accent/10 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/20",
+                          )}
+                        >
+                          <Download size={12} />
+                          PDF
+                        </button>
+                        <button
+                          onClick={() =>
+                            router.push(`/hospitals/reports/${r.study?.studyInstanceUid}`)
+                          }
+                          className={clsx(
+                            "flex items-center gap-1 rounded border border-border bg-surface px-2 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised",
+                          )}
+                        >
+                          <Eye size={12} />
+                          Review
+                        </button>
+                        {r.study?.status === "HOSPITAL_REVIEW" && (
+                          <button
+                            onClick={() =>
+                              acceptReport(r.study?.studyInstanceUid ?? "")
+                            }
+                            disabled={busyUid !== null}
+                            className={clsx(
+                              "flex items-center gap-1 rounded bg-success px-2 py-1 text-xs font-medium text-white hover:bg-success/90 disabled:cursor-not-allowed disabled:opacity-50",
+                            )}
+                          >
+                            {busyUid === r.study?.studyInstanceUid ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Check size={12} />
+                            )}
+                            Accept
+                          </button>
                         )}
-                      >
-                        <Download size={12} />
-                        Download PDF
-                      </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

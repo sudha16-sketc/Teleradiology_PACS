@@ -1,50 +1,76 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { SlaService } from '../sla/sla.service.js';
+
+function minutesBetween(from: Date | null | undefined, to: Date | null | undefined): number | null {
+  if (!from || !to) return null;
+  const ms = to.getTime() - from.getTime();
+  return Math.max(0, Math.round(ms / 60000));
+}
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sla: SlaService,
+  ) {}
 
   async overview() {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    const [totalStudies, studiesToday, backlogCount, completedStudies, totalWithTat] =
-      await Promise.all([
-        this.prisma.study.count(),
-        this.prisma.study.count({ where: { createdAt: { gte: startOfDay } } }),
-        this.prisma.study.count({
-          where: { status: { in: ['NEW', 'VALIDATED', 'UNASSIGNED', 'ASSIGNED'] } },
-        }),
-        this.prisma.worklistItem.findMany({
-          where: { tatMinutes: { not: null } },
-          select: { tatMinutes: true },
-        }),
-        this.prisma.worklistItem.count({ where: { tatMinutes: { not: null } } }),
-      ]);
-
-    const averageTAT =
-      totalWithTat > 0
-        ? completedStudies.reduce((sum, w) => sum + (w.tatMinutes || 0), 0) / totalWithTat
-        : 0;
+    const [totalStudies, studiesToday, backlogCount] = await Promise.all([
+      this.prisma.study.count(),
+      this.prisma.study.count({ where: { createdAt: { gte: startOfDay } } }),
+      this.prisma.study.count({
+        where: {
+          status: {
+            in: ['HOSPITAL_SUBMITTED', 'RECEIVING', 'VALIDATING', 'UNASSIGNED', 'ASSIGNED'],
+          },
+        },
+      }),
+    ]);
 
     const totalDeliveries = await this.prisma.deliveryAttempt.count();
     const successfulDeliveries = await this.prisma.deliveryAttempt.count({
       where: { status: 'COMPLETED' },
     });
-    const deliverySuccessRate = totalDeliveries > 0 ? (successfulDeliveries / totalDeliveries) * 100 : 100;
+    const deliverySuccessRate =
+      totalDeliveries > 0 ? (successfulDeliveries / totalDeliveries) * 100 : 100;
 
-    const finalizedWithSla = await this.prisma.study.findMany({
-      where: { status: 'FINAL', finalizedAt: { not: null }, slaDeadline: { not: null } },
-      select: { finalizedAt: true, slaDeadline: true },
+    // Server-derived TAT and SLA compliance (never read from unpopulated columns).
+    const completed = await this.prisma.study.findMany({
+      where: { status: 'COMPLETED', completedAt: { not: null } },
+      select: {
+        id: true,
+        priority: true,
+        receivedAt: true,
+        createdAt: true,
+        assignedAt: true,
+        signedOffAt: true,
+        completedAt: true,
+      },
     });
-    const finalizedOnTime = finalizedWithSla.filter(
-      (s) => s.finalizedAt! <= s.slaDeadline!,
-    ).length;
+
+    const totalMins = completed
+      .map((s) => minutesBetween(s.receivedAt ?? s.createdAt, s.completedAt))
+      .filter((v): v is number => v !== null);
+    const averageTAT =
+      totalMins.length > 0
+        ? totalMins.reduce((a, b) => a + b, 0) / totalMins.length
+        : 0;
+
+    let onTime = 0;
+    for (const s of completed) {
+      const threshold = await this.sla.thresholdForPriority(
+        s.priority,
+      );
+      const start = s.receivedAt ?? s.createdAt;
+      const dueAt = start.getTime() + threshold * 60000;
+      if (s.completedAt!.getTime() <= dueAt) onTime++;
+    }
     const slaComplianceRate =
-      finalizedWithSla.length > 0
-        ? (finalizedOnTime / finalizedWithSla.length) * 100
-        : 100;
+      completed.length > 0 ? (onTime / completed.length) * 100 : 100;
 
     return {
       data: {
@@ -67,16 +93,17 @@ export class AnalyticsService {
       { label: '> 4 hours', min: 240, max: Infinity },
     ];
 
-    const items = await this.prisma.worklistItem.findMany({
-      where: { tatMinutes: { not: null } },
-      select: { tatMinutes: true },
+    const completed = await this.prisma.study.findMany({
+      where: { status: 'COMPLETED', completedAt: { not: null } },
+      select: { receivedAt: true, createdAt: true, completedAt: true },
     });
+    const durations = completed
+      .map((s) => minutesBetween(s.receivedAt ?? s.createdAt, s.completedAt))
+      .filter((v): v is number => v !== null);
 
-    const total = items.length || 1;
+    const total = durations.length || 1;
     const distribution = ranges.map((range) => {
-      const count = items.filter(
-        (w) => (w.tatMinutes ?? 0) >= range.min && (w.tatMinutes ?? 0) < range.max,
-      ).length;
+      const count = durations.filter((d) => d >= range.min && d < range.max).length;
       return {
         range: range.label,
         count,
@@ -91,41 +118,49 @@ export class AnalyticsService {
     const hospitals = await this.prisma.hospital.findMany({
       include: {
         studies: {
-          include: {
-            worklistItem: true,
-            deliveryAttempts: true,
+          select: {
+            status: true,
+            priority: true,
+            receivedAt: true,
+            createdAt: true,
+            completedAt: true,
           },
         },
-        deliveryAttempts: true,
+        deliveryAttempts: { select: { status: true } },
       },
     });
 
     const performance = await Promise.all(
       hospitals.map(async (hospital) => {
         const totalStudies = hospital.studies.length;
-        const withTat = hospital.studies.filter((s) => s.worklistItem?.tatMinutes);
+
+        const completed = hospital.studies.filter(
+          (s) => s.status === 'COMPLETED' && s.completedAt,
+        );
+        const totalMins = completed
+          .map((s) => minutesBetween(s.receivedAt ?? s.createdAt, s.completedAt))
+          .filter((v): v is number => v !== null);
         const averageTAT =
-          withTat.length > 0
-            ? withTat.reduce((sum, s) => sum + (s.worklistItem?.tatMinutes || 0), 0) /
-              withTat.length
+          totalMins.length > 0
+            ? totalMins.reduce((a, b) => a + b, 0) / totalMins.length
             : 0;
 
+        let onTime = 0;
+        for (const s of completed) {
+          const threshold = await this.sla.thresholdForPriority(s.priority);
+          const start = s.receivedAt ?? s.createdAt;
+          const dueAt = start.getTime() + threshold * 60000;
+          if (s.completedAt!.getTime() <= dueAt) onTime++;
+        }
+        const slaCompliance =
+          completed.length > 0 ? (onTime / completed.length) * 100 : 100;
+
         const deliveries = hospital.deliveryAttempts ?? [];
-        const totalDeliveries = deliveries.length;
         const successfulDeliveries = deliveries.filter(
           (d) => d.status === 'COMPLETED',
         ).length;
         const deliverySuccessRate =
-          totalDeliveries > 0 ? (successfulDeliveries / totalDeliveries) * 100 : 100;
-
-        const finalWithSla = hospital.studies.filter(
-          (s) => s.status === 'FINAL' && s.slaDeadline,
-        );
-        const onTimeStudies = finalWithSla.filter(
-          (s) => s.finalizedAt && s.finalizedAt <= s.slaDeadline!,
-        );
-        const slaCompliance =
-          finalWithSla.length > 0 ? (onTimeStudies.length / finalWithSla.length) * 100 : 100;
+          deliveries.length > 0 ? (successfulDeliveries / deliveries.length) * 100 : 100;
 
         return {
           hospitalId: hospital.id,

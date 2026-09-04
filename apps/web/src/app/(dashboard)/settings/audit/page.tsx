@@ -10,9 +10,10 @@ import { SkeletonTable } from "@/components/ui/Skeleton";
 
 const ACTION_TYPES = [
   "LOGIN", "LOGOUT", "STUDY_VIEWED", "STUDY_DOWNLOADED", "STUDY_ASSIGNED",
-  "REPORT_CREATED", "REPORT_SIGNED", "REPORT_FINALIZED",
+  "STUDY_REASSIGNED", "STUDY_STATUS_CHANGED", "REPORT_CREATED", "REPORT_SIGNED", "REPORT_AMENDED",
+  "REPORT_VERIFIED", "REPORT_RELEASED", "REPORT_REVISED",
   "CRITICAL_FINDING_FLAGGED", "ROUTING_RULE_CHANGED", "USER_CREATED",
-  "DELIVERY_ATTEMPTED",
+  "DELIVERY_ATTEMPTED", "DELIVERY_COMPLETED", "DELIVERY_FAILED", "CHANGE_REQUESTED",
 ];
 
 const ACTION_LABELS: Record<string, string> = {
@@ -21,13 +22,21 @@ const ACTION_LABELS: Record<string, string> = {
   STUDY_VIEWED: "Study Viewed",
   STUDY_DOWNLOADED: "Study Downloaded",
   STUDY_ASSIGNED: "Study Assigned",
+  STUDY_REASSIGNED: "Study Reassigned",
+  STUDY_STATUS_CHANGED: "Study Status Changed",
   REPORT_CREATED: "Report Created",
   REPORT_SIGNED: "Report Signed",
-  REPORT_FINALIZED: "Report Finalized",
+  REPORT_AMENDED: "Report Amended",
+  REPORT_VERIFIED: "Report Verified",
+  REPORT_RELEASED: "Report Released",
+  REPORT_REVISED: "Report Revised",
   CRITICAL_FINDING_FLAGGED: "Critical Finding Flagged",
   ROUTING_RULE_CHANGED: "Routing Rule Changed",
   USER_CREATED: "User Created",
   DELIVERY_ATTEMPTED: "Delivery Attempted",
+  DELIVERY_COMPLETED: "Delivery Completed",
+  DELIVERY_FAILED: "Delivery Failed",
+  CHANGE_REQUESTED: "Change Requested",
 };
 
 export default function AuditPage() {

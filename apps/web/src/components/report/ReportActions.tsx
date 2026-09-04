@@ -37,11 +37,11 @@ export function ReportActions({
       <button
         type="button"
         onClick={onSubmitSignoff}
-        disabled={disabled || status === "FINAL"}
+        disabled={disabled || status === "SIGNED"}
         className={clsx(
           "rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors",
           "hover:bg-surface-raised",
-          (disabled || status === "FINAL") && "cursor-not-allowed opacity-50",
+          (disabled || status === "SIGNED") && "cursor-not-allowed opacity-50",
         )}
       >
         Submit for Sign-off
@@ -49,16 +49,16 @@ export function ReportActions({
       <button
         type="button"
         onClick={onSignOff}
-        disabled={disabled || status === "FINAL"}
+        disabled={disabled || status === "SIGNED"}
         className={clsx(
           "rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors",
           "hover:bg-accent/90",
-          (disabled || status === "FINAL") && "cursor-not-allowed opacity-50",
+          (disabled || status === "SIGNED") && "cursor-not-allowed opacity-50",
         )}
       >
         Sign Off
       </button>
-      {status === "FINAL" && (
+      {status === "CORRECTION_REQUESTED" && (
         <button
           type="button"
           onClick={onAmend}

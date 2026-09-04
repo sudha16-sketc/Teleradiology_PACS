@@ -16,6 +16,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Activity,
+  Clock,
+  UploadCloud,
+  ServerCog,
   type LucideIcon,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
@@ -27,21 +30,27 @@ import {
 const ICONS: Record<string, LucideIcon> = {
   "/worklist": ListTodo,
   "/queue": Inbox,
+  "/queue/verification": Clock,
   "/reading": Monitor,
   "/reports": FileText,
   "/hospitals": Building2,
+  "/hospitals/submit": UploadCloud,
+  "/hospitals/reports": FileText,
+  "/hospitals/tracker": Activity,
   "/analytics": BarChart3,
   "/audit": Shield,
+  "/operations": ServerCog,
   "/settings": Settings,
   "/admin/registration-requests": ClipboardCheck,
+  "/profile": Monitor,
 };
 
 export function NavigationRail() {
   const pathname = usePathname();
   const { railCollapsed, setRailCollapsed, currentUser } = useAppStore();
 
-  const role = currentUser?.role ?? "ADMIN";
-  const navItems: NavDefinition[] = navigationForRole(role);
+  const role = currentUser?.role;
+  const navItems: NavDefinition[] = role ? navigationForRole(role) : [];
 
   return (
     <aside

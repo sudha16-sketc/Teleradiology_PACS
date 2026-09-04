@@ -14,7 +14,7 @@ import { Roles } from '../auth/auth.decorators.js';
 import { DicomWebService } from './dicomweb.service.js';
 
 @Controller('dicom-web')
-@Roles(UserRole.ADMIN, UserRole.COORDINATOR, UserRole.RADIOLOGIST)
+@Roles(UserRole.ADMIN, UserRole.MANAGER, UserRole.RADIOLOGIST, UserRole.HOSPITAL)
 export class DicomWebController {
   constructor(private readonly dicomwebService: DicomWebService) {}
 

@@ -9,6 +9,7 @@ import {
 import { WorklistService } from './worklist.service.js';
 import { IsOptional, IsString } from 'class-validator';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
+import type { UserRole } from '@prisma/client';
 
 class GetWorklistDto {
   @IsOptional()
@@ -41,7 +42,9 @@ class AssignStudyDto {
 
 interface RequestUser {
   id: string;
-  role: string;
+  role: UserRole;
+  hospitalId?: string;
+  displayName?: string;
 }
 
 @Controller('worklist')
@@ -49,23 +52,30 @@ export class WorklistController {
   constructor(private readonly worklistService: WorklistService) {}
 
   @Get()
+  @Roles('ADMIN', 'MANAGER', 'RADIOLOGIST')
   list(@Query() dto: GetWorklistDto, @CurrentUser() user: RequestUser) {
     return this.worklistService.list(dto, user);
   }
 
+  @Get('radiologists')
+  @Roles('MANAGER', 'ADMIN')
+  radiologists(@CurrentUser() user: RequestUser) {
+    return this.worklistService.radiologists();
+  }
+
   @Get('my')
-  @Roles('RADIOLOGIST', 'COORDINATOR', 'ADMIN')
+  @Roles('RADIOLOGIST', 'MANAGER', 'ADMIN', 'HOSPITAL')
   my(@CurrentUser() user: RequestUser) {
-    return this.worklistService.my(user.id, user.role);
+    return this.worklistService.my(user.id, user.role, user.hospitalId);
   }
 
   @Post(':studyUid/assign')
-  @Roles('COORDINATOR', 'ADMIN')
+  @Roles('MANAGER', 'ADMIN')
   assign(
     @Param('studyUid') studyUid: string,
     @Body() dto: AssignStudyDto,
     @CurrentUser() user: RequestUser,
   ) {
-    return this.worklistService.assign(studyUid, dto.radiologistId, user.id);
+    return this.worklistService.assign(studyUid, dto.radiologistId, user);
   }
 }

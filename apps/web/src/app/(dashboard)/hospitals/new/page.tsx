@@ -9,7 +9,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
-import type { Study } from "@axis/types";
+import type { ApiError, Study } from "@axis/types";
 
 interface SubmitEnvelope {
   data: Study;
@@ -82,8 +82,10 @@ export default function NewStudyPage() {
         dueAt: form.dueAt || undefined,
       });
       setCreated(res.data);
-    } catch (err: any) {
-      setError(err?.message ?? "Failed to submit study. Please try again.");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : (err as ApiError)?.message;
+      setError(message ?? "Failed to submit study. Please try again.");
     } finally {
       setSubmitting(false);
     }

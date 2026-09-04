@@ -24,7 +24,7 @@ function buildTimeline(study: Study): TimelineEvent[] {
   const submittedAt = study.receivedAt ?? study.createdAt;
   if (submittedAt) {
     events.push({
-      status: "SUBMITTED",
+      status: "HOSPITAL_SUBMITTED",
       timestamp: submittedAt,
       actor: study.hospital?.name ?? "Hospital",
     });
@@ -34,7 +34,7 @@ function buildTimeline(study: Study): TimelineEvent[] {
     events.push({
       status: "ASSIGNED",
       timestamp: study.assignedAt,
-      actor: study.assignedRadiologist?.displayName ?? "Coordinator",
+      actor: study.assignedRadiologist?.displayName ?? "Manager",
     });
   }
 
@@ -46,17 +46,81 @@ function buildTimeline(study: Study): TimelineEvent[] {
     });
   }
 
-  if (study.finalizedAt) {
+  if (study.signedOffAt) {
     events.push({
-      status: "FINAL",
-      timestamp: study.finalizedAt,
+      status: "RADIOLOGIST_SIGNED",
+      timestamp: study.signedOffAt,
       actor: study.assignedRadiologist?.displayName ?? "Radiologist",
+    });
+  }
+
+  if (study.managerReviewedAt) {
+    events.push({
+      status: "MANAGER_REVIEW",
+      timestamp: study.managerReviewedAt,
+      actor: "Manager",
+    });
+  }
+
+  if (study.managerApprovedAt) {
+    events.push({
+      status: "MANAGER_APPROVED",
+      timestamp: study.managerApprovedAt,
+      actor: "Manager",
+    });
+  }
+
+  if (study.deliveredAt) {
+    events.push({
+      status: "DELIVERED_TO_HOSPITAL",
+      timestamp: study.deliveredAt,
+      actor: "System",
+    });
+  }
+
+  if (study.hospitalReviewedAt) {
+    events.push({
+      status: "HOSPITAL_REVIEW",
+      timestamp: study.hospitalReviewedAt,
+      actor: study.hospital?.name ?? "Hospital",
+    });
+  }
+
+  if (study.hospitalAcceptedAt) {
+    events.push({
+      status: "HOSPITAL_ACCEPTED",
+      timestamp: study.hospitalAcceptedAt,
+      actor: study.hospital?.name ?? "Hospital",
+    });
+  }
+
+  if (study.completedAt) {
+    events.push({
+      status: "COMPLETED",
+      timestamp: study.completedAt,
+      actor: "System",
+    });
+  }
+
+  if (study.status === "CORRECTION_REQUESTED") {
+    events.push({
+      status: "CORRECTION_REQUESTED",
+      timestamp: study.updatedAt,
+      actor: "Manager",
+    });
+  }
+
+  if (study.status === "HOSPITAL_CHANGE_REQUESTED") {
+    events.push({
+      status: "HOSPITAL_CHANGE_REQUESTED",
+      timestamp: study.updatedAt,
+      actor: study.hospital?.name ?? "Hospital",
     });
   }
 
   if (events.length === 0) {
     events.push({
-      status: "NEW",
+      status: "HOSPITAL_SUBMITTED",
       timestamp: study.createdAt,
       actor: study.hospital?.name ?? "Hospital",
     });
@@ -66,14 +130,22 @@ function buildTimeline(study: Study): TimelineEvent[] {
 }
 
 const ALL_STATUSES: StudyStatus[] = [
-  "NEW",
-  "VALIDATED",
+  "HOSPITAL_SUBMITTED",
+  "RECEIVING",
+  "VALIDATING",
   "UNASSIGNED",
   "ASSIGNED",
   "IN_READING",
-  "FINAL",
-  "AMENDED",
-  "DELIVERED",
+  "REPORT_DRAFT",
+  "RADIOLOGIST_SIGNED",
+  "MANAGER_REVIEW",
+  "MANAGER_APPROVED",
+  "DELIVERED_TO_HOSPITAL",
+  "HOSPITAL_REVIEW",
+  "HOSPITAL_ACCEPTED",
+  "COMPLETED",
+  "CORRECTION_REQUESTED",
+  "HOSPITAL_CHANGE_REQUESTED",
 ];
 
 export default function HospitalTrackerPage() {
@@ -195,7 +267,7 @@ export default function HospitalTrackerPage() {
                     : "text-text-muted hover:text-text-primary",
                 )}
               >
-                {s.replace("_", " ")}
+                {s.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())}
               </button>
             ))}
           </div>

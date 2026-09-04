@@ -1,6 +1,12 @@
 window.config = {
   routerBasename: '/ohif',
 
+  // These arrays must exist (even if empty) so that the viewer's
+  // extension/mode machinery can safely iterate over them. Without them,
+  // OHIF throws "appConfig.extensions is not iterable".
+  extensions: [],
+  modes: [],
+
   showStudyList: true,
 
   dataSources: [

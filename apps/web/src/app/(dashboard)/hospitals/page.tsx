@@ -45,10 +45,10 @@ export default function HospitalPortalPage() {
     (s) => new Date(s.createdAt).toDateString() === today,
   ).length;
   const inProgress = studies.filter(
-    (s) => ["SUBMITTED", "VALIDATED", "UNASSIGNED", "ASSIGNED", "IN_READING", "DRAFT_REPORT"].includes(s.status),
+    (s) => ["RECEIVING", "VALIDATING", "UNASSIGNED", "ASSIGNED", "IN_READING", "REPORT_DRAFT", "RADIOLOGIST_SIGNED", "MANAGER_REVIEW"].includes(s.status),
   ).length;
   const delivered = studies.filter(
-    (s) => ["FINAL", "DELIVERED", "AMENDED"].includes(s.status),
+    (s) => ["MANAGER_APPROVED", "DELIVERED_TO_HOSPITAL", "HOSPITAL_REVIEW", "HOSPITAL_ACCEPTED", "COMPLETED"].includes(s.status),
   ).length;
 
   const recent = [...studies]
@@ -56,7 +56,7 @@ export default function HospitalPortalPage() {
     .slice(0, 10);
 
   const tracked = recent.find((s) =>
-    ["SUBMITTED", "VALIDATED", "UNASSIGNED", "ASSIGNED", "IN_READING", "DRAFT_REPORT"].includes(s.status),
+    ["HOSPITAL_SUBMITTED", "RECEIVING", "VALIDATING", "UNASSIGNED", "ASSIGNED", "IN_READING", "REPORT_DRAFT"].includes(s.status),
   );
 
   if (hasError) {
@@ -79,7 +79,7 @@ export default function HospitalPortalPage() {
             Hospital Portal
           </h1>
           <p className="text-sm text-text-muted">
-            Your hospital's study submissions and reports
+            Your hospital&apos;s study submissions and reports
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -91,7 +91,7 @@ export default function HospitalPortalPage() {
             Refresh
           </button>
           <button
-            onClick={() => router.push("/hospitals/new")}
+            onClick={() => router.push("/hospitals/submit")}
             className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/90"
           >
             <Plus size={15} />

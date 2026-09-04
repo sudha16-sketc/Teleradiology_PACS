@@ -20,16 +20,20 @@ interface ReportVersionHistoryProps {
 
 const STATUS_STYLES: Record<ReportStatus, string> = {
   DRAFT: "bg-surface text-text-muted",
-  PENDING_SIGNOFF: "bg-accent/10 text-accent",
-  FINAL: "bg-success/10 text-success",
-  AMENDED: "bg-warning/10 text-warning",
+  SIGNED: "bg-accent/10 text-accent",
+  MANAGER_REVIEW: "bg-warning/10 text-warning",
+  MANAGER_APPROVED: "bg-success/10 text-success",
+  HOSPITAL_REVIEW: "bg-warning/10 text-warning",
+  CORRECTION_REQUESTED: "bg-error/10 text-error",
 };
 
 const STATUS_LABELS: Record<ReportStatus, string> = {
   DRAFT: "Draft",
-  PENDING_SIGNOFF: "Pending Sign-off",
-  FINAL: "Final",
-  AMENDED: "Amended",
+  SIGNED: "Signed",
+  MANAGER_REVIEW: "Manager Review",
+  MANAGER_APPROVED: "Approved",
+  HOSPITAL_REVIEW: "Hospital Review",
+  CORRECTION_REQUESTED: "Correction Requested",
 };
 
 export function ReportVersionHistory({ versions = [] }: ReportVersionHistoryProps) {

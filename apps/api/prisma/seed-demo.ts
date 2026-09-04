@@ -24,11 +24,11 @@ async function main() {
   const admin = await prisma.user.findUnique({
     where: { email: 'admin@axisradiology.com' },
   });
-  const coord = await prisma.user.findUnique({
-    where: { email: 'coordinator@axisradiology.com' },
+  const manager = await prisma.user.findUnique({
+    where: { email: 'manager@axisradiology.com' },
   });
 
-  if (!radiologist || !admin || !coord) {
+  if (!radiologist || !admin || !manager) {
     console.error('Demo seed requires accounts from db:seed first. Run: pnpm --filter @axis/api db:seed');
     process.exit(1);
   }
@@ -61,7 +61,7 @@ async function main() {
   const modalities: Modality[] = ['CT', 'MRI', 'XR', 'US', 'MG'];
   const subspecialties: Subspecialty[] = ['NEURO', 'MSK', 'CHEST', 'ABDOMEN', 'CARDIOVASCULAR'];
   const priorities: StudyPriority[] = ['STAT', 'URGENT', 'ROUTINE'];
-  const statuses: StudyStatus[] = ['UNASSIGNED', 'ASSIGNED', 'IN_READING', 'FINAL', 'AMENDED', 'DELIVERED'];
+  const statuses: StudyStatus[] = ['UNASSIGNED', 'ASSIGNED', 'IN_READING', 'REPORT_DRAFT', 'MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL'];
 
   const studies = [];
   for (let i = 1; i <= 10; i++) {
@@ -96,6 +96,13 @@ async function main() {
           seriesCount: 2 + (i % 4),
           instanceCount: 20 + i * 5,
           slaDeadline: new Date(Date.now() + (4 - (i % 5)) * 3600000),
+          receivedAt: new Date(Date.now() - 86400000 + i * 3600000),
+          assignedAt: status !== 'UNASSIGNED' ? new Date(Date.now() - 72000000 + i * 3600000) : null,
+          reportingStartedAt: status === 'IN_READING' || status === 'REPORT_DRAFT' ? new Date(Date.now() - 50000000) : null,
+          signedOffAt: status === 'MANAGER_APPROVED' ? new Date(Date.now() - 36000000) : null,
+          managerReviewedAt: status === 'MANAGER_APPROVED' ? new Date(Date.now() - 30000000) : null,
+          managerApprovedAt: status === 'MANAGER_APPROVED' ? new Date(Date.now() - 24000000) : null,
+          deliveredAt: status === 'DELIVERED_TO_HOSPITAL' ? new Date(Date.now() - 18000000) : null,
         },
       }));
     studies.push(s);
@@ -136,17 +143,19 @@ async function main() {
 
   // Worklist items
   for (const study of studies) {
-    if (study.status === 'NEW') continue;
+    if (study.status === 'HOSPITAL_SUBMITTED') continue;
     if (await prisma.worklistItem.findUnique({ where: { studyId: study.id } })) continue;
+    const completedStatuses = ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'COMPLETED'];
+    const inProgressStatuses = ['IN_READING', 'REPORT_DRAFT'];
     await prisma.worklistItem.create({
       data: {
         id: `wl-${study.id}`,
         studyId: study.id,
         assignedAt: study.status !== 'UNASSIGNED' ? new Date(Date.now() - 3600000) : null,
-        startedAt: study.status === 'IN_READING' ? new Date(Date.now() - 1800000) : null,
-        completedAt: ['FINAL', 'AMENDED', 'DELIVERED'].includes(study.status) ? new Date() : null,
-        tatMinutes: ['FINAL', 'AMENDED', 'DELIVERED'].includes(study.status) ? 45 + Math.floor(Math.random() * 60) : null,
-        slaRemaining: ['FINAL', 'AMENDED', 'DELIVERED'].includes(study.status) ? null : 120 + Math.floor(Math.random() * 120),
+        startedAt: inProgressStatuses.includes(study.status) ? new Date(Date.now() - 1800000) : null,
+        completedAt: completedStatuses.includes(study.status) ? new Date() : null,
+        tatMinutes: completedStatuses.includes(study.status) ? 45 + Math.floor(Math.random() * 60) : null,
+        slaRemaining: completedStatuses.includes(study.status) ? null : 120 + Math.floor(Math.random() * 120),
       },
     });
   }
@@ -174,15 +183,15 @@ async function main() {
         id: 'rpt-002',
         studyId: studies[1].id,
         authorId: radId,
-        status: ReportStatus.FINAL,
+        status: ReportStatus.MANAGER_APPROVED,
         version: 1,
-        findings: 'AX-SYN FINAL: Small meniscal tear identified in the medial compartment of the left knee.',
-        impression: 'AX-SYN FINAL: Medial meniscal tear, left knee. Recommend orthopedic follow-up.',
+        findings: 'AX-SYN APPROVED: Small meniscal tear identified in the medial compartment of the left knee.',
+        impression: 'AX-SYN APPROVED: Medial meniscal tear, left knee. Recommend orthopedic follow-up.',
         recommendations: 'Orthopedic consultation recommended.',
         criticalFinding: false,
         signedOffBy: radId,
         signedOffAt: new Date(),
-        contentHash: dateHash('final-findings-impression'),
+        contentHash: dateHash('approved-findings-impression'),
       },
     });
   }
@@ -192,10 +201,10 @@ async function main() {
         id: 'rpt-003',
         studyId: studies[2].id,
         authorId: radId,
-        status: ReportStatus.AMENDED,
+        status: ReportStatus.SIGNED,
         version: 2,
-        findings: 'AX-SYN AMENDED v2: Updated findings - 4mm pulmonary nodule identified in the right lower lobe.',
-        impression: 'AX-SYN AMENDED v2: Solitary pulmonary nodule, right lower lobe. Recommend PET-CT follow-up.',
+        findings: 'AX-SYN SIGNED v2: Updated findings - 4mm pulmonary nodule identified in the right lower lobe.',
+        impression: 'AX-SYN SIGNED v2: Solitary pulmonary nodule, right lower lobe. Recommend PET-CT follow-up.',
         recommendations: 'PET-CT follow-up recommended.',
         criticalFinding: true,
         criticalFindingAcknowledged: true,
@@ -203,7 +212,7 @@ async function main() {
         criticalFindingAcknowledgedAt: new Date(),
         signedOffBy: radId,
         signedOffAt: new Date(),
-        contentHash: dateHash('amended-findings-impression-v2'),
+        contentHash: dateHash('signed-findings-impression-v2'),
       },
     });
     await prisma.reportVersion.create({
@@ -211,7 +220,7 @@ async function main() {
         id: 'rptv-001',
         reportId: 'rpt-003',
         version: 1,
-        status: ReportStatus.FINAL,
+        status: ReportStatus.DRAFT,
         findings: 'AX-SYN v1: Small nodule identified in right lower lobe.',
         impression: 'AX-SYN v1: Pulmonary nodule, right lower lobe.',
         recommendations: '',

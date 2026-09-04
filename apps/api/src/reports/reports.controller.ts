@@ -16,10 +16,17 @@ import {
 } from 'class-validator';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
 import type { Response } from 'express';
+import type { UserRole } from '@prisma/client';
 
-class CreateReportDto {
+/**
+ * Clinical report content. Actor identity (author) is NEVER accepted here --
+ * the authenticated session is authoritative and only the assigned radiologist
+ * may write clinical content.
+ */
+class ReportContentDto {
+  @IsOptional()
   @IsString()
-  authorId!: string;
+  clinicalHistory?: string;
 
   @IsOptional()
   @IsString()
@@ -31,44 +38,11 @@ class CreateReportDto {
 
   @IsOptional()
   @IsString()
-  recommendations?: string;
-
-  @IsOptional()
-  @IsBoolean()
-  criticalFinding?: boolean;
-}
-
-class SignOffDto {
-  @IsString()
-  signedOffBy!: string;
-}
-
-class AmendDto {
-  @IsString()
-  authorId!: string;
-
-  @IsString()
-  findings!: string;
-
-  @IsString()
-  impression!: string;
+  technique?: string;
 
   @IsOptional()
   @IsString()
-  recommendations?: string;
-}
-
-class DraftDto {
-  @IsString()
-  authorId!: string;
-
-  @IsOptional()
-  @IsString()
-  findings?: string;
-
-  @IsOptional()
-  @IsString()
-  impression?: string;
+  comparison?: string;
 
   @IsOptional()
   @IsString()
@@ -80,18 +54,29 @@ class DraftDto {
 }
 
 class ValidateDto {
-  @IsIn(['FINAL', 'PENDING_SIGNOFF'] as const)
-  status!: 'FINAL' | 'PENDING_SIGNOFF';
+  @IsIn(['SIGNED', 'DRAFT'] as const)
+  status!: 'SIGNED' | 'DRAFT';
 
   @IsOptional()
   @IsString()
   reason?: string;
 }
 
+class ChangeRequestDto {
+  @IsString()
+  reason!: string;
+}
+
+class ChangeRequestRespondDto {
+  @IsString()
+  resolution!: string;
+}
+
 interface RequestUser {
   id: string;
-  role: string;
+  role: UserRole;
   hospitalId?: string;
+  displayName?: string;
 }
 
 @Controller('reports')
@@ -99,19 +84,25 @@ export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
   @Get()
-  @Roles('RADIOLOGIST', 'COORDINATOR', 'ADMIN')
+  @Roles('RADIOLOGIST', 'MANAGER', 'ADMIN', 'HOSPITAL')
   list(@CurrentUser() user: RequestUser) {
     return this.reportsService.list(user);
   }
 
   @Get('hospital')
-  @Roles('HOSPITAL_USER', 'COORDINATOR', 'ADMIN')
+  @Roles('HOSPITAL', 'MANAGER', 'ADMIN')
   hospitalReports(@CurrentUser() user: RequestUser) {
     return this.reportsService.hospitalReports(user);
   }
 
+  @Get('change-requests')
+  @Roles('RADIOLOGIST', 'MANAGER', 'ADMIN')
+  changeRequests(@CurrentUser() user: RequestUser) {
+    return this.reportsService.changeRequests(user);
+  }
+
   @Get('hospital/:studyUid/pdf')
-  @Roles('HOSPITAL_USER', 'COORDINATOR', 'ADMIN')
+  @Roles('HOSPITAL', 'MANAGER', 'ADMIN')
   async hospitalPdf(
     @Param('studyUid') studyUid: string,
     @CurrentUser() user: RequestUser,
@@ -120,53 +111,116 @@ export class ReportsController {
     await this.reportsService.hospitalPdf(studyUid, user, res);
   }
 
+  @Get(':studyUid/versions')
+  @Roles('RADIOLOGIST', 'MANAGER', 'ADMIN', 'HOSPITAL')
+  versions(
+    @Param('studyUid') studyUid: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reportsService.getVersions(studyUid, user);
+  }
+
   @Get(':studyUid')
+  @Roles('RADIOLOGIST', 'MANAGER', 'ADMIN', 'HOSPITAL')
   getByStudy(@Param('studyUid') studyUid: string, @CurrentUser() user: RequestUser) {
     return this.reportsService.getByStudy(studyUid, user);
   }
 
   @Post(':studyUid')
-  @Roles('RADIOLOGIST', 'COORDINATOR', 'ADMIN')
+  @Roles('RADIOLOGIST')
   createOrUpdate(
     @Param('studyUid') studyUid: string,
-    @Body() dto: CreateReportDto,
+    @Body() dto: ReportContentDto,
+    @CurrentUser() user: RequestUser,
   ) {
-    return this.reportsService.createOrUpdate(studyUid, dto);
+    return this.reportsService.createOrUpdate(studyUid, dto, user);
   }
 
   @Patch(':studyUid/draft')
-  @Roles('RADIOLOGIST', 'COORDINATOR', 'ADMIN')
+  @Roles('RADIOLOGIST')
   saveDraft(
     @Param('studyUid') studyUid: string,
-    @Body() dto: DraftDto,
+    @Body() dto: ReportContentDto,
+    @CurrentUser() user: RequestUser,
   ) {
-    return this.reportsService.saveDraft(studyUid, dto);
+    return this.reportsService.saveDraft(studyUid, dto, user);
   }
 
   @Post(':studyUid/sign')
-  @Roles('RADIOLOGIST', 'COORDINATOR', 'ADMIN')
+  @Roles('RADIOLOGIST')
   signOff(
     @Param('studyUid') studyUid: string,
-    @Body() dto: SignOffDto,
+    @CurrentUser() user: RequestUser,
   ) {
-    return this.reportsService.signOff(studyUid, dto.signedOffBy);
+    // Signer identity is derived from the authenticated session, never from the
+    // request body.
+    return this.reportsService.signOff(studyUid, user);
   }
 
   @Post(':studyUid/amend')
-  @Roles('RADIOLOGIST', 'COORDINATOR', 'ADMIN')
+  @Roles('RADIOLOGIST')
   amend(
     @Param('studyUid') studyUid: string,
-    @Body() dto: AmendDto,
+    @Body() dto: ReportContentDto,
+    @CurrentUser() user: RequestUser,
   ) {
-    return this.reportsService.amend(studyUid, dto);
+    return this.reportsService.amend(studyUid, dto, user);
   }
 
   @Post(':studyUid/validate')
-  @Roles('COORDINATOR', 'ADMIN')
+  @Roles('MANAGER', 'ADMIN')
   validate(
     @Param('studyUid') studyUid: string,
     @Body() dto: ValidateDto,
+    @CurrentUser() user: RequestUser,
   ) {
-    return this.reportsService.validate(studyUid, dto);
+    return this.reportsService.validate(studyUid, dto, user);
+  }
+
+  @Post(':studyUid/change-request')
+  @Roles('MANAGER', 'ADMIN')
+  requestChange(
+    @Param('studyUid') studyUid: string,
+    @Body() dto: ChangeRequestDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reportsService.requestChange(studyUid, dto, user);
+  }
+
+  @Post(':studyUid/verify')
+  @Roles('MANAGER', 'ADMIN')
+  verify(
+    @Param('studyUid') studyUid: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reportsService.verify(studyUid, user);
+  }
+
+  @Post(':studyUid/release')
+  @Roles('MANAGER', 'ADMIN')
+  release(
+    @Param('studyUid') studyUid: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reportsService.release(studyUid, user);
+  }
+
+  @Post(':studyUid/deliver')
+  @Roles('MANAGER', 'ADMIN')
+  deliver(
+    @Param('studyUid') studyUid: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reportsService.deliver(studyUid, user);
+  }
+
+  @Post('change-requests/:id/respond')
+  @Roles('RADIOLOGIST')
+  respondChangeRequest(
+    @Param('id') id: string,
+    @Body() dto: ChangeRequestRespondDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reportsService.respondChangeRequest(id, dto, user);
   }
 }

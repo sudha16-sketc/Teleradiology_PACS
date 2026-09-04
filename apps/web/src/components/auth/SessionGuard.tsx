@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ShieldAlert } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
-import { roleHasAccess } from "@/lib/permissions";
+import { roleHasAccess, ROLE_REDIRECTS } from "@/lib/permissions";
 import type { AuthUser, UserRole } from "@axis/types";
 
 interface ApiEnvelope<T> {
@@ -23,6 +23,9 @@ function LoadingScreen() {
 }
 
 function ForbiddenScreen() {
+  const role = useAppStore((s) => s.currentUser?.role);
+  const home = role ? ROLE_REDIRECTS[role] ?? "/" : "/";
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background px-6">
       <ShieldAlert size={48} strokeWidth={1} className="text-error" />
@@ -34,10 +37,10 @@ function ForbiddenScreen() {
         administrator if you believe this is a mistake.
       </p>
       <Link
-        href="/worklist"
+        href={home}
         className="mt-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-accent/90"
       >
-        Go to Worklist
+        Back to Home
       </Link>
     </div>
   );

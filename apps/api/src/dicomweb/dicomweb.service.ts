@@ -1,6 +1,7 @@
 import {
   Injectable,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -64,35 +65,63 @@ export class DicomWebService {
   }
 
   /**
-   * Study-level authorization:
-   * - ADMIN bypasses hospital scoping.
-   * - For other allowed roles, if the study exists in the Axis database and
-   *   both the study and the user carry a hospital, the hospitals must match.
-   * - Studies not (yet) indexed in Axis are gated by role alone so that an
-   *   in-flight DICOM study is never silently blocked.
+   * Study-level DICOMweb authorization (Phase 3 rules):
+   * - ADMIN:   global DICOM access.
+   * - MANAGER: global operational DICOM access.
+   * - RADIOLOGIST: only studies assigned to them.
+   * - HOSPITAL: only studies belonging to the authenticated hospital.
+   *
+   * Scope is always derived from the authenticated user; hospitalId /
+   * radiologistId are NEVER trusted from the request path or payload.
+   *
+   * A StudyInstanceUID in the path that cannot be resolved to an Axis study
+   * record is REJECTED (404) rather than silently allowed, so a missing Axis
+   * study can never be used to bypass authorization.
    */
   async authorizeStudyAccess(
     user: { id: string; role: UserRole },
     path: string,
   ): Promise<void> {
     const studyUid = this.extractStudyInstanceUid(path);
+    // Paths that do not reference a study (e.g. /patients, /series) are not
+    // study-scoped and pass through; study-scoped access is enforced on routes
+    // that carry a study UID.
     if (!studyUid) return;
 
     const study = await this.prisma.study.findUnique({
       where: { studyInstanceUid: studyUid },
-      select: { hospitalId: true },
+      select: { hospitalId: true, assignedRadiologistId: true },
     });
-    if (!study) return;
+    if (!study) {
+      throw new NotFoundException(
+        `Study ${studyUid} is not indexed and cannot be accessed through DICOMweb`,
+      );
+    }
 
-    if (user.role === 'ADMIN') return;
+    if (user.role === UserRole.ADMIN || user.role === UserRole.MANAGER) {
+      // Global operational access (intended Phase 3 policy).
+      return;
+    }
 
+    if (user.role === UserRole.RADIOLOGIST) {
+      if (study.assignedRadiologistId === user.id) return;
+      throw new ForbiddenException(
+        'You do not have access to studies not assigned to you',
+      );
+    }
+
+    // HOSPITAL (and any other non-admin/manager/non-radiologist role): scope to
+    // the authenticated user's hospital only.
     const axisUser = await this.prisma.user.findUnique({
       where: { id: user.id },
       select: { hospitalId: true },
     });
-    if (!axisUser?.hospitalId || !study.hospitalId) return;
-
-    if (axisUser.hospitalId !== study.hospitalId) {
+    if (!axisUser?.hospitalId) {
+      throw new ForbiddenException(
+        'Your account is not linked to a hospital and cannot access study DICOM data',
+      );
+    }
+    if (study.hospitalId !== axisUser.hospitalId) {
       throw new ForbiddenException(
         'You do not have access to studies from this hospital',
       );

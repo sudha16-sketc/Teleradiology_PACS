@@ -21,6 +21,22 @@ async function main() {
 
   const passwordHash = await bcrypt.hash(password, 12);
 
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) {
+    if (process.env.FORCE_ADMIN_OVERWRITE !== '1') {
+      console.error(
+        `An administrator already exists for ${email}. Refusing to overwrite its password.`,
+      );
+      console.error(
+        'Re-run with FORCE_ADMIN_OVERWRITE=1 only if you intentionally want to reset the credentials.',
+      );
+      process.exit(1);
+    }
+    console.warn(
+      'FORCE_ADMIN_OVERWRITE=1 set — resetting existing administrator password.',
+    );
+  }
+
   const user = await prisma.user.upsert({
     where: { email },
     update: {

@@ -128,9 +128,9 @@ async function main() {
   });
 
   await upsertUser({
-    email: 'coordinator@axisradiology.com',
-    displayName: 'Alex Coordinator',
-    role: UserRole.COORDINATOR,
+    email: 'manager@axisradiology.com',
+    displayName: 'Alex Manager',
+    role: UserRole.MANAGER,
     passwordHash: seedHash,
     organization: 'Axis Radiology',
     phone: '+1 555 010 0001',
@@ -159,18 +159,9 @@ async function main() {
   });
 
   await upsertUser({
-    email: 'tech@axisradiology.com',
-    displayName: 'Priya Technician',
-    role: UserRole.TECHNICIAN,
-    passwordHash: seedHash,
-    organization: 'Axis Radiology',
-    phone: '+1 555 010 0300',
-  });
-
-  await upsertUser({
     email: 'registrar@citygeneral.com',
     displayName: 'Maria Registrar',
-    role: UserRole.HOSPITAL_USER,
+    role: UserRole.HOSPITAL,
     passwordHash: seedHash,
     hospitalId: hospitals.cgh.id,
     organization: hospitals.cgh.name,
@@ -180,7 +171,7 @@ async function main() {
   await upsertUser({
     email: 'records@metrocenter.com',
     displayName: 'James Records',
-    role: UserRole.HOSPITAL_USER,
+    role: UserRole.HOSPITAL,
     passwordHash: seedHash,
     hospitalId: hospitals.mmc.id,
     organization: hospitals.mmc.name,
@@ -190,7 +181,7 @@ async function main() {
   await upsertUser({
     email: 'rad@regionaltrauma.com',
     displayName: 'Elena Imaging Lead',
-    role: UserRole.HOSPITAL_USER,
+    role: UserRole.HOSPITAL,
     passwordHash: seedHash,
     hospitalId: hospitals.rtc.id,
     organization: hospitals.rtc.name,

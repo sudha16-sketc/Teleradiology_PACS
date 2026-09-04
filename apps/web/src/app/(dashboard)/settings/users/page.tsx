@@ -17,10 +17,9 @@ import type { ApiError, User, UserRole, UserStatus } from "@axis/types";
 
 const ROLES: UserRole[] = [
   "ADMIN",
-  "COORDINATOR",
+  "MANAGER",
   "RADIOLOGIST",
-  "TECHNICIAN",
-  "HOSPITAL_USER",
+  "HOSPITAL",
 ];
 
 const STATUS_LABELS: Record<UserStatus, string> = {

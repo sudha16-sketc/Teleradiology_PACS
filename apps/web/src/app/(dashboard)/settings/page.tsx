@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { Settings, Users, GitBranch, ClipboardList, Brain, ClipboardCheck } from "lucide-react";
-import { AdminTabs, type AdminTab } from "@/components/admin/AdminTabs";
-import { MetricCard } from "@/components/admin/MetricCard";
+import { useCallback, useEffect, useState } from "react";
+import { Settings, Users, GitBranch, ClipboardList, Brain, ClipboardCheck, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { apiClient } from "@/lib/api-client";
 
 const OVERVIEW_LINKS: {
   label: string;
@@ -43,8 +43,42 @@ const OVERVIEW_LINKS: {
   },
 ];
 
+interface OverviewData {
+  totalStudies: number;
+  studiesToday: number;
+}
+
 export default function SettingsOverviewPage() {
-  const [activeTab, setActiveTab] = useState<AdminTab>("overview");
+  const [userCount, setUserCount] = useState<number | null>(null);
+  const [hospitalCount, setHospitalCount] = useState<number | null>(null);
+  const [studyStats, setStudyStats] = useState<OverviewData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const [usersRes, hospitalsRes, overviewRes] = await Promise.allSettled([
+        apiClient.get<{ data: unknown[] }>("/users"),
+        apiClient.get<{ data: unknown[] }>("/hospitals"),
+        apiClient.get<{ data: OverviewData }>("/analytics/overview"),
+      ]);
+
+      if (usersRes.status === "fulfilled")
+        setUserCount(usersRes.value.data.length);
+      if (hospitalsRes.status === "fulfilled")
+        setHospitalCount(hospitalsRes.value.data.length);
+      if (overviewRes.status === "fulfilled")
+        setStudyStats(overviewRes.value.data);
+    } catch {
+      // partial loads are fine
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return (
     <div className="space-y-6">
@@ -55,87 +89,113 @@ export default function SettingsOverviewPage() {
         </h1>
       </div>
 
-      <AdminTabs activeTab={activeTab} onTabChange={setActiveTab} />
-
-      {activeTab === "overview" && (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <MetricCard
-              title="Total Users"
-              value={42}
-              change={{ value: 8, direction: "up" }}
-            />
-            <MetricCard
-              title="Active Hospitals"
-              value={12}
-              change={{ value: 2, direction: "up" }}
-            />
-            <MetricCard title="Routing Rules" value={7} />
-            <MetricCard
-              title="Studies Today"
-              value={156}
-              change={{ value: 12, direction: "up" }}
-            />
-          </div>
-
-          <div className="rounded-md border border-border bg-surface p-5">
-            <h2 className="font-heading text-sm font-semibold text-text-primary">
-              Organization Information
-            </h2>
-            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Name
-                </p>
-                <p className="mt-1 text-sm text-text-primary">
-                  Axis Teleradiology
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Organization Code
-                </p>
-                <p className="mt-1 font-mono text-sm text-text-primary">
-                  AXIS-001
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Timezone
-                </p>
-                <p className="mt-1 text-sm text-text-primary">
-                  America/New_York (ET)
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-md border border-border bg-surface p-5">
-            <h2 className="font-heading text-sm font-semibold text-text-primary">
-              Quick Links
-            </h2>
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {OVERVIEW_LINKS.map((link) => (
-                <a
-                  key={link.label}
-                  href={link.href}
-                  className="flex items-start gap-3 rounded-md border border-border bg-surface-raised p-4 transition-colors hover:border-accent/40"
-                >
-                  <div className="mt-0.5 text-accent">{link.icon}</div>
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">
-                      {link.label}
-                    </p>
-                    <p className="mt-0.5 text-xs text-text-muted">
-                      {link.description}
-                    </p>
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {isLoading ? (
+            <>
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="rounded-md border border-border bg-surface p-5">
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 size={16} className="animate-spin text-text-muted" />
                   </div>
-                </a>
+                </div>
               ))}
+            </>
+          ) : (
+            <>
+              <div className="rounded-md border border-border bg-surface p-5">
+                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                  Total Users
+                </p>
+                <p className="mt-2 font-heading text-2xl font-bold text-text-primary">
+                  {userCount ?? "—"}
+                </p>
+              </div>
+              <div className="rounded-md border border-border bg-surface p-5">
+                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                  Active Hospitals
+                </p>
+                <p className="mt-2 font-heading text-2xl font-bold text-text-primary">
+                  {hospitalCount ?? "—"}
+                </p>
+              </div>
+              <div className="rounded-md border border-border bg-surface p-5">
+                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                  Total Studies
+                </p>
+                <p className="mt-2 font-heading text-2xl font-bold text-text-primary">
+                  {studyStats?.totalStudies ?? "—"}
+                </p>
+              </div>
+              <div className="rounded-md border border-border bg-surface p-5">
+                <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                  Studies Today
+                </p>
+                <p className="mt-2 font-heading text-2xl font-bold text-text-primary">
+                  {studyStats?.studiesToday ?? "—"}
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="rounded-md border border-border bg-surface p-5">
+          <h2 className="font-heading text-sm font-semibold text-text-primary">
+            Organization Information
+          </h2>
+          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                Name
+              </p>
+              <p className="mt-1 text-sm text-text-primary">
+                Axis Teleradiology
+              </p>
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                Organization Code
+              </p>
+              <p className="mt-1 font-mono text-sm text-text-primary">
+                AXIS-001
+              </p>
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wider text-text-muted">
+                Timezone
+              </p>
+              <p className="mt-1 text-sm text-text-primary">
+                America/New_York (ET)
+              </p>
             </div>
           </div>
         </div>
-      )}
+
+        <div className="rounded-md border border-border bg-surface p-5">
+          <h2 className="font-heading text-sm font-semibold text-text-primary">
+            Quick Links
+          </h2>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {OVERVIEW_LINKS.map((link) => (
+              <Link
+                key={link.label}
+                href={link.href}
+                className="flex items-start gap-3 rounded-md border border-border bg-surface-raised p-4 transition-colors hover:border-accent/40"
+              >
+                <div className="mt-0.5 text-accent">{link.icon}</div>
+                <div>
+                  <p className="text-sm font-medium text-text-primary">
+                    {link.label}
+                  </p>
+                  <p className="mt-0.5 text-xs text-text-muted">
+                    {link.description}
+                  </p>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

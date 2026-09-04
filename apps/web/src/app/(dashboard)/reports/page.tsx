@@ -13,9 +13,11 @@ import { formatDate } from "@/lib/format";
 
 const REPORT_STATUS_FILTERS = [
   { label: "Draft", value: "DRAFT" },
-  { label: "Pending Sign-off", value: "PENDING_SIGNOFF" },
-  { label: "Final", value: "FINAL" },
-  { label: "Amended", value: "AMENDED" },
+  { label: "Signed", value: "SIGNED" },
+  { label: "Manager Review", value: "MANAGER_REVIEW" },
+  { label: "Approved", value: "MANAGER_APPROVED" },
+  { label: "Hospital Review", value: "HOSPITAL_REVIEW" },
+  { label: "Correction Requested", value: "CORRECTION_REQUESTED" },
 ] as const;
 
 export default function ReportsPage() {
@@ -168,7 +170,7 @@ export default function ReportsPage() {
                   {report.study?.accessionNumber ?? "—"}
                 </span>
                 <div>
-                  <StatusBadge status={report.study?.status ?? "NEW"} />
+                  <StatusBadge status={report.study?.status ?? "HOSPITAL_SUBMITTED"} />
                 </div>
                 <span className="text-sm text-text-muted">
                   {report.author?.displayName ?? "—"}

@@ -11,12 +11,12 @@ import { StudiesService } from './studies.service.js';
 import { ListStudiesDto } from './dto/list-studies.dto.js';
 import { UpdateStudyStatusDto } from './dto/update-study-status.dto.js';
 import { CreateStudyDto } from './dto/create-study.dto.js';
-import { Roles } from '../auth/auth.decorators.js';
-import { CurrentUser } from '../auth/auth.decorators.js';
+import { Roles, CurrentUser } from '../auth/auth.decorators.js';
+import type { UserRole } from '@prisma/client';
 
 interface RequestUser {
   id: string;
-  role: string;
+  role: UserRole;
   hospitalId?: string;
 }
 
@@ -30,21 +30,24 @@ export class StudiesController {
   }
 
   @Get(':studyUid')
+  @Roles('ADMIN', 'MANAGER', 'RADIOLOGIST', 'HOSPITAL')
   getByUid(@Param('studyUid') studyUid: string, @CurrentUser() user: RequestUser) {
     return this.studiesService.getByUid(studyUid, user);
   }
 
   @Get(':studyUid/series')
-  getSeries(@Param('studyUid') studyUid: string) {
-    return this.studiesService.getSeries(studyUid);
+  @Roles('ADMIN', 'MANAGER', 'RADIOLOGIST', 'HOSPITAL')
+  getSeries(@Param('studyUid') studyUid: string, @CurrentUser() user: RequestUser) {
+    return this.studiesService.getSeries(studyUid, user);
   }
 
   @Get(':studyUid/priors')
-  priors(@Param('studyUid') studyUid: string) {
-    return this.studiesService.priors(studyUid);
+  @Roles('ADMIN', 'MANAGER', 'RADIOLOGIST', 'HOSPITAL')
+  priors(@Param('studyUid') studyUid: string, @CurrentUser() user: RequestUser) {
+    return this.studiesService.priors(studyUid, user);
   }
 
-  @Roles('HOSPITAL_USER', 'COORDINATOR', 'ADMIN')
+  @Roles('HOSPITAL', 'MANAGER', 'ADMIN')
   @Post()
   submit(@Body() dto: CreateStudyDto, @CurrentUser() user: RequestUser) {
     return this.studiesService.submit(dto, user.hospitalId as string);

@@ -17,13 +17,37 @@ export type {
 } from './audit.js';
 
 export type {
+  ChangeRequest,
+  ChangeRequestStatus,
+} from './change-request.js';
+
+export type {
+  AppNotification,
+} from './notification.js';
+
+export type {
   AnalyticsOverview,
   BacklogData,
   HospitalPerformance,
   ModalityDistribution,
+  OperationalOverview,
   SLABreachData,
+  SlaBreachItem,
   TATDistribution,
 } from './analytics.js';
+
+export type {
+  BackupRun,
+  BackupStatus,
+  BackupType,
+  HealthComponent,
+  HealthReport,
+  RetentionCandidate,
+  RetentionPreviewResult,
+  SlaConfig,
+  SlaPriority,
+  StudySlaComputation,
+} from './operational.js';
 
 export type {
   DeliveryAttempt,

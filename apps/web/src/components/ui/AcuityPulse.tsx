@@ -2,10 +2,10 @@ import type { StudyPriority, StudyStatus } from "@axis/types";
 import { clsx } from "clsx";
 
 function getIndicatorColor(priority: StudyPriority, status: StudyStatus): string {
-  if (status === "FINAL" || status === "DELIVERED") {
+  if (status === "COMPLETED" || status === "MANAGER_APPROVED" || status === "DELIVERED_TO_HOSPITAL") {
     return "bg-success";
   }
-  if (status === "IN_READING") {
+  if (status === "IN_READING" || status === "REPORT_DRAFT") {
     return "bg-accent";
   }
   if (priority === "STAT") {
@@ -25,7 +25,7 @@ export function AcuityPulse({
   status: StudyStatus;
 }) {
   const color = getIndicatorColor(priority, status);
-  const shouldPulse = priority === "STAT" && status !== "FINAL" && status !== "DELIVERED";
+  const shouldPulse = priority === "STAT" && status !== "COMPLETED" && status !== "MANAGER_APPROVED" && status !== "DELIVERED_TO_HOSPITAL";
 
   return (
     <div className="flex h-full items-center">

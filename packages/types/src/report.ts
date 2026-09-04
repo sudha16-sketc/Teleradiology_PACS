@@ -1,7 +1,7 @@
 import type { User } from './user.js';
 import type { Study } from './study.js';
 
-export type ReportStatus = 'DRAFT' | 'PENDING_SIGNOFF' | 'FINAL' | 'AMENDED';
+export type ReportStatus = 'DRAFT' | 'SIGNED' | 'MANAGER_REVIEW' | 'MANAGER_APPROVED' | 'HOSPITAL_REVIEW' | 'CORRECTION_REQUESTED';
 
 export interface Report {
   id: string;
@@ -11,8 +11,11 @@ export interface Report {
   authorId: string;
   status: ReportStatus;
   version: number;
+  clinicalHistory?: string;
   findings: string;
   impression: string;
+  technique?: string;
+  comparison?: string;
   recommendations?: string;
   criticalFinding: boolean;
   criticalFindingAcknowledged: boolean;
@@ -30,9 +33,14 @@ export interface ReportVersion {
   reportId: string;
   version: number;
   status: ReportStatus;
+  clinicalHistory?: string;
   findings: string;
   impression: string;
+  technique?: string;
+  comparison?: string;
+  recommendations?: string;
   authorId: string;
+  author?: User;
   contentHash: string;
   createdAt: string;
 }

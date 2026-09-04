@@ -3,17 +3,19 @@
 import { useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { clsx } from "clsx";
-import type { ReportStatus } from "@axis/types";
+import type { ApiError, ReportStatus } from "@axis/types";
 import { CriticalFindingToggle } from "./CriticalFindingToggle";
 import { ReportActions } from "./ReportActions";
-import { ReportVersionHistory } from "./ReportVersionHistory";
 import { apiClient } from "@/lib/api-client";
-import { useAppStore } from "@/lib/store";
 
 interface ReportEditorProps {
   studyInstanceUid: string;
+  initialClinicalHistory?: string;
   initialFindings?: string;
   initialImpression?: string;
+  initialTechnique?: string;
+  initialComparison?: string;
+  initialRecommendations?: string;
   initialCriticalFinding?: boolean;
   status?: ReportStatus;
 }
@@ -26,14 +28,21 @@ const TEMPLATES = [
 
 export function ReportEditor({
   studyInstanceUid,
+  initialClinicalHistory = "",
   initialFindings = "",
   initialImpression = "",
+  initialTechnique = "",
+  initialComparison = "",
+  initialRecommendations = "",
   initialCriticalFinding = false,
   status = "DRAFT",
 }: ReportEditorProps) {
-  const currentUser = useAppStore((s) => s.currentUser);
+  const [clinicalHistory, setClinicalHistory] = useState(initialClinicalHistory);
   const [findings, setFindings] = useState(initialFindings);
   const [impression, setImpression] = useState(initialImpression);
+  const [technique, setTechnique] = useState(initialTechnique);
+  const [comparison, setComparison] = useState(initialComparison);
+  const [recommendations, setRecommendations] = useState(initialRecommendations);
   const [criticalFinding, setCriticalFinding] = useState(initialCriticalFinding);
   const [selectedTemplate, setSelectedTemplate] = useState(TEMPLATES[0].id);
   const [templateOpen, setTemplateOpen] = useState(false);
@@ -41,84 +50,92 @@ export function ReportEditor({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const authorId = currentUser?.id ?? "";
+  const isSigned = reportStatus === "SIGNED";
+
+  const contentFields = {
+    clinicalHistory,
+    findings,
+    impression,
+    technique,
+    comparison,
+    recommendations,
+    criticalFinding,
+  };
 
   const saveDraft = async () => {
-    if (!authorId) return;
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}`, {
-        authorId,
-        findings,
-        impression,
-        criticalFinding,
-      });
+      await apiClient.patch(
+        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
+        contentFields,
+      );
       setNotice("Draft saved.");
-    } catch (e: any) {
-      setNotice(e?.message ?? "Failed to save draft.");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : (e as ApiError)?.message;
+      setNotice(message ?? "Failed to save draft.");
     } finally {
       setSaving(false);
     }
   };
 
   const submitSignoff = async () => {
-    if (!authorId) return;
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}`, {
-        authorId,
-        findings,
-        impression,
-        criticalFinding,
-      });
-      setReportStatus("PENDING_SIGNOFF");
+      await apiClient.patch(
+        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
+        contentFields,
+      );
+      setReportStatus("DRAFT");
       setNotice("Report submitted for sign-off.");
-    } catch (e: any) {
-      setNotice(e?.message ?? "Failed to submit for sign-off.");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : (e as ApiError)?.message;
+      setNotice(message ?? "Failed to submit for sign-off.");
     } finally {
       setSaving(false);
     }
   };
 
   const signOff = async () => {
-    if (!authorId) return;
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}`, {
-        authorId,
-        findings,
-        impression,
-        criticalFinding,
-      });
-      await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}/sign`, {
-        signedOffBy: authorId,
-      });
-      setReportStatus("FINAL");
-      setNotice("Report signed off and finalized.");
-    } catch (e: any) {
-      setNotice(e?.message ?? "Failed to sign off.");
+      await apiClient.patch(
+        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
+        contentFields,
+      );
+      await apiClient.post(
+        `/reports/${encodeURIComponent(studyInstanceUid)}/sign`,
+        {},
+      );
+      setReportStatus("SIGNED");
+      setNotice("Report signed off.");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : (e as ApiError)?.message;
+      setNotice(message ?? "Failed to sign off.");
     } finally {
       setSaving(false);
     }
   };
 
   const amend = async () => {
-    if (!authorId) return;
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}/amend`, {
-        authorId,
-        findings,
-        impression,
-      });
-      setReportStatus("AMENDED");
+      await apiClient.post(
+        `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
+        contentFields,
+      );
+      setReportStatus("DRAFT");
       setNotice("Report amended.");
-    } catch (e: any) {
-      setNotice(e?.message ?? "Failed to amend.");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : (e as ApiError)?.message;
+      setNotice(message ?? "Failed to amend.");
     } finally {
       setSaving(false);
     }
@@ -131,7 +148,8 @@ export function ReportEditor({
           <button
             type="button"
             onClick={() => setTemplateOpen(!templateOpen)}
-            className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised"
+            disabled={isSigned}
+            className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
           >
             {TEMPLATES.find((t) => t.id === selectedTemplate)?.name ?? "Template"}
             <ChevronDown size={14} className="text-text-muted" />
@@ -169,13 +187,50 @@ export function ReportEditor({
         <div className="mx-auto max-w-3xl px-6 py-6">
           <div className="font-serif">
             <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-              Findings
+              Clinical History
+            </label>
+            <textarea
+              value={clinicalHistory}
+              onChange={(e) => setClinicalHistory(e.target.value)}
+              disabled={isSigned}
+              placeholder="Relevant clinical history..."
+              className={clsx(textareaClasses, isSigned && disabledClasses)}
+              rows={3}
+            />
+
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Technique
+            </label>
+            <textarea
+              value={technique}
+              onChange={(e) => setTechnique(e.target.value)}
+              disabled={isSigned}
+              placeholder="Imaging technique / protocol..."
+              className={clsx(textareaClasses, isSigned && disabledClasses)}
+              rows={2}
+            />
+
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Comparison
+            </label>
+            <textarea
+              value={comparison}
+              onChange={(e) => setComparison(e.target.value)}
+              disabled={isSigned}
+              placeholder="Prior studies for comparison..."
+              className={clsx(textareaClasses, isSigned && disabledClasses)}
+              rows={2}
+            />
+
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Findings <span className="text-error">*</span>
             </label>
             <textarea
               value={findings}
               onChange={(e) => setFindings(e.target.value)}
+              disabled={isSigned}
               placeholder="Enter radiological findings..."
-              className="w-full resize-y rounded-md border border-border/60 bg-white/70 p-4 font-serif text-sm leading-relaxed text-text-primary placeholder-text-muted/50 transition-colors focus:border-accent focus:bg-white focus:outline-none"
+              className={clsx(textareaClasses, isSigned && disabledClasses)}
               style={{ minHeight: 200 }}
             />
             <div className="mt-1 text-right text-xs text-text-muted">
@@ -183,29 +238,39 @@ export function ReportEditor({
             </div>
 
             <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-              Impression
+              Impression <span className="text-error">*</span>
             </label>
             <textarea
               value={impression}
               onChange={(e) => setImpression(e.target.value)}
+              disabled={isSigned}
               placeholder="Enter impression / conclusion..."
-              className="w-full resize-y rounded-md border border-border/60 bg-white/70 p-4 font-serif text-sm leading-relaxed text-text-primary placeholder-text-muted/50 transition-colors focus:border-accent focus:bg-white focus:outline-none"
+              className={clsx(textareaClasses, isSigned && disabledClasses)}
               style={{ minHeight: 200 }}
             />
             <div className="mt-1 text-right text-xs text-text-muted">
               {impression.length} characters
             </div>
+
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              Recommendations
+            </label>
+            <textarea
+              value={recommendations}
+              onChange={(e) => setRecommendations(e.target.value)}
+              disabled={isSigned}
+              placeholder="Follow-up / management recommendations..."
+              className={clsx(textareaClasses, isSigned && disabledClasses)}
+              rows={3}
+            />
           </div>
 
           <div className="mt-6">
             <CriticalFindingToggle
               active={criticalFinding}
-              onToggle={() => setCriticalFinding(!criticalFinding)}
+              onToggle={() => !isSigned && setCriticalFinding(!criticalFinding)}
+              disabled={isSigned}
             />
-          </div>
-
-          <div className="mt-6">
-            <ReportVersionHistory />
           </div>
         </div>
       </div>
@@ -224,6 +289,7 @@ export function ReportEditor({
       ) : (
         <ReportActions
           status={reportStatus}
+          disabled={isSigned}
           onSaveDraft={saveDraft}
           onSubmitSignoff={submitSignoff}
           onSignOff={signOff}
@@ -233,3 +299,7 @@ export function ReportEditor({
     </div>
   );
 }
+
+const textareaClasses =
+  "w-full resize-y rounded-md border border-border/60 bg-white/70 p-4 font-serif text-sm leading-relaxed text-text-primary placeholder-text-muted/50 transition-colors focus:border-accent focus:bg-white focus:outline-none";
+const disabledClasses = "cursor-not-allowed bg-surface opacity-70";

@@ -45,3 +45,42 @@ export interface AnalyticsOverview {
   backlogCount: number;
   deliverySuccessRate: number;
 }
+
+/** Operational pipeline counts + SLA breach metrics for the dashboard. */
+export interface SlaBreachItem {
+  studyId: string;
+  studyInstanceUid: string;
+  patientName: string;
+  modality: string;
+  hospitalName: string;
+  priority: string;
+  status: string;
+  slaDeadline?: string | null;
+  overdueMinutes: number;
+}
+
+export interface OperationalOverview {
+  counts: {
+    unassigned: number;
+    assigned: number;
+    inReading: number;
+    reportDraft: number;
+    awaitingReview: number;
+    awaitingDelivery: number;
+    hospitalReview: number;
+    correctionQueue: number;
+    completed: number;
+    total: number;
+  };
+  tat: {
+    averageReportingMinutes: number;
+    averageTotalMinutes: number;
+  };
+  sla: {
+    breachCount: number;
+    totalTracked: number;
+    breachPercentage: number;
+    breaches: SlaBreachItem[];
+  };
+}
+

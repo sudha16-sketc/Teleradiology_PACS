@@ -10,8 +10,11 @@ import { PriorStudiesList } from "@/components/reading/PriorStudiesList";
 import { ReportPanel } from "@/components/reading/ReportPanel";
 import { CriticalFindingBanner } from "@/components/reading/CriticalFindingBanner";
 import { SignOffControls } from "@/components/reading/SignOffControls";
+import { ReviewActions } from "@/components/reading/ReviewActions";
+import { CorrectionWorkflow } from "@/components/reading/CorrectionWorkflow";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { useAppStore } from "@/lib/store";
 import type { ApiError, Study, Report } from "@axis/types";
 
 interface StudyEnvelope {
@@ -24,25 +27,39 @@ interface ReportEnvelope {
 
 export default function ReadingPage() {
   const params = useParams();
-  const studyUid = typeof params?.studyUid === "string" ? params.studyUid : "";
+  const studyUid =
+    typeof params?.studyUid === "string" ? params.studyUid : "";
 
   const [study, setStudy] = useState<Study | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const currentUser = useAppStore((s) => s.currentUser);
+  const isRadiologist = currentUser?.role === "RADIOLOGIST";
+  const isReviewer =
+    currentUser?.role === "ADMIN" || currentUser?.role === "MANAGER";
+  const isAssigned =
+    isRadiologist && study?.assignedRadiologistId === currentUser?.id;
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [studyRes, reportRes] = await Promise.all([
-        apiClient.get<StudyEnvelope>(`/studies/${encodeURIComponent(studyUid)}`),
-        apiClient.get<ReportEnvelope>(`/reports/${encodeURIComponent(studyUid)}`),
+        apiClient.get<StudyEnvelope>(
+          `/studies/${encodeURIComponent(studyUid)}`,
+        ),
+        apiClient.get<ReportEnvelope>(
+          `/reports/${encodeURIComponent(studyUid)}`,
+        ),
       ]);
       setStudy(studyRes.data);
       setReport(reportRes.data ?? null);
     } catch (err) {
-      setError((err as ApiError).message ?? "Unable to load this study.");
+      setError(
+        (err as ApiError).message ?? "Unable to load this study.",
+      );
     } finally {
       setLoading(false);
     }
@@ -50,6 +67,14 @@ export default function ReadingPage() {
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // Light background poll — every 60s to catch external status changes.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void load();
+    }, 60000);
+    return () => clearInterval(interval);
   }, [load]);
 
   if (error) {
@@ -74,6 +99,10 @@ export default function ReadingPage() {
     );
   }
 
+  const reportHasContent = !!(
+    report?.findings?.trim() && report?.impression?.trim()
+  );
+
   return (
     <div className="flex h-full flex-col gap-4">
       <StudyContextBar
@@ -89,12 +118,45 @@ export default function ReadingPage() {
         <div className="w-[380px] shrink-0 overflow-y-auto border-l border-border bg-surface">
           <StudyMetadataPanel study={study} />
           <PriorStudiesList studyUid={studyUid} />
-          <ReportPanel
-            studyInstanceUid={studyUid}
-            report={report}
-          />
-          {report && <CriticalFindingBanner report={report} />}
-          <SignOffControls status={study.status} />
+          {isReviewer ? (
+            <>
+              <ReportPanel studyInstanceUid={studyUid} report={report} />
+              {report && <CriticalFindingBanner report={report} />}
+              <ReviewActions
+                studyInstanceUid={studyUid}
+                status={study.status}
+                onChanged={() => void load()}
+              />
+            </>
+          ) : isRadiologist && isAssigned ? (
+            <>
+              <ReportPanel
+                studyInstanceUid={studyUid}
+                report={report}
+                onReportSaved={() => void load()}
+              />
+              {report && <CriticalFindingBanner report={report} />}
+              <CorrectionWorkflow
+                studyInstanceUid={studyUid}
+                status={study.status}
+                onChanged={() => void load()}
+              />
+              <SignOffControls
+                studyInstanceUid={studyUid}
+                status={study.status}
+                reportHasContent={reportHasContent}
+                onChanged={() => void load()}
+              />
+            </>
+          ) : (
+            <>
+              <ReportPanel
+                studyInstanceUid={studyUid}
+                report={report}
+              />
+              {report && <CriticalFindingBanner report={report} />}
+            </>
+          )}
         </div>
       </div>
     </div>

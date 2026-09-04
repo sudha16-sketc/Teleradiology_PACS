@@ -9,10 +9,13 @@ import { ReportSidebar } from "@/components/report/ReportSidebar";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { useAppStore } from "@/lib/store";
 
 export default function ReportEditorPage() {
   const params = useParams();
   const studyUid = typeof params?.studyUid === "string" ? params.studyUid : "";
+  const currentUser = useAppStore((s) => s.currentUser);
+  const isRadiologist = currentUser?.role === "RADIOLOGIST";
 
   const [study, setStudy] = useState<Study | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -88,13 +91,43 @@ export default function ReportEditorPage() {
     );
   }
 
+  if (!isRadiologist) {
+    return (
+      <div className="flex h-full gap-4">
+        <div className="flex flex-1 items-center justify-center rounded-md border border-border">
+          <EmptyState
+            title="Report editing is restricted"
+            description="Only the assigned radiologist can create or edit report content. Review and release are performed from the reading view."
+          />
+        </div>
+        <aside className="w-72 flex-shrink-0 overflow-y-auto">
+          <ReportSidebar
+            patientName={study.patient?.displayName ?? "—"}
+            patientId={study.patient?.patientId ?? "—"}
+            accessionNumber={study.accessionNumber}
+            modality={study.modality}
+            studyDescription={study.studyDescription}
+            bodyPart={study.bodyPart}
+            hospitalName={study.hospital?.name ?? "—"}
+            assignedRadiologist={study.assignedRadiologist?.displayName ?? "—"}
+            studyInstanceUid={studyUid}
+          />
+        </aside>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full gap-4">
       <div className="flex flex-1 overflow-hidden">
         <ReportEditor
           studyInstanceUid={studyUid}
+          initialClinicalHistory={report.clinicalHistory}
           initialFindings={report.findings}
           initialImpression={report.impression}
+          initialTechnique={report.technique}
+          initialComparison={report.comparison}
+          initialRecommendations={report.recommendations}
           initialCriticalFinding={report.criticalFinding}
           status={report.status}
         />

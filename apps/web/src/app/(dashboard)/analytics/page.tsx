@@ -1,55 +1,107 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   Building2,
   Clock,
   TrendingUp,
-  AlertTriangle,
   BarChart3,
+  Loader2,
 } from "lucide-react";
 import { MetricCard } from "@/components/hospital/MetricCard";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { apiClient } from "@/lib/api-client";
 
-const TAT_DATA = [
-  { range: "0-30 min", count: 12, percentage: 24 },
-  { range: "30-60 min", count: 18, percentage: 36 },
-  { range: "1-2 hr", count: 11, percentage: 22 },
-  { range: "2-4 hr", count: 6, percentage: 12 },
-  { range: "4+ hr", count: 3, percentage: 6 },
-];
+interface OverviewData {
+  totalStudies: number;
+  studiesToday: number;
+  averageTAT: number;
+  slaComplianceRate: number;
+  backlogCount: number;
+  deliverySuccessRate: number;
+}
 
-const MODALITY_DATA = [
-  { modality: "CT", count: 18, percentage: 36 },
-  { modality: "MRI", count: 12, percentage: 24 },
-  { modality: "XR", count: 8, percentage: 16 },
-  { modality: "US", count: 6, percentage: 12 },
-  { modality: "MG", count: 4, percentage: 8 },
-  { modality: "NM", count: 2, percentage: 4 },
-];
+interface TATBucket {
+  range: string;
+  count: number;
+  percentage: number;
+}
 
-const HOSPITAL_PERF = [
-  { name: "Metro General Hospital", studies: 22, avgTAT: 47, slaCompliance: 96 },
-  { name: "St. Luke's Medical Center", studies: 16, avgTAT: 52, slaCompliance: 91 },
-  { name: "Riverside Clinic", studies: 12, avgTAT: 38, slaCompliance: 98 },
-];
-
-const SLA_BREACHES = [
-  { patient: "Synth, Carlos", modality: "NM", hospital: "Riverside", overdue: 25, priority: "ROUTINE" },
-  { patient: "Synth, Emily", modality: "XR", hospital: "Metro General", overdue: 12, priority: "ROUTINE" },
-];
+interface HospitalPerf {
+  hospitalId: string;
+  hospitalName: string;
+  totalStudies: number;
+  averageTAT: number;
+  slaCompliance: number;
+  deliverySuccessRate: number;
+}
 
 function BarFill({ percentage, color }: { percentage: number; color: string }) {
   return (
     <div className="h-2 w-full rounded-full bg-surface-raised">
       <div
         className="h-2 rounded-full transition-all"
-        style={{ width: `${percentage}%`, backgroundColor: color }}
+        style={{ width: `${Math.max(percentage, 1)}%`, backgroundColor: color }}
       />
     </div>
   );
 }
 
 export default function AnalyticsPage() {
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [tatData, setTatData] = useState<TATBucket[]>([]);
+  const [hospitalPerf, setHospitalPerf] = useState<HospitalPerf[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
+
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setHasError(false);
+    try {
+      const [overviewRes, tatRes, perfRes] = await Promise.allSettled([
+        apiClient.get<{ data: OverviewData }>("/analytics/overview"),
+        apiClient.get<{ data: TATBucket[] }>("/analytics/tat"),
+        apiClient.get<{ data: HospitalPerf[] }>("/analytics/hospital-performance"),
+      ]);
+
+      if (overviewRes.status === "fulfilled") setOverview(overviewRes.value.data);
+      if (tatRes.status === "fulfilled") setTatData(tatRes.value.data);
+      if (perfRes.status === "fulfilled") setHospitalPerf(perfRes.value.data);
+
+      if (overviewRes.status === "rejected") throw overviewRes.reason;
+    } catch (e) {
+      console.error("Failed to load analytics", e);
+      setHasError(true);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (hasError) {
+    return (
+      <ErrorState
+        title="Failed to load analytics"
+        description="Unable to fetch analytics data. Please try again."
+        onRetry={() => void load()}
+      />
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-20 text-sm text-text-muted">
+        <Loader2 size={16} className="animate-spin" />
+        Loading analytics...
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -62,10 +114,26 @@ export default function AnalyticsPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricCard title="Total Studies" value="50" change={{ value: 12 }} icon={<BarChart3 size={18} />} />
-        <MetricCard title="Studies Today" value="10" icon={<Activity size={18} />} />
-        <MetricCard title="Average TAT" value="46m" change={{ value: -8 }} icon={<Clock size={18} />} />
-        <MetricCard title="SLA Compliance" value="95%" change={{ value: 2 }} icon={<TrendingUp size={18} />} />
+        <MetricCard
+          title="Total Studies"
+          value={overview?.totalStudies ?? 0}
+          icon={<BarChart3 size={18} />}
+        />
+        <MetricCard
+          title="Studies Today"
+          value={overview?.studiesToday ?? 0}
+          icon={<Activity size={18} />}
+        />
+        <MetricCard
+          title="Average TAT"
+          value={`${overview?.averageTAT ?? 0}m`}
+          icon={<Clock size={18} />}
+        />
+        <MetricCard
+          title="SLA Compliance"
+          value={`${overview?.slaComplianceRate ?? 100}%`}
+          icon={<TrendingUp size={18} />}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -76,48 +144,44 @@ export default function AnalyticsPage() {
               TAT Distribution
             </h2>
           </div>
-          <div className="flex flex-col gap-3">
-            {TAT_DATA.map((item) => (
-              <div key={item.range} className="flex items-center gap-3">
-                <span className="w-24 text-xs text-text-muted">{item.range}</span>
-                <div className="flex-1">
-                  <BarFill
-                    percentage={item.percentage}
-                    color="var(--accent-cyan)"
-                  />
+          {tatData.length === 0 ? (
+            <p className="py-4 text-center text-sm text-text-muted">
+              No turnaround time data available yet.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {tatData.map((item) => (
+                <div key={item.range} className="flex items-center gap-3">
+                  <span className="w-24 text-xs text-text-muted">{item.range}</span>
+                  <div className="flex-1">
+                    <BarFill
+                      percentage={item.percentage}
+                      color="var(--accent-cyan)"
+                    />
+                  </div>
+                  <span className="w-8 text-right font-mono text-xs text-text-muted">
+                    {item.count}
+                  </span>
                 </div>
-                <span className="w-8 text-right font-mono text-xs text-text-muted">
-                  {item.count}
-                </span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="rounded-md border border-border bg-surface p-5">
           <div className="mb-4 flex items-center gap-2">
             <Activity size={18} className="text-accent" />
             <h2 className="font-heading text-sm font-semibold text-text-primary">
-              Modality Distribution
+              Delivery Success Rate
             </h2>
           </div>
-          <div className="flex flex-col gap-3">
-            {MODALITY_DATA.map((item) => (
-              <div key={item.modality} className="flex items-center gap-3">
-                <span className="w-12 font-mono text-xs text-text-muted">
-                  {item.modality}
-                </span>
-                <div className="flex-1">
-                  <BarFill
-                    percentage={item.percentage}
-                    color="var(--accent-cyan)"
-                  />
-                </div>
-                <span className="w-8 text-right font-mono text-xs text-text-muted">
-                  {item.count}
-                </span>
-              </div>
-            ))}
+          <div className="flex flex-col items-center justify-center py-8">
+            <span className="font-heading text-4xl font-bold text-text-primary">
+              {overview?.deliverySuccessRate ?? 100}%
+            </span>
+            <span className="mt-1 text-sm text-text-muted">
+              of reports successfully delivered
+            </span>
           </div>
         </div>
       </div>
@@ -129,67 +193,40 @@ export default function AnalyticsPage() {
             Hospital Performance
           </h2>
         </div>
-        <div className="rounded-md border border-border">
-          <div className="grid grid-cols-[1fr_0.6fr_0.6fr_0.6fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
-            <div>Hospital</div>
-            <div>Studies</div>
-            <div>Avg TAT</div>
-            <div>SLA</div>
-          </div>
-          {HOSPITAL_PERF.map((h) => (
-            <div
-              key={h.name}
-              className="grid grid-cols-[1fr_0.6fr_0.6fr_0.6fr] gap-4 border-b border-border px-4 py-3 last:border-b-0"
-            >
-              <span className="text-sm text-text-primary">{h.name}</span>
-              <span className="font-mono text-sm text-text-muted">
-                {h.studies}
-              </span>
-              <span className="font-mono text-sm text-text-muted">
-                {h.avgTAT}m
-              </span>
-              <span
-                className={`font-mono text-sm ${h.slaCompliance >= 95 ? "text-success" : "text-warning"}`}
-              >
-                {h.slaCompliance}%
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="rounded-md border border-border bg-surface p-5">
-        <div className="mb-4 flex items-center gap-2">
-          <AlertTriangle size={18} className="text-warning" />
-          <h2 className="font-heading text-sm font-semibold text-text-primary">
-            SLA Breaches
-          </h2>
-        </div>
-        {SLA_BREACHES.length === 0 ? (
-          <p className="text-sm text-text-muted">No active SLA breaches</p>
+        {hospitalPerf.length === 0 ? (
+          <EmptyState
+            title="No hospital data"
+            description="Hospital performance metrics will appear once studies are submitted."
+          />
         ) : (
           <div className="rounded-md border border-border">
-            <div className="grid grid-cols-[1fr_0.5fr_1fr_0.5fr_0.5fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
-              <div>Patient</div>
-              <div>Modality</div>
+            <div className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
               <div>Hospital</div>
-              <div>Overdue</div>
-              <div>Priority</div>
+              <div>Studies</div>
+              <div>Avg TAT</div>
+              <div>SLA</div>
+              <div>Delivery</div>
             </div>
-            {SLA_BREACHES.map((b, i) => (
+            {hospitalPerf.map((h) => (
               <div
-                key={i}
-                className="grid grid-cols-[1fr_0.5fr_1fr_0.5fr_0.5fr] gap-4 border-b border-border px-4 py-3 last:border-b-0"
+                key={h.hospitalId}
+                className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-4 border-b border-border px-4 py-3 last:border-b-0"
               >
-                <span className="text-sm text-text-primary">{b.patient}</span>
-                <span className="font-mono text-xs text-text-muted">
-                  {b.modality}
+                <span className="text-sm text-text-primary">{h.hospitalName}</span>
+                <span className="font-mono text-sm text-text-muted">
+                  {h.totalStudies}
                 </span>
-                <span className="text-sm text-text-muted">{b.hospital}</span>
-                <span className="font-mono text-sm text-error">
-                  +{b.overdue}m
+                <span className="font-mono text-sm text-text-muted">
+                  {h.averageTAT}m
                 </span>
-                <span className="text-sm text-text-muted">{b.priority}</span>
+                <span
+                  className={`font-mono text-sm ${h.slaCompliance >= 95 ? "text-success" : "text-warning"}`}
+                >
+                  {h.slaCompliance}%
+                </span>
+                <span className="font-mono text-sm text-text-muted">
+                  {h.deliverySuccessRate}%
+                </span>
               </div>
             ))}
           </div>

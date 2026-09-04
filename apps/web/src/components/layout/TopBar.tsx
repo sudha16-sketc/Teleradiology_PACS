@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Bell,
   ChevronDown,
   LogOut,
   Settings,
@@ -13,6 +12,7 @@ import {
 import { useAppStore } from "@/lib/store";
 import { apiClient } from "@/lib/api-client";
 import { ROLE_LABELS } from "@/lib/permissions";
+import { NotificationBell } from "@/components/layout/NotificationBell";
 
 function avatarInitials(name: string): string {
   return name
@@ -79,14 +79,7 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
       </div>
 
       <div className="flex items-center gap-4">
-        <button
-          type="button"
-          className="relative rounded-md p-2 text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary"
-          aria-label="Notifications"
-        >
-          <Bell size={18} />
-          <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-error" />
-        </button>
+        <NotificationBell />
 
         <div className="relative" ref={menuRef}>
           <button

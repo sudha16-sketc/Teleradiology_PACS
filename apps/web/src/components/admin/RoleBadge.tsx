@@ -3,18 +3,16 @@ import { clsx } from "clsx";
 
 const ROLE_STYLES: Record<UserRole, string> = {
   ADMIN: "bg-error/10 text-error",
-  COORDINATOR: "bg-warning/10 text-warning",
+  MANAGER: "bg-warning/10 text-warning",
   RADIOLOGIST: "bg-accent/10 text-accent",
-  TECHNICIAN: "bg-surface-raised text-text-muted",
-  HOSPITAL_USER: "bg-success/10 text-success",
+  HOSPITAL: "bg-success/10 text-success",
 };
 
 const ROLE_LABELS: Record<UserRole, string> = {
   ADMIN: "Admin",
-  COORDINATOR: "Coordinator",
+  MANAGER: "Manager",
   RADIOLOGIST: "Radiologist",
-  TECHNICIAN: "Technician",
-  HOSPITAL_USER: "Hospital User",
+  HOSPITAL: "Hospital",
 };
 
 export function RoleBadge({ role }: { role: UserRole }) {

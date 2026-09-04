@@ -18,7 +18,34 @@ export type AuditAction =
   | 'ROUTING_RULE_CHANGED'
   | 'DELIVERY_ATTEMPTED'
   | 'DELIVERY_FAILED'
-  | 'DELIVERY_COMPLETED';
+  | 'DELIVERY_COMPLETED'
+  | 'STUDY_SUBMITTED'
+  | 'STUDY_UPLOADED'
+  | 'DICOM_IMPORTED'
+  | 'DICOM_IMPORT_FAILED'
+  | 'STUDY_VALIDATED'
+  | 'STUDY_REASSIGNED'
+  | 'REPORT_SUBMITTED'
+  | 'REPORT_VERIFIED'
+  | 'REPORT_REVISED'
+  | 'REPORT_RELEASED'
+  | 'CHANGE_REQUESTED'
+  | 'HOSPITAL_ACCEPTED'
+  | 'HOSPITAL_CHANGE_REQUESTED'
+  | 'CORRECTION_REQUESTED'
+  | 'CORRECTION_APPROVED'
+  | 'CORRECTION_REJECTED'
+  | 'CORRECTION_STARTED'
+  | 'CORRECTED_REPORT_SIGNED'
+  | 'CORRECTION_RESOLVED'
+  | 'SLA_CONFIG_CHANGED'
+  | 'BACKUP_STARTED'
+  | 'BACKUP_COMPLETED'
+  | 'BACKUP_FAILED'
+  | 'BACKUP_VERIFIED'
+  | 'RETENTION_PREVIEW'
+  | 'RETENTION_EXECUTED'
+  | 'ARCHIVE_MARKED';
 
 export type AuditResource =
   | 'STUDY'
@@ -29,7 +56,11 @@ export type AuditResource =
   | 'WORKLIST'
   | 'DELIVERY'
   | 'AI_JOB'
-  | 'AUTH';
+  | 'AUTH'
+  | 'CHANGE_REQUEST'
+  | 'ASSIGNMENT'
+  | 'BACKUP'
+  | 'RETENTION';
 
 export interface AuditLogEntry {
   id: string;
@@ -42,5 +73,6 @@ export interface AuditLogEntry {
   timestamp: string;
   ipAddress?: string;
   userAgent?: string;
+  correlationId?: string;
   metadata?: Record<string, unknown>;
 }

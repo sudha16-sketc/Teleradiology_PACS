@@ -19,13 +19,6 @@ const PRIORITY_ORDER: Record<StudyPriority, number> = {
   ROUTINE: 2,
 };
 
-function formatTAT(minutes: number): string {
-  if (minutes === 0) return "--";
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
-
 export default function MyQueuePage() {
   const currentUser = useAppStore((s) => s.currentUser);
   const [searchQuery, setSearchQuery] = useState("");

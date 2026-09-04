@@ -5,13 +5,13 @@ import { clsx } from "clsx";
 import { Check } from "lucide-react";
 
 const PIPELINE_STEPS: { status: StudyStatus; label: string }[] = [
-  { status: "NEW", label: "New" },
-  { status: "VALIDATED", label: "Validated" },
+  { status: "HOSPITAL_SUBMITTED", label: "Submitted" },
   { status: "UNASSIGNED", label: "Unassigned" },
   { status: "ASSIGNED", label: "Assigned" },
   { status: "IN_READING", label: "In Reading" },
-  { status: "FINAL", label: "Final" },
-  { status: "DELIVERED", label: "Delivered" },
+  { status: "MANAGER_APPROVED", label: "Approved" },
+  { status: "DELIVERED_TO_HOSPITAL", label: "Delivered" },
+  { status: "COMPLETED", label: "Completed" },
 ];
 
 function stepIndex(status: StudyStatus): number {

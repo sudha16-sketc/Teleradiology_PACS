@@ -27,7 +27,7 @@ export function middleware(request: NextRequest) {
 
   if (token && isPublicPath) {
     const url = request.nextUrl.clone();
-    url.pathname = "/worklist";
+    url.pathname = "/";
     return NextResponse.redirect(url);
   }
 

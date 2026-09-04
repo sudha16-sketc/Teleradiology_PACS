@@ -7,7 +7,7 @@ import type {
   WorklistFilters,
 } from "@axis/types";
 import { clsx } from "clsx";
-import { Search } from "lucide-react";
+import { Search, UserPlus, X, Loader2 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { AcuityPulse } from "@/components/ui/AcuityPulse";
@@ -18,6 +18,15 @@ import { FilterBar } from "@/components/ui/FilterBar";
 import type { FilterConfig } from "@/components/ui/FilterBar";
 import { useAppStore } from "@/lib/store";
 import { apiClient } from "@/lib/api-client";
+
+interface Radiologist {
+  id: string;
+  displayName: string;
+  email: string;
+  subspecialty: string | null;
+  licenseNumber: string | null;
+  workload: { assigned: number; inProgress: number; pending: number };
+}
 
 const FILTER_CONFIGS: FilterConfig[] = [
   {
@@ -33,15 +42,22 @@ const FILTER_CONFIGS: FilterConfig[] = [
     key: "status",
     label: "Status",
     options: [
-      { label: "New", value: "NEW" },
-      { label: "Submitted", value: "SUBMITTED" },
+      { label: "Submitted", value: "HOSPITAL_SUBMITTED" },
+      { label: "Receiving", value: "RECEIVING" },
+      { label: "Validating", value: "VALIDATING" },
       { label: "Unassigned", value: "UNASSIGNED" },
       { label: "Assigned", value: "ASSIGNED" },
       { label: "In Reading", value: "IN_READING" },
-      { label: "Draft Report", value: "DRAFT_REPORT" },
-      { label: "Final", value: "FINAL" },
-      { label: "Amended", value: "AMENDED" },
-      { label: "Delivered", value: "DELIVERED" },
+      { label: "Draft Report", value: "REPORT_DRAFT" },
+      { label: "Signed", value: "RADIOLOGIST_SIGNED" },
+      { label: "Manager Review", value: "MANAGER_REVIEW" },
+      { label: "Approved", value: "MANAGER_APPROVED" },
+      { label: "Delivered", value: "DELIVERED_TO_HOSPITAL" },
+      { label: "Hospital Review", value: "HOSPITAL_REVIEW" },
+      { label: "Accepted", value: "HOSPITAL_ACCEPTED" },
+      { label: "Completed", value: "COMPLETED" },
+      { label: "Correction Requested", value: "CORRECTION_REQUESTED" },
+      { label: "Change Requested", value: "HOSPITAL_CHANGE_REQUESTED" },
       { label: "Cancelled", value: "CANCELLED" },
     ],
   },
@@ -81,6 +97,21 @@ function formatSLA(minutes: number | null | undefined): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+// Studies that may still be (re)assigned. Once reading/review/delivery has
+// begun the study is locked to its assigned radiologist and must not show a
+// misleading Assign action.
+const ASSIGNABLE_STATES = new Set([
+  "HOSPITAL_SUBMITTED",
+  "RECEIVING",
+  "VALIDATING",
+  "UNASSIGNED",
+  "ASSIGNED",
+]);
+
+function isAssignableStatus(status: string): boolean {
+  return ASSIGNABLE_STATES.has(status);
+}
+
 export default function WorklistPage() {
   const { filterState, setFilterState, sortState } = useAppStore();
   const currentUser = useAppStore((s) => s.currentUser);
@@ -90,13 +121,20 @@ export default function WorklistPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
 
+  const [assigning, setAssigning] = useState<WorklistItem | null>(null);
+  const [radiologists, setRadiologists] = useState<Radiologist[]>([]);
+  const [loadingRads, setLoadingRads] = useState(false);
+  const [assigningId, setAssigningId] = useState<string | null>(null);
+  const [assignError, setAssignError] = useState<string | null>(null);
+
   const isRadiologist = currentUser?.role === "RADIOLOGIST";
+  const isCoordinator = currentUser?.role === "MANAGER" || currentUser?.role === "ADMIN";
 
   const load = useCallback(async () => {
     setIsLoading(true);
     setHasError(false);
     try {
-      const endpoint = isRadiologist ? "/worklist/my" : "/worklist";
+      const endpoint = "/worklist/my";
       const res = await apiClient.get<{ data: WorklistItem[] }>(endpoint);
       setItems(res.data ?? []);
     } catch (e) {
@@ -105,11 +143,49 @@ export default function WorklistPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [isRadiologist]);
+  }, []);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  const openAssign = useCallback(async (item: WorklistItem) => {
+    setAssigning(item);
+    setAssignError(null);
+    setLoadingRads(true);
+    try {
+      const res = await apiClient.get<{ data: Radiologist[] }>(
+        "/worklist/radiologists",
+      );
+      setRadiologists(res.data ?? []);
+    } catch (e) {
+      console.error("Failed to load radiologists", e);
+      setAssignError("Failed to load radiologists");
+    } finally {
+      setLoadingRads(false);
+    }
+  }, []);
+
+  const doAssign = useCallback(
+    async (radiologistId: string) => {
+      if (!assigning) return;
+      setAssigningId(radiologistId);
+      setAssignError(null);
+      try {
+        await apiClient.post(
+          `/worklist/${assigning.study.studyInstanceUid}/assign`,
+          { radiologistId },
+        );
+        setAssigning(null);
+        await load();
+      } catch {
+        setAssignError("Failed to assign study");
+      } finally {
+        setAssigningId(null);
+      }
+    },
+    [assigning, load],
+  );
 
   const filteredItems = useMemo(() => {
     let list = [...items];
@@ -205,12 +281,16 @@ export default function WorklistPage() {
     );
   }
 
+  const gridCols = isCoordinator
+    ? "grid-cols-[2rem_1fr_1.2fr_0.5fr_1fr_0.5fr_0.5fr_1fr_6rem]"
+    : "grid-cols-[2rem_1fr_1.2fr_0.5fr_1fr_0.5fr_0.5fr_1fr]";
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-2xl font-bold text-text-primary">
-            {isRadiologist ? "My Worklist" : "Worklist"}
+            {isRadiologist ? "My Worklist" : isCoordinator ? "Assignment Queue" : "Worklist"}
           </h1>
           <p className="text-sm text-text-muted">
             {filteredItems.length} {filteredItems.length === 1 ? "study" : "studies"}
@@ -255,7 +335,7 @@ export default function WorklistPage() {
         />
       ) : (
         <div className="rounded-md border border-border">
-          <div className="grid grid-cols-[2rem_1fr_1.2fr_0.5fr_1fr_0.5fr_0.5fr_1fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
+          <div className={`grid ${gridCols} gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted`}>
             <div />
             <div>Patient</div>
             <div>Study</div>
@@ -264,17 +344,15 @@ export default function WorklistPage() {
             <div>TAT</div>
             <div>SLA</div>
             <div>Status</div>
+            {isCoordinator && <div>Action</div>}
           </div>
 
           {filteredItems.map((item, index) => (
             <div
               key={item.study.studyInstanceUid}
-              className={clsx(
-                "grid grid-cols-[2rem_1fr_1.2fr_0.5fr_1fr_0.5fr_0.5fr_1fr] items-center gap-4 border-b border-border px-4 py-3 transition-colors",
-                index === selectedIndex
-                  ? "bg-accent/5"
-                  : "hover:bg-surface-raised/50",
-              )}
+              className={`grid ${gridCols} items-center gap-4 border-b border-border px-4 py-3 transition-colors ${
+                index === selectedIndex ? "bg-accent/5" : "hover:bg-surface-raised/50"
+              }`}
               onClick={() => setSelectedIndex(index)}
               role="row"
               tabIndex={0}
@@ -327,6 +405,19 @@ export default function WorklistPage() {
                 <StatusBadge status={item.study.status} />
                 <PriorityBadge priority={item.study.priority} />
               </div>
+              {isCoordinator &&
+                isAssignableStatus(item.study.status) && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openAssign(item);
+                  }}
+                  className="flex items-center gap-1 rounded bg-accent/10 px-2 py-1 text-xs font-medium text-accent hover:bg-accent/20"
+                >
+                  <UserPlus size={12} />
+                  Assign
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -336,6 +427,102 @@ export default function WorklistPage() {
         <span>j/k to navigate, Enter or double-click to open</span>
         <span>{filteredItems.length} studies</span>
       </div>
+
+      {assigning && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => !assigningId && setAssigning(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-md border border-border bg-surface-raised p-6 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="font-heading text-base font-bold text-text-primary">
+                Assign Radiologist
+              </h2>
+              <button
+                onClick={() => setAssigning(null)}
+                disabled={!!assigningId}
+                className="text-text-muted hover:text-text-primary"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p className="mt-1 text-sm text-text-muted">
+              {assigning.study.patient.displayName} —{" "}
+              {assigning.study.studyDescription} ({assigning.study.modality})
+            </p>
+            <p className="mt-0.5 text-xs font-mono text-text-muted">
+              {assigning.study.accessionNumber}
+            </p>
+
+            {assignError && (
+              <div className="mt-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+                {assignError}
+              </div>
+            )}
+
+            <div className="mt-4 max-h-72 overflow-y-auto">
+              {loadingRads ? (
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-text-muted">
+                  <Loader2 size={16} className="animate-spin" />
+                  Loading radiologists...
+                </div>
+              ) : radiologists.length === 0 ? (
+                <p className="py-8 text-center text-sm text-text-muted">
+                  No radiologists available
+                </p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {radiologists.map((rad) => (
+                    <button
+                      key={rad.id}
+                      onClick={() => void doAssign(rad.id)}
+                      disabled={assigningId === rad.id}
+                      className="flex items-center justify-between rounded-md border border-border bg-surface p-3 text-left transition-colors hover:border-accent/40 disabled:opacity-60"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-text-primary">
+                          {rad.displayName}
+                        </p>
+                        <p className="text-xs text-text-muted">
+                          {rad.subspecialty?.replace(/_/g, " ") ?? "General"}
+                        </p>
+                      </div>
+                      <div className="flex gap-3 text-right text-xs text-text-muted">
+                        <span>
+                          <span className="block font-semibold text-text-primary">
+                            {rad.workload.assigned}
+                          </span>
+                          Assigned
+                        </span>
+                        <span>
+                          <span className="block font-semibold text-text-primary">
+                            {rad.workload.inProgress}
+                          </span>
+                          In Progress
+                        </span>
+                        <span>
+                          <span className="block font-semibold text-text-primary">
+                            {rad.workload.pending}
+                          </span>
+                          Pending
+                        </span>
+                        {assigningId === rad.id && (
+                          <Loader2 size={14} className="animate-spin self-center" />
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

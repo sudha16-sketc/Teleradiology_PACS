@@ -33,7 +33,14 @@ export default function LoginPage() {
         password,
       });
       setCurrentUser(res.data);
-      router.replace("/worklist");
+      const role = res.data.role;
+      const redirectMap: Record<string, string> = {
+        ADMIN: "/analytics",
+        MANAGER: "/worklist",
+        RADIOLOGIST: "/worklist",
+        HOSPITAL: "/hospitals",
+      };
+      router.replace(redirectMap[role] ?? "/worklist");
     } catch (err) {
       const apiError = err as ApiError;
       setError(apiError.message ?? "Unable to sign in. Please try again.");

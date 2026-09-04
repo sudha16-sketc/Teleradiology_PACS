@@ -1,4 +1,4 @@
-export type UserRole = 'ADMIN' | 'COORDINATOR' | 'RADIOLOGIST' | 'TECHNICIAN' | 'HOSPITAL_USER';
+export type UserRole = 'ADMIN' | 'MANAGER' | 'RADIOLOGIST' | 'HOSPITAL';
 
 export type UserStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
 

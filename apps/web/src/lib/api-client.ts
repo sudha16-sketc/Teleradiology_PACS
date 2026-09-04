@@ -29,8 +29,10 @@ async function request<T>(
 ): Promise<T> {
   const { params, body, headers: customHeaders, ...rest } = options;
 
+  const isFormData = body instanceof FormData;
+
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...Object.fromEntries(
       Object.entries(customHeaders ?? {}).map(([k, v]) => [k, v as string]),
     ),
@@ -39,7 +41,12 @@ async function request<T>(
   const response = await fetch(buildUrl(path, params), {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body:
+      body !== undefined
+        ? isFormData
+          ? (body as FormData)
+          : JSON.stringify(body)
+        : undefined,
     credentials: "include",
     ...rest,
   });

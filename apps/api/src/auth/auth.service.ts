@@ -12,6 +12,7 @@ import bcrypt from 'bcryptjs';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { sanitizeUser } from '../common/sanitize-user.js';
+import { AuditService } from '../audit/audit.service.js';
 import {
   SESSION_COOKIE,
   sessionSecret,
@@ -23,7 +24,10 @@ import type { RegisterDto, ApproveRequestDto, RejectRequestDto } from './auth.dt
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   async register(dto: RegisterDto) {
     if (dto.requestedRole === UserRole.ADMIN) {
@@ -64,8 +68,8 @@ export class AuthService {
       },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
+    await this.audit
+      .create({
         actorId: user.id,
         actorName: user.displayName,
         actorRole: user.role,
@@ -73,8 +77,8 @@ export class AuthService {
         resource: 'USER',
         resourceId: user.id,
         metadata: { source: 'registration' },
-      },
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     return { data: sanitizeUser(user) };
   }
@@ -125,16 +129,16 @@ export class AuthService {
       path: '/',
     });
 
-    await this.prisma.auditLog.create({
-      data: {
+    await this.audit
+      .create({
         actorId: user.id,
         actorName: user.displayName,
         actorRole: user.role,
         action: 'LOGIN',
         resource: 'AUTH',
         resourceId: user.id,
-      },
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     return { data: sanitizeUser(user) };
   }
@@ -206,8 +210,8 @@ export class AuthService {
       },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
+    await this.audit
+      .create({
         actorId: admin.id,
         actorName: admin.displayName,
         actorRole: admin.role,
@@ -215,8 +219,8 @@ export class AuthService {
         resource: 'USER',
         resourceId: id,
         metadata: { action: 'REGISTRATION_APPROVED', finalRole: dto.role },
-      },
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     return { data: sanitizeUser(updated) };
   }
@@ -243,8 +247,8 @@ export class AuthService {
       },
     });
 
-    await this.prisma.auditLog.create({
-      data: {
+    await this.audit
+      .create({
         actorId: admin.id,
         actorName: admin.displayName,
         actorRole: admin.role,
@@ -252,8 +256,8 @@ export class AuthService {
         resource: 'USER',
         resourceId: id,
         metadata: { action: 'REGISTRATION_REJECTED', reason: dto.reason },
-      },
-    }).catch(() => {});
+      })
+      .catch(() => {});
 
     return { data: sanitizeUser(updated) };
   }

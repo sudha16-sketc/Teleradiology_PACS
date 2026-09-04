@@ -16,10 +16,9 @@ import type { RegistrationRequest, UserRole, ApiError } from "@axis/types";
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: "ADMIN", label: "Administrator" },
-  { value: "COORDINATOR", label: "Coordinator" },
+  { value: "MANAGER", label: "Manager" },
   { value: "RADIOLOGIST", label: "Radiologist" },
-  { value: "TECHNICIAN", label: "Technician" },
-  { value: "HOSPITAL_USER", label: "Hospital User" },
+  { value: "HOSPITAL", label: "Hospital" },
 ];
 
 interface RequestEnvelope {

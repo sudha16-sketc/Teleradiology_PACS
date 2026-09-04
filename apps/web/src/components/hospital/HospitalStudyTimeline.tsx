@@ -1,5 +1,3 @@
-"use client";
-
 import type { StudyStatus } from "@axis/types";
 import { clsx } from "clsx";
 import { formatDateTime } from "@/lib/format";
@@ -16,16 +14,22 @@ interface HospitalStudyTimelineProps {
 }
 
 const STATUS_LABELS: Record<StudyStatus, string> = {
-  NEW: "New",
-  SUBMITTED: "Submitted",
-  VALIDATED: "Validated",
+  HOSPITAL_SUBMITTED: "Submitted",
+  RECEIVING: "Receiving",
+  VALIDATING: "Validating",
   UNASSIGNED: "Unassigned",
   ASSIGNED: "Assigned",
   IN_READING: "In Reading",
-  DRAFT_REPORT: "Draft Report",
-  FINAL: "Final",
-  AMENDED: "Amended",
-  DELIVERED: "Delivered",
+  REPORT_DRAFT: "Draft Report",
+  RADIOLOGIST_SIGNED: "Signed",
+  MANAGER_REVIEW: "Manager Review",
+  MANAGER_APPROVED: "Approved",
+  DELIVERED_TO_HOSPITAL: "Delivered",
+  HOSPITAL_REVIEW: "Hospital Review",
+  HOSPITAL_ACCEPTED: "Accepted",
+  COMPLETED: "Completed",
+  CORRECTION_REQUESTED: "Correction Requested",
+  HOSPITAL_CHANGE_REQUESTED: "Change Requested",
   CANCELLED: "Cancelled",
 };
 
