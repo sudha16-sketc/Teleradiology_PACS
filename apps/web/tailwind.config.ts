@@ -2,6 +2,7 @@ import type { Config } from "tailwindcss";
 
 const config: Config = {
   content: ["./src/**/*.{ts,tsx}"],
+  darkMode: ["class", "[data-theme='dark']"],
   theme: {
     fontFamily: {
       sans: ["var(--font-sans)", "system-ui", "-apple-system", "sans-serif"],
@@ -30,6 +31,8 @@ const config: Config = {
       success: "var(--color-success)",
       error: "var(--color-error)",
       paper: "var(--color-paper)",
+      editor: "var(--color-editor)",
+      "editor-ink": "var(--color-editor-ink)",
       muted: "var(--color-text-muted)",
     },
     borderRadius: {

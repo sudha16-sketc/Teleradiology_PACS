@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Inter_Tight, IBM_Plex_Mono, Source_Serif_4 } from "next/font/google";
 import { Providers } from "./providers";
+import { themeBootScript } from "@/lib/theme";
 import "./globals.css";
 
 const inter = Inter({
@@ -39,7 +40,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script
+          dangerouslySetInnerHTML={{ __html: themeBootScript() }}
+        />
+      </head>
       <body
         className={`${inter.variable} ${ibmPlexMono.variable} ${interTight.variable} ${sourceSerif4.variable}`}
       >

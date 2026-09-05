@@ -625,8 +625,8 @@ export default function SubmitStudyPage() {
           <section className="rounded-lg border border-border bg-surface">
             <div className="border-b border-border px-6 py-5">
               <div className="flex items-center gap-3">
-                <div className="rounded-full bg-green-500/10 p-2">
-                  <CheckCircle2 className="h-6 w-6 text-green-600" />
+                <div className="rounded-full bg-success/10 p-2">
+                  <CheckCircle2 className="h-6 w-6 text-success" />
                 </div>
 
                 <div>
@@ -726,7 +726,7 @@ export default function SubmitStudyPage() {
             </div>
 
             {result.skipped > 0 && (
-              <div className="mx-6 mb-6 rounded-md border border-yellow-500/30 bg-yellow-500/5 p-4">
+              <div className="mx-6 mb-6 rounded-md border border-warning/30 bg-warning/5 p-4">
                 <p className="text-sm">
                   {result.skipped} file
                   {result.skipped === 1 ? "" : "s"} could not be

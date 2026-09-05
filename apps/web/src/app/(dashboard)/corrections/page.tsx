@@ -193,7 +193,7 @@ export default function CorrectionsPage() {
                     }
                     placeholder="Resolution (required to reject)…"
                     rows={2}
-                    className="w-full resize-none rounded-md border border-border/60 bg-white/70 p-2 text-sm text-text-primary placeholder-text-muted/50 focus:border-accent focus:outline-none"
+                    className="w-full resize-none rounded-md border border-border/60 bg-editor p-2 text-sm text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:outline-none"
                   />
                   <div className="flex shrink-0 gap-2">
                     <button

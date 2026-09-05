@@ -24,7 +24,7 @@ export function CriticalFindingToggle({
       className={clsx(
         "rounded-md border transition-colors",
         active
-          ? "border-amber-500/40 bg-amber-500/10"
+          ? "border-warning/40 bg-warning/10"
           : "border-border bg-surface",
       )}
     >
@@ -34,25 +34,25 @@ export function CriticalFindingToggle({
         disabled={disabled}
         className={clsx(
           "flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-medium transition-colors",
-          active ? "text-amber-600" : "text-text-primary hover:bg-surface-raised/50",
+          active ? "text-warning" : "text-text-primary hover:bg-surface-raised/50",
           disabled && "cursor-not-allowed opacity-50",
         )}
       >
         <AlertTriangle
           size={16}
-          className={clsx(active ? "text-amber-500" : "text-text-muted")}
+          className={clsx(active ? "text-warning" : "text-text-muted")}
         />
         {active ? "CRITICAL FINDING FLAGGED" : "Flag as Critical Finding"}
       </button>
       {active && (
-        <div className="border-t border-amber-500/20 px-4 py-2 text-xs text-amber-700">
+        <div className="border-t border-warning/20 px-4 py-2 text-xs text-warning">
           <p>
             This report contains a critical finding that requires immediate
             clinical attention. Acknowledgement by the ordering physician is
             required.
           </p>
           {flaggedBy && flaggedAt && (
-            <p className="mt-1 text-amber-600/70">
+            <p className="mt-1 text-warning/80">
               Flagged by {flaggedBy} on {formatDateTime(flaggedAt)}
             </p>
           )}

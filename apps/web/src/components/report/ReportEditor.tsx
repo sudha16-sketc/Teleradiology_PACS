@@ -183,10 +183,10 @@ export function ReportEditor({
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-[#F6F4EF]">
+      <div className="flex-1 overflow-y-auto bg-editor">
         <div className="mx-auto max-w-3xl px-6 py-6">
           <div className="font-serif">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
               Clinical History
             </label>
             <textarea
@@ -198,7 +198,7 @@ export function ReportEditor({
               rows={3}
             />
 
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
               Technique
             </label>
             <textarea
@@ -210,7 +210,7 @@ export function ReportEditor({
               rows={2}
             />
 
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
               Comparison
             </label>
             <textarea
@@ -222,7 +222,7 @@ export function ReportEditor({
               rows={2}
             />
 
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
               Findings <span className="text-error">*</span>
             </label>
             <textarea
@@ -233,11 +233,11 @@ export function ReportEditor({
               className={clsx(textareaClasses, isSigned && disabledClasses)}
               style={{ minHeight: 200 }}
             />
-            <div className="mt-1 text-right text-xs text-text-muted">
+            <div className="mt-1 text-right text-xs text-editor-ink/50">
               {findings.length} characters
             </div>
 
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
               Impression <span className="text-error">*</span>
             </label>
             <textarea
@@ -248,11 +248,11 @@ export function ReportEditor({
               className={clsx(textareaClasses, isSigned && disabledClasses)}
               style={{ minHeight: 200 }}
             />
-            <div className="mt-1 text-right text-xs text-text-muted">
+            <div className="mt-1 text-right text-xs text-editor-ink/50">
               {impression.length} characters
             </div>
 
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
               Recommendations
             </label>
             <textarea
@@ -301,5 +301,5 @@ export function ReportEditor({
 }
 
 const textareaClasses =
-  "w-full resize-y rounded-md border border-border/60 bg-white/70 p-4 font-serif text-sm leading-relaxed text-text-primary placeholder-text-muted/50 transition-colors focus:border-accent focus:bg-white focus:outline-none";
+  "w-full resize-y rounded-md border border-border/60 bg-editor p-4 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 transition-colors focus:border-accent focus:bg-editor focus:outline-none";
 const disabledClasses = "cursor-not-allowed bg-surface opacity-70";

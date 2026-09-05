@@ -4,7 +4,21 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/*
+ * Theming model:
+ *  - Colors are exposed to Tailwind strictly through the (--color-*) tokens
+ *    below; no component hardcodes hex values.
+ *  - `:root`/`[data-theme="dark"]` carry the original Axis visual design.
+ *  - `[data-theme="light"]` provides the equivalent light clinical palette.
+ *  - The active theme is resolved by a tiny inline script in layout.tsx (pre
+ *    paint, prevents FOUC) and applied as `data-theme` on <html>. The client
+ *    ThemeManager keeps preference in localStorage under `axis-theme` and
+ *    follows OS changes when the user selects "system".
+ */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
   --bg-base: #0B0E14;
   --bg-surface: #141924;
   --bg-surface-raised: #1B2130;
@@ -28,7 +42,43 @@
   --color-success: var(--accent-signal);
   --color-error: var(--accent-alert);
   --color-paper: var(--paper);
+  /* Report/comment "paper" editor surfaces stay light in both themes so typed
+     clinical prose is always ink-on-paper; only the surrounding chrome tints. */
+  --color-editor: var(--paper);
+  --color-editor-ink: #242A38;
+}
 
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-base: #F4F6FA;
+  --bg-surface: #FFFFFF;
+  --bg-surface-raised: #EDF0F5;
+  --border-hairline: #D7DEE9;
+  --text-primary: #1C2433;
+  --text-muted: #4E5D78;
+  --accent-cyan: #0E7C9B;
+  --accent-amber: #B45309;
+  --accent-signal: #0F7A3D;
+  --accent-alert: #DC2626;
+  --paper: #FDFCFA;
+
+  --color-background: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-surface-raised: var(--bg-surface-raised);
+  --color-border: var(--border-hairline);
+  --color-text-primary: var(--text-primary);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent-cyan);
+  --color-warning: var(--accent-amber);
+  --color-success: var(--accent-signal);
+  --color-error: var(--accent-alert);
+  --color-paper: var(--paper);
+  --color-editor: var(--paper);
+  --color-editor-ink: #242A38;
+}
+
+:root {
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
   --font-heading: 'Inter Tight', 'Inter', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', 'Fira Code', monospace;

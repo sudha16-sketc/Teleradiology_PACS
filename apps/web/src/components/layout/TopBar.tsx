@@ -13,6 +13,7 @@ import { useAppStore } from "@/lib/store";
 import { apiClient } from "@/lib/api-client";
 import { ROLE_LABELS } from "@/lib/permissions";
 import { NotificationBell } from "@/components/layout/NotificationBell";
+import { ThemeMenu } from "@/components/layout/ThemeMenu";
 
 function avatarInitials(name: string): string {
   return name
@@ -79,6 +80,7 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
       </div>
 
       <div className="flex items-center gap-4">
+        <ThemeMenu />
         <NotificationBell />
 
         <div className="relative" ref={menuRef}>

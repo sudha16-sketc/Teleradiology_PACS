@@ -410,7 +410,7 @@ function FieldGroup({
 }
 
 const fieldClasses =
-  "w-full resize-y rounded-md border border-border/60 bg-white/70 p-3 font-serif text-sm leading-relaxed text-text-primary placeholder-text-muted/50 transition-colors focus:border-accent focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:bg-surface disabled:opacity-70";
+  "w-full resize-y rounded-md border border-border/60 bg-editor p-3 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 transition-colors focus:border-accent focus:bg-editor focus:outline-none disabled:cursor-not-allowed disabled:bg-surface disabled:opacity-70";
 
 /**
  * Fetches version history from the API inline (rather than requiring a parent

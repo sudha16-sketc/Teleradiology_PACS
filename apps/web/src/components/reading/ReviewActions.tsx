@@ -117,7 +117,7 @@ export function ReviewActions({
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 placeholder="Reason for change request..."
-                className="w-full resize-none rounded-md border border-border/60 bg-white/70 p-2 text-sm text-text-primary placeholder-text-muted/50 focus:border-accent focus:outline-none"
+                className="w-full resize-none rounded-md border border-border/60 bg-editor p-2 text-sm text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:outline-none"
                 rows={2}
               />
               <button
