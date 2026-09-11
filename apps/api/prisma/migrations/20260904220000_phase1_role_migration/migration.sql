@@ -69,6 +69,33 @@ ALTER TABLE "Study" ALTER COLUMN "status" TYPE "StudyStatus_new"
       ELSE 'HOSPITAL_SUBMITTED'
     END
   )::"StudyStatus_new";
+
+-- FIX: ChangeRequest.sourceStatus also uses the StudyStatus type and must be
+-- converted here too, before the old type is dropped below. The original
+-- migration only converted Study.status, which left this column still
+-- pointing at "StudyStatus_old" and caused DROP TYPE to fail.
+ALTER TABLE "ChangeRequest" ALTER COLUMN "sourceStatus" TYPE "StudyStatus_new"
+  USING (
+    CASE "sourceStatus"::text
+      WHEN 'NEW' THEN 'HOSPITAL_SUBMITTED'
+      WHEN 'SUBMITTED' THEN 'HOSPITAL_SUBMITTED'
+      WHEN 'VALIDATED' THEN 'VALIDATING'
+      WHEN 'DRAFT_REPORT' THEN 'REPORT_DRAFT'
+      WHEN 'REPORT_REVISED' THEN 'REPORT_DRAFT'
+      WHEN 'FINAL' THEN 'RADIOLOGIST_SIGNED'
+      WHEN 'UNDER_VERIFICATION' THEN 'MANAGER_REVIEW'
+      WHEN 'RELEASED' THEN 'MANAGER_APPROVED'
+      WHEN 'DELIVERED' THEN 'DELIVERED_TO_HOSPITAL'
+      WHEN 'CHANGE_REQUESTED' THEN 'CORRECTION_REQUESTED'
+      WHEN 'AMENDED' THEN 'IN_READING'
+      WHEN 'UNASSIGNED' THEN 'UNASSIGNED'
+      WHEN 'ASSIGNED' THEN 'ASSIGNED'
+      WHEN 'IN_READING' THEN 'IN_READING'
+      WHEN 'CANCELLED' THEN 'CANCELLED'
+      ELSE 'HOSPITAL_SUBMITTED'
+    END
+  )::"StudyStatus_new";
+
 ALTER TYPE "StudyStatus" RENAME TO "StudyStatus_old";
 ALTER TYPE "StudyStatus_new" RENAME TO "StudyStatus";
 DROP TYPE "StudyStatus_old";
