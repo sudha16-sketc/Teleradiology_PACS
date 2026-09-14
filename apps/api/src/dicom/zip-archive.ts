@@ -52,7 +52,9 @@ function isDirectoryEntry(entry: AdmZip.IZipEntry): boolean {
  * Security protections applied:
  *  - Zip Slip / path-traversal rejection
  *  - maximum entry count
- *  - maximum per-file size
+ *  - maximum per-file size (checked against the declared header size BEFORE
+ *    decompression, and again against the actual decompressed size after,
+ *    so a spoofed header can't be used to bypass the limit)
  *  - maximum total extracted size
  *  - nested-archive rejection
  *  - executable-file rejection
@@ -92,6 +94,22 @@ export async function extractDicomArchive(uploadBuffer: Buffer): Promise<Extract
 
       if (isDirectoryEntry(entry)) continue;
 
+      // Check the DECLARED (header) size BEFORE decompressing. This is the
+      // cheap, early guard: it must run before entry.getData() below, since
+      // getData() fully decompresses the entry into memory regardless of
+      // size. Checking only after decompression (as before) allows a small
+      // compressed entry that expands to gigabytes ("zip bomb") to blow up
+      // memory before the limit is ever enforced.
+      if (
+        entry.header &&
+        typeof entry.header.size === 'number' &&
+        entry.header.size > DICOM_LIMITS.MAX_FILE_BYTES
+      ) {
+        throw new BadRequestException(
+          `Archive entry exceeds the per-file size limit: ${entry.entryName}`,
+        );
+      }
+
       let data: Buffer;
       try {
         data = entry.getData();
@@ -101,11 +119,9 @@ export async function extractDicomArchive(uploadBuffer: Buffer): Promise<Extract
         );
       }
 
-      if (entry.header && typeof entry.header.size === 'number' && entry.header.size > DICOM_LIMITS.MAX_FILE_BYTES) {
-        throw new BadRequestException(
-          `Archive entry exceeds the per-file size limit: ${entry.entryName}`,
-        );
-      }
+      // Re-check against the ACTUAL decompressed size. The header value can
+      // be spoofed/incorrect, so this remains a required second check even
+      // though the guard above already ran.
       if (data.length > DICOM_LIMITS.MAX_FILE_BYTES) {
         throw new BadRequestException(
           `Archive entry exceeds the per-file size limit: ${entry.entryName}`,

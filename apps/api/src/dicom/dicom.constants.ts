@@ -28,10 +28,13 @@ export function isValidDicomUid(uid: string | null | undefined): boolean {
   const trimmed = uid.trim();
   if (trimmed.length < 1 || trimmed.length > 64) return false;
   if (!UID_REGEX.test(trimmed)) return false;
-  const first = trimmed.split('.')[0];
+  const components = trimmed.split('.');
+  const first = components[0];
   if (first === '0') return false;
-  // Per standard, the first component should be at least one digit; many
-  // vendors use roots like "1.2.840..." so require numeric components.
+  // Per DICOM PS3.5, no component may have a leading zero unless the
+  // component's entire value is a single "0". E.g. "1.02.840" is invalid;
+  // "1.0.840" is valid.
+  if (components.some((part) => part.length > 1 && part.startsWith('0'))) return false;
   return true;
 }
 
