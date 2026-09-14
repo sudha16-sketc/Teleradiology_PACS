@@ -1,28 +1,49 @@
-import Link from "next/link";
+import type { Metadata } from "next";
 
-export default function HomePage() {
+import Navbar from "@/components/landing/Navbar";
+import Hero from "@/components/landing/Hero";
+import TrustStrip from "@/components/landing/TrustStrip";
+import ProblemSolution from "@/components/landing/ProblemSolution";
+import Features from "@/components/landing/Features";
+import DicomSection from "@/components/landing/DicomSection";
+import ReportingSection from "@/components/landing/ReportingSection";
+import Workflow from "@/components/landing/Workflow";
+import RolesSection from "@/components/landing/RolesSection";
+import SecuritySection from "@/components/landing/SecuritySection";
+import BackupRetentionSection from "@/components/landing/BackupRetentionSection";
+import MetricsSection from "@/components/landing/MetricsSection";
+import CtaSection from "@/components/landing/CtaSection";
+import FaqSection from "@/components/landing/FaqSection";
+import Footer from "@/components/landing/Footer";
+
+export const metadata: Metadata = {
+  title: "Axis — Teleradiology PACS & Clinical Reporting Platform",
+  description:
+    "A teleradiology PACS and clinical reporting platform for connecting hospitals, radiologists and workflow managers.",
+};
+
+export default function LandingPage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-6">
-      <h1 className="font-heading text-5xl font-bold tracking-tight text-accent">
-        Axis
-      </h1>
-      <p className="text-lg text-text-muted">
-        Teleradiology PACS Workflow Platform
-      </p>
-      <div className="mt-4 flex items-center gap-3">
-        <Link
-          href="/login"
-          className="rounded-md bg-accent px-6 py-2.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
-        >
-          Sign In
-        </Link>
-        <Link
-          href="/register"
-          className="rounded-md border border-border px-6 py-2.5 text-sm font-semibold text-text-primary transition-colors hover:bg-surface"
-        >
-          Register
-        </Link>
-      </div>
-    </main>
+    <div className="landing flex flex-col">
+      <Navbar />
+      <main className="flex-1">
+        <Hero />
+        <div id="overview">
+          <TrustStrip />
+        </div>
+        <ProblemSolution />
+        <Features />
+        <DicomSection />
+        <ReportingSection />
+        <Workflow />
+        <RolesSection />
+        <SecuritySection />
+        <BackupRetentionSection />
+        <MetricsSection />
+        <CtaSection />
+        <FaqSection />
+      </main>
+      <Footer />
+    </div>
   );
 }
