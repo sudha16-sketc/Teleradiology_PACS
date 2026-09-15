@@ -61,7 +61,7 @@ export default function RegisterPage() {
 
   if (submitted) {
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center bg-background px-6">
+      <main className="auth-light flex min-h-screen flex-col items-center justify-center bg-background px-6">
         <div className="w-full max-w-sm rounded-md border border-border bg-surface p-8 text-center">
           <CheckCircle2 size={40} className="mx-auto text-success" strokeWidth={1.5} />
           <h1 className="mt-4 font-heading text-lg font-bold text-text-primary">
@@ -84,7 +84,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-background px-6 py-10">
+    <main className="auth-light flex min-h-screen flex-col items-center justify-center bg-background px-6 py-10">
       <div className="mb-6 flex items-center gap-2.5">
         <Activity size={24} className="text-accent" />
         <span className="font-heading text-xl font-bold tracking-tight text-text-primary">
