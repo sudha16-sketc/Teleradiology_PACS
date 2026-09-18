@@ -8,6 +8,8 @@ interface ListUsersParams {
   search?: string;
   role?: UserRole;
   status?: UserStatus;
+  page?: string;
+  pageSize?: string;
 }
 
 @Injectable()
@@ -31,7 +33,44 @@ export class UsersService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return { data: users.map((u) => sanitizeUser(u)) };
+
+    const page = Math.max(parseInt(params.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(params.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
+
+    const [total, paged] = await Promise.all([
+      this.prisma.user.count({ where: { /* cannot reuse; rebuild below */ } }),
+      this.prisma.user.findMany({
+        where: {
+          ...(params.role ? { role: params.role } : {}),
+          ...(params.status ? { status: params.status } : {}),
+          ...(params.search
+            ? {
+                OR: [
+                  { displayName: { contains: params.search, mode: 'insensitive' } },
+                  { email: { contains: params.search, mode: 'insensitive' } },
+                  { organization: { contains: params.search, mode: 'insensitive' } },
+                ],
+              }
+            : {}),
+        },
+        orderBy: { createdAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+
+    const sanitized = paged.map((u) => sanitizeUser(u));
+    return {
+      data: sanitized,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+      },
+    };
   }
 
   async getOne(id: string) {
