@@ -199,7 +199,11 @@ export class ReportsService {
     }
   }
 
-  async list(user: Actor) {
+  async list(user: Actor, query: { page?: string; pageSize?: string } = {}) {
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
     const where: Record<string, unknown> = {};
     if (user.role === 'HOSPITAL' && user.hospitalId) {
       where.study = {
@@ -210,20 +214,37 @@ export class ReportsService {
       where.study = { assignedRadiologistId: user.id };
     }
 
-    const reports = await this.prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: { patient: true, hospital: true },
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: { patient: true, hospital: true },
+          },
+          author: true,
         },
-        author: true,
+        orderBy: { updatedAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+    return {
+      data: reports,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
       },
-      orderBy: { updatedAt: 'desc' },
-    });
-    return { data: reports };
+    };
   }
 
-  async hospitalReports(user: Actor) {
+  async hospitalReports(user: Actor, query: { page?: string; pageSize?: string } = {}) {
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
     if (user.role === 'HOSPITAL' && !user.hospitalId) {
       throw new ForbiddenException('Your account is not linked to a hospital');
     }
@@ -236,17 +257,30 @@ export class ReportsService {
       },
     };
 
-    const reports = await this.prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: { patient: true, hospital: true },
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: { patient: true, hospital: true },
+          },
+          author: true,
         },
-        author: true,
+        orderBy: { updatedAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+    return {
+      data: reports,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
       },
-      orderBy: { updatedAt: 'desc' },
-    });
-    return { data: reports };
+    };
   }
 
   async getByStudy(studyUid: string, user?: Actor) {
