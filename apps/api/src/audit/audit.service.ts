@@ -61,21 +61,22 @@ export class AuditService {
     }
 
     // Manager scope: own actions + actions on studies from their hospital.
-    if (user && user.role === 'MANAGER' && user.hospitalId) {
-      const hospitalStudies = await this.prisma.study.findMany({
-        where: { hospitalId: user.hospitalId },
-        select: { id: true },
-      });
-      const studyIds = hospitalStudies.map((s) => s.id);
+    // Always applies for MANAGERs; a MANAGER without a hospitalId (or with no
+    // studies yet) degrades to their own rows only, never to global visibility.
+    if (user && user.role === 'MANAGER') {
       const orClauses: Record<string, unknown>[] = [
         ...(Array.isArray(where.OR) ? where.OR : []),
         { actorId: user.id },
       ];
-      if (studyIds.length) {
-        orClauses.push({ resourceId: { in: studyIds } });
-      } else {
-        // Hospital with no studies yet: nothing to see beyond the actor's own rows.
-        orClauses.push({ resourceId: null });
+      if (user.hospitalId) {
+        const hospitalStudies = await this.prisma.study.findMany({
+          where: { hospitalId: user.hospitalId },
+          select: { id: true },
+        });
+        const studyIds = hospitalStudies.map((s) => s.id);
+        if (studyIds.length) {
+          orClauses.push({ resourceId: { in: studyIds } });
+        }
       }
       where.OR = orClauses;
     }

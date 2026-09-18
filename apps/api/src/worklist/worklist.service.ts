@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { runSerializable } from '../common/db/serializable.js';
 import { StudyStatus, UserRole } from '@prisma/client';
 
 /**
@@ -308,21 +309,49 @@ export class WorklistService {
       throw new BadRequestException('Radiologist is not active or approved');
     }
 
-    const previousRadiologistId = existing.assignedRadiologistId;
-    const isReassignment = Boolean(previousRadiologistId);
-    const assignedAt = new Date();
+    // -------------------------------------------------------------------------
+    // Phase 4 (B6/C5) — the assignment is the canonical read-then-write race:
+    // two concurrent assigns could both observe the same pre-state and each
+    // create an active Assignment row / claim the study. Running the whole
+    // mutation at SERIALIZABLE isolation with the pre-read INSIDE the
+    // transaction turns that race into a bounded retry->Conflict instead of a
+    // double claim, and the study + Assignment rows always stay consistent.
+    // -------------------------------------------------------------------------
+    const updated = await runSerializable(this.prisma, async (tx) => {
+      const study = await tx.study.findUnique({
+        where: { studyInstanceUid: studyUid },
+        select: { id: true, status: true, assignedRadiologistId: true },
+      });
+      if (!study) {
+        throw new NotFoundException(`Study ${studyUid} not found`);
+      }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      // If this is a reassignment (to a different radiologist), deactivate the
-      // currently active Assignment row — history is preserved, never deleted.
-      if (previousRadiologistId && previousRadiologistId !== radiologistId) {
+      if (!ASSIGNABLE_STATES.includes(study.status)) {
+        throw new ConflictException(
+          `Study is in ${study.status} state and cannot be assigned. Only ${ASSIGNABLE_STATES.join(', ')} studies may be assigned.`,
+        );
+      }
+      if (CLINICALLY_ACTIVE_STATES.includes(study.status)) {
+        throw new ConflictException(
+          `Reassignment is not allowed while the study is in ${study.status} state.`,
+        );
+      }
+
+      const previousRadiologistId = study.assignedRadiologistId;
+      const isReassignment = Boolean(previousRadiologistId);
+      const sameRadiologist = previousRadiologistId === radiologistId;
+      const assignedAt = new Date();
+
+      // Reassignment to a DIFFERENT radiologist: deactivate the currently
+      // active Assignment row — history is preserved, never deleted.
+      if (isReassignment && !sameRadiologist) {
         await tx.assignment.updateMany({
-          where: { studyId: existing.id, isActive: true },
+          where: { studyId: study.id, isActive: true },
           data: { isActive: false, unassignedAt: assignedAt, reason: 'Reassigned' },
         });
       }
 
-      const study = await tx.study.update({
+      const updatedStudy = await tx.study.update({
         where: { studyInstanceUid: studyUid },
         data: {
           status: 'ASSIGNED',
@@ -332,20 +361,29 @@ export class WorklistService {
         },
       });
 
-      await tx.assignment.create({
-        data: {
-          studyId: existing.id,
-          radiologistId,
-          assignedById: actor.id,
-          isActive: true,
-          reason: isReassignment ? 'Reassigned' : 'Assigned',
-        },
-      });
+      // C5: re-assigning to the SAME radiologist must not create a duplicate
+      // active Assignment row — refresh the existing active row instead.
+      if (!sameRadiologist) {
+        await tx.assignment.create({
+          data: {
+            studyId: study.id,
+            radiologistId,
+            assignedById: actor.id,
+            isActive: true,
+            reason: isReassignment ? 'Reassigned' : 'Assigned',
+          },
+        });
+      } else {
+        await tx.assignment.updateMany({
+          where: { studyId: study.id, isActive: true, radiologistId },
+          data: { assignedAt },
+        });
+      }
 
       await tx.worklistItem.upsert({
-        where: { studyId: existing.id },
+        where: { studyId: study.id },
         update: { assignedAt },
-        create: { studyId: existing.id, assignedAt },
+        create: { studyId: study.id, assignedAt },
       });
 
       await tx.auditLog.create({
@@ -355,7 +393,7 @@ export class WorklistService {
           actorRole: actor.role,
           action: isReassignment ? 'STUDY_REASSIGNED' : 'STUDY_ASSIGNED',
           resource: 'ASSIGNMENT',
-          resourceId: existing.id,
+          resourceId: study.id,
           metadata: {
             studyUid,
             radiologistId,
@@ -367,7 +405,7 @@ export class WorklistService {
         },
       });
 
-      return study;
+      return updatedStudy;
     });
 
     return { data: updated };

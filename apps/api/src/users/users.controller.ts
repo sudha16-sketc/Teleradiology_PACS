@@ -9,6 +9,7 @@ import {
 } from 'class-validator';
 import { Roles } from '../auth/auth.decorators.js';
 import { UsersService } from './users.service.js';
+import { IsStrongPassword } from '../common/validators/strong-password.js';
 
 class CreateUserDto {
   @IsString()
@@ -23,6 +24,7 @@ class CreateUserDto {
 
   @IsString()
   @MinLength(8)
+  @IsStrongPassword()
   password!: string;
 
   @IsOptional()

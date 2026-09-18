@@ -420,6 +420,7 @@ model Report {
   deliveryAttempts   DeliveryAttempt[]
   changeRequests     ChangeRequest[]
 
+  @@unique([studyId, version])
   @@index([studyId])
   @@index([status])
 }
@@ -444,6 +445,8 @@ model ReportVersion {
 
   parentOfCorrections ChangeRequest[] @relation("CorrectionParentVersion")
   resultOfCorrections ChangeRequest[] @relation("CorrectionNewVersion")
+
+  @@unique([reportId, version])
 }
 
 model ChangeRequest {

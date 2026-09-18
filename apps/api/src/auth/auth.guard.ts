@@ -7,11 +7,8 @@ import {
 import { Reflector } from '@nestjs/core';
 import jwt from 'jsonwebtoken';
 import { PrismaService } from '../prisma/prisma.service.js';
-import {
-  SESSION_COOKIE,
-  IS_PUBLIC_KEY,
-  sessionSecret,
-} from './auth.constants.js';
+import { SESSION_COOKIE, IS_PUBLIC_KEY, sessionSecret } from './auth.constants.js';
+import { jwtVerifyOptions, sessionRevocationStore } from './session-store.js';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -34,10 +31,18 @@ export class AuthGuard implements CanActivate {
     const token = request.cookies?.[SESSION_COOKIE];
     if (!token) throw new UnauthorizedException('Not authenticated');
 
-    let payload: { sub: string };
+    let payload: { sub: string; jti?: string; email?: string };
     try {
-      payload = jwt.verify(token, sessionSecret()) as { sub: string };
+      payload = jwt.verify(token, sessionSecret(), jwtVerifyOptions()) as {
+        sub: string;
+        jti?: string;
+        email?: string;
+      };
     } catch {
+      throw new UnauthorizedException('Session expired or invalid');
+    }
+
+    if (sessionRevocationStore.isRevoked(payload.jti)) {
       throw new UnauthorizedException('Session expired or invalid');
     }
 

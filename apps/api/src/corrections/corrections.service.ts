@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { StudyStatus, UserRole, ChangeRequestStatus } from '@prisma/client';
+import { runSerializable } from '../common/db/serializable.js';
 import { contentHash } from '../reports/reports.service.js';
 import type { Prisma } from '@prisma/client';
 
@@ -162,7 +163,16 @@ export class CorrectionsService {
     const sourceStatus = study.status;
     const now = new Date();
 
-    const created = await this.prisma.$transaction(async (tx) => {
+    const created = await runSerializable(this.prisma, async (tx) => {
+      const activeInTx = await tx.changeRequest.findFirst({
+        where: { studyId: study.id, status: { in: ACTIVE_CORRECTION_STATUSES } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (activeInTx) {
+        throw new ConflictException(
+          `A correction for this study is already ${activeInTx.status} and cannot be duplicated.`,
+        );
+      }
       const cr = await tx.changeRequest.create({
         data: {
           studyId: study.id,

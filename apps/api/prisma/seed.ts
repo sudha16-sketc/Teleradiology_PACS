@@ -3,6 +3,13 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+function isProduction(): boolean {
+  return (
+    process.env.NODE_ENV === 'production' ||
+    process.env.AXIS_ENV === 'production'
+  );
+}
+
 async function hashPassword(pw: string): Promise<string> {
   return bcrypt.hash(pw, 12);
 }
@@ -39,12 +46,12 @@ async function upsertUser(input: {
 }) {
   return prisma.user.upsert({
     where: { email: input.email },
+    // Security: the update branch must NOT reset credentials, role, or
+    // approval state. Re-running seed against an existing database must never
+    // hijack an admin account (password reset / role upgrade). Only contact and
+    // assignment metadata is refreshed.
     update: {
       displayName: input.displayName,
-      role: input.role,
-      status: UserStatus.APPROVED,
-      isActive: true,
-      passwordHash: input.passwordHash,
       hospitalId: input.hospitalId,
       subspecialty: input.subspecialty,
       licenseNumber: input.licenseNumber,
@@ -68,9 +75,18 @@ async function upsertUser(input: {
 }
 
 async function main() {
+  // Never allow the known-credential developer seed to touch a production DB.
+  // Use prisma/create-admin.ts for production administrator creation.
+  if (isProduction()) {
+    throw new Error(
+      'Refusing to run developer seed in a production environment. ' +
+        'Create administrators with prisma/create-admin.ts instead.',
+    );
+  }
+
   console.log('Seeding accounts and hospitals...');
-  const seedHash = await hashPassword('AxisDev123!');
-  const adminHash = await hashPassword('Admin@123456');
+  const seedHash = await hashPassword(process.env.AXIS_SEED_USERS_PASSWORD ?? 'AxisDev123!');
+  const adminHash = await hashPassword(process.env.AXIS_SEED_ADMIN_PASSWORD ?? 'Admin@123456');
 
   const hospitals = {
     cgh: await upsertHospital({

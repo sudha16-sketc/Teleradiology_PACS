@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service.js';
-import { Roles } from '../auth/auth.decorators.js';
+import { Roles, CurrentUser } from '../auth/auth.decorators.js';
+import type { AuthenticatedUser } from '../auth/auth.constants.js';
 
 @Controller('analytics')
 export class AnalyticsController {
@@ -8,19 +9,19 @@ export class AnalyticsController {
 
   @Get('overview')
   @Roles('ADMIN', 'MANAGER')
-  overview() {
-    return this.analyticsService.overview();
+  overview(@CurrentUser() user: AuthenticatedUser) {
+    return this.analyticsService.overview(user);
   }
 
   @Get('tat')
   @Roles('ADMIN', 'MANAGER')
-  tatDistribution() {
-    return this.analyticsService.tatDistribution();
+  tatDistribution(@CurrentUser() user: AuthenticatedUser) {
+    return this.analyticsService.tatDistribution(user);
   }
 
   @Get('hospital-performance')
   @Roles('ADMIN', 'MANAGER')
-  hospitalPerformance() {
-    return this.analyticsService.hospitalPerformance();
+  hospitalPerformance(@CurrentUser() user: AuthenticatedUser) {
+    return this.analyticsService.hospitalPerformance(user);
   }
 }

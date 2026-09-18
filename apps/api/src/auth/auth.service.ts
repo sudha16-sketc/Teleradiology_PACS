@@ -1,25 +1,24 @@
-import {
-  Injectable,
-  UnauthorizedException,
-  ForbiddenException,
-  ConflictException,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import type { Response } from 'express';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { sanitizeUser } from '../common/sanitize-user.js';
 import { AuditService } from '../audit/audit.service.js';
+import { isProduction } from '../common/config/env-validation.js';
 import {
   SESSION_COOKIE,
   sessionSecret,
   sessionExpirySeconds,
+  JWT_ISSUER,
+  JWT_AUDIENCE,
+  JWT_ALGORITHM,
   DUMMY_PASSWORD_HASH,
   type AuthenticatedUser,
 } from './auth.constants.js';
+import { sessionRevocationStore } from './session-store.js';
 import type { RegisterDto, ApproveRequestDto, RejectRequestDto } from './auth.dto.js';
 
 @Injectable()
@@ -43,30 +42,40 @@ export class AuthService {
       where: { email: dto.email.toLowerCase().trim() },
     });
     if (existing) {
-      if (existing.status === UserStatus.PENDING) {
-        throw new ConflictException(
-          'A registration request with this email is already awaiting approval',
-        );
-      }
-      throw new ConflictException('An account with this email already exists');
+      // Do not reveal whether the account is PENDING vs already active; both
+      // cases collapse to the same generic response so callers cannot enumerate.
+      throw new ConflictException(
+        'An account with this email already exists. If you need help, contact the administrator.',
+      );
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
 
-    const user = await this.prisma.user.create({
-      data: {
-        email: dto.email.toLowerCase().trim(),
-        displayName: dto.displayName.trim(),
-        phone: dto.phone,
-        organization: dto.organization,
-        licenseNumber: dto.licenseNumber,
-        requestedRole: dto.requestedRole,
-        role: dto.requestedRole,
-        status: UserStatus.PENDING,
-        isActive: true,
-        passwordHash,
-      },
-    });
+    let user;
+    try {
+      user = await this.prisma.user.create({
+        data: {
+          email: dto.email.toLowerCase().trim(),
+          displayName: dto.displayName.trim(),
+          phone: dto.phone,
+          organization: dto.organization,
+          licenseNumber: dto.licenseNumber,
+          requestedRole: dto.requestedRole,
+          role: dto.requestedRole,
+          status: UserStatus.PENDING,
+          isActive: true,
+          passwordHash,
+        },
+      });
+    } catch (err) {
+      // Race between the existence check and the create (unique email).
+      if ((err as { code?: string })?.code === 'P2002') {
+        throw new ConflictException(
+          'An account with this email already exists. If you need help, contact the administrator.',
+        );
+      }
+      throw err;
+    }
 
     await this.audit
       .create({
@@ -96,35 +105,32 @@ export class AuthService {
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!valid) throw new UnauthorizedException('Invalid email or password');
 
-    if (user.status === UserStatus.PENDING) {
+    if (user.status !== UserStatus.APPROVED || !user.isActive) {
+      // One generic message for PENDING/REJECTED/SUSPENDED so the response does
+      // not leak account state or the admin-written rejection reason.
       throw new ForbiddenException(
-        'Your registration request is still awaiting administrator approval.',
-      );
-    }
-    if (user.status === UserStatus.REJECTED) {
-      const reason = user.rejectionReason?.trim();
-      throw new ForbiddenException(
-        reason
-          ? `Your registration request has been rejected. Reason: ${reason}`
-          : 'Your registration request has been rejected. Please contact the administrator.',
-      );
-    }
-    if (user.status === UserStatus.SUSPENDED || !user.isActive) {
-      throw new ForbiddenException(
-        'Your account has been suspended. Please contact the administrator.',
+        'Your account is currently not active. Please contact the administrator.',
       );
     }
 
+    const jti = randomUUID();
     const token = jwt.sign(
       { sub: user.id, email: user.email },
       sessionSecret(),
-      { expiresIn: sessionExpirySeconds() },
+      {
+        algorithm: JWT_ALGORITHM,
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        expiresIn: sessionExpirySeconds(),
+        jwtid: jti,
+      },
     );
+    sessionRevocationStore.register(jti, user.id);
 
     response.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: isProduction(),
       maxAge: sessionExpirySeconds() * 1000,
       path: '/',
     });
@@ -153,6 +159,7 @@ export class AuthService {
   }
 
   async logout(response: Response) {
+    sessionRevocationStore.revokeFromResponse(response);
     response.clearCookie(SESSION_COOKIE, { path: '/' });
     return { data: { success: true } };
   }

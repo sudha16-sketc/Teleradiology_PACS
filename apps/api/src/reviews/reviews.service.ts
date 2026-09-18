@@ -10,6 +10,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { StudyStatus, UserRole } from '@prisma/client';
 import type { AuditAction } from '@axis/types';
+import { runSerializable } from '../common/db/serializable.js';
 
 interface Actor {
   id: string;
@@ -375,7 +376,7 @@ export class ReviewsService {
       set: Record<string, Date>;
     },
   ) {
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await runSerializable(this.prisma, async (tx) => {
       const latest = await tx.study.findUnique({
         where: { studyInstanceUid: studyUid },
       });
@@ -392,6 +393,10 @@ export class ReviewsService {
         [StudyStatus.MANAGER_APPROVED]: [StudyStatus.MANAGER_REVIEW],
         [StudyStatus.HOSPITAL_REVIEW]: [StudyStatus.DELIVERED_TO_HOSPITAL],
         [StudyStatus.COMPLETED]: [StudyStatus.HOSPITAL_ACCEPTED],
+        [StudyStatus.HOSPITAL_CHANGE_REQUESTED]: [
+          StudyStatus.DELIVERED_TO_HOSPITAL,
+          StudyStatus.HOSPITAL_REVIEW,
+        ],
       };
       if (
         predecessors[target] &&
@@ -457,5 +462,21 @@ export class ReviewsService {
     });
 
     return { data: updated };
+  }
+
+  /**
+   * C7 — a HOSPITAL actor requests an administrative change for a study that
+   * has reached them. Moves DELIVERED_TO_HOSPITAL / HOSPITAL_REVIEW into
+   * HOSPITAL_CHANGE_REQUESTED via the same serializable, precedessor-gated,
+   * audited transition used by all other workflow steps so that a hospital
+   * cannot shortcut the review lifecycle nor mutate a study it does not own.
+   */
+  async hospitalChangeRequest(studyUid: string, actor: Actor) {
+    return this.transition(studyUid, actor, StudyStatus.HOSPITAL_CHANGE_REQUESTED, {
+      action: 'HOSPITAL_CHANGE_REQUESTED',
+      resource: 'STUDY',
+      resourceId: undefined,
+      set: {},
+    });
   }
 }

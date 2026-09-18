@@ -352,11 +352,13 @@ describe('Phase 1 security -- audit trail', () => {
   let mgrAgent: any;
   let rad1Agent: any;
   let cghAgent: any;
+  let adminAgent: any;
 
   beforeAll(async () => {
     mgrAgent = await loginAgent(server, manager);
     rad1Agent = await loginAgent(server, rad1);
     cghAgent = await loginAgent(server, h_cgh);
+    adminAgent = await loginAgent(server, USERS.ADMIN);
   });
 
   it('AUDIT-1: assignment records STUDY_ASSIGNED against ASSIGNMENT resource', async () => {
@@ -397,7 +399,10 @@ describe('Phase 1 security -- audit trail', () => {
       .send({ signedOffBy: radiologist.id })
       .expect(201);
 
-    const res = await mgrAgent
+    // Severed tenant isolation (C9): a MANAGER is scoped to their own rows /
+    // their own hospital's studies, so the cross-tenant read is exercised as
+    // ADMIN (full visibility) rather than a hospital-less MANAGER.
+    const res = await adminAgent
       .get(`/api/audit?actorId=${radiologist.id}&resource=REPORT`)
       .expect(200);
     const actions = (res.body.data as any[]).map((a) => a.action);

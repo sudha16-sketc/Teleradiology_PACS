@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { runSerializable } from '../common/db/serializable.js';
 import { ListStudiesDto } from './dto/list-studies.dto.js';
 import { UpdateStudyStatusDto } from './dto/update-study-status.dto.js';
 import { CreateStudyDto } from './dto/create-study.dto.js';
@@ -242,19 +243,22 @@ export class StudiesService {
     dto: UpdateStudyStatusDto,
     user: { id: string; role: UserRole; hospitalId?: string },
   ) {
-    const study = await this.prisma.study.findUnique({
+    // Authorization pre-check on the current row (kept outside the transaction
+    // so scope rejection is immediate and cheap).
+    const pre = await this.prisma.study.findUnique({
       where: { studyInstanceUid: studyUid },
+      select: { id: true, hospitalId: true, assignedRadiologistId: true },
     });
 
-    if (!study) {
+    if (!pre) {
       throw new NotFoundException(`Study ${studyUid} not found`);
     }
 
-    if (user.role === UserRole.HOSPITAL && study.hospitalId !== user.hospitalId) {
+    if (user.role === UserRole.HOSPITAL && pre.hospitalId !== user.hospitalId) {
       throw new ForbiddenException('You do not have access to studies from this hospital');
     }
 
-    if (user.role === UserRole.RADIOLOGIST && study.assignedRadiologistId !== user.id) {
+    if (user.role === UserRole.RADIOLOGIST && pre.assignedRadiologistId !== user.id) {
       throw new ForbiddenException('You can only update status of studies assigned to you');
     }
 
@@ -267,108 +271,138 @@ export class StudiesService {
       );
     }
 
-    const allowed = ALLOWED_TRANSITIONS[study.status] || [];
-    if (!allowed.includes(dto.status)) {
+    // -------------------------------------------------------------------------
+    // Phase 4 (C7) — HOSPITAL_CHANGE_REQUESTED is reachable ONLY through the
+    // audited POST /studies/:studyUid/hospital-change-request operation, which
+    // records a ChangeRequest + STUDY_STATUS_CHANGED audit inline. The generic
+    // status PATCH must never drive a study into a correction/change state.
+    // -------------------------------------------------------------------------
+    if (dto.status === 'HOSPITAL_CHANGE_REQUESTED') {
       throw new BadRequestException(
-        `Invalid status transition ${study.status} -> ${dto.status}`,
-      );
-    }
-
-    // A study cannot enter the reading workflow unless it is actually assigned
-    // to a real radiologist. This prevents IN_READING without an active
-    // assignment.
-    if (dto.status === 'IN_READING' && !study.assignedRadiologistId) {
-      throw new BadRequestException(
-        'The study must be assigned to a radiologist before reading can begin. Assign it via POST /worklist/:studyUid/assign first.',
-      );
-    }
-
-    const allowedActors = TRANSITION_ACTORS[dto.status] || [];
-    if (!allowedActors.includes(user.role)) {
-      throw new ForbiddenException(
-        `Your role (${user.role}) is not authorized to transition to ${dto.status}`,
+        'Request a hospital report change via POST /studies/:studyUid/hospital-change-request so it is recorded in the audited correction workflow.',
       );
     }
 
     // -------------------------------------------------------------------------
-    // Phase 5 — Prerequisite validation for sensitive workflow transitions.
-    // These guards ensure a generic status PATCH can never bypass the role-
-    // specific review / delivery / accept operations. Each sensitive transition
-    // requires the clinical report to be signed and, where relevant, prior
-    // approval / delivery / acceptance to have actually occurred.
+    // Phase 4 (C6) — the read-then-write status transition is executed inside a
+    // SERIALIZABLE transaction. All validation runs against a fresh read inside
+    // the transaction, the update and its STUDY_STATUS_CHANGED audit row commit
+    // atomically, and concurrent double-transitions serialize into a bounded
+    // retry / Conflict behavior instead of a lost update.
     // -------------------------------------------------------------------------
-    const requiresSignedReport: StudyStatus[] = [
-      StudyStatus.MANAGER_REVIEW,
-      StudyStatus.MANAGER_APPROVED,
-      StudyStatus.DELIVERED_TO_HOSPITAL,
-      StudyStatus.HOSPITAL_REVIEW,
-      StudyStatus.HOSPITAL_ACCEPTED,
-      StudyStatus.COMPLETED,
-    ];
-    if (requiresSignedReport.includes(dto.status)) {
-      const signedReport = await this.prisma.report.findFirst({
-        where: { studyId: study.id, status: 'SIGNED' },
-        orderBy: { version: 'desc' },
+    const updated = await runSerializable(this.prisma, async (tx) => {
+      const study = await tx.study.findUnique({
+        where: { studyInstanceUid: studyUid },
       });
-      if (!signedReport) {
+      if (!study) {
+        throw new NotFoundException(`Study ${studyUid} not found`);
+      }
+
+      const allowed = ALLOWED_TRANSITIONS[study.status] || [];
+      if (!allowed.includes(dto.status)) {
         throw new BadRequestException(
-          `A signed clinical report is required before the study can be moved to ${dto.status}.`,
+          `Invalid status transition ${study.status} -> ${dto.status}`,
         );
       }
-    }
 
-    if (
-      dto.status === StudyStatus.DELIVERED_TO_HOSPITAL &&
-      !study.hospitalId
-    ) {
-      throw new BadRequestException('The study is not linked to a destination hospital.');
-    }
+      // A study cannot enter the reading workflow unless it is actually
+      // assigned to a real radiologist. This prevents IN_READING without an
+      // active assignment.
+      if (dto.status === 'IN_READING' && !study.assignedRadiologistId) {
+        throw new BadRequestException(
+          'The study must be assigned to a radiologist before reading can begin. Assign it via POST /worklist/:studyUid/assign first.',
+        );
+      }
 
-    if (
-      dto.status === StudyStatus.HOSPITAL_ACCEPTED &&
-      (!study.managerApprovedAt || !study.deliveredAt)
-    ) {
-      throw new BadRequestException(
-        'The report must be manager-approved and delivered before the hospital can accept it.',
-      );
-    }
+      const allowedActors = TRANSITION_ACTORS[dto.status] || [];
+      if (!allowedActors.includes(user.role)) {
+        throw new ForbiddenException(
+          `Your role (${user.role}) is not authorized to transition to ${dto.status}`,
+        );
+      }
 
-    if (dto.status === StudyStatus.COMPLETED && !study.hospitalAcceptedAt) {
-      throw new BadRequestException(
-        'The study must be accepted by the hospital before it can be completed.',
-      );
-    }
+      // ------------------------------------------------------------------
+      // Prerequisite validation for sensitive workflow transitions. These
+      // guards ensure a generic status PATCH can never bypass the role-
+      // specific review / delivery / accept operations, or forge a signed
+      // state (RADIOLOGIST_SIGNED) without an actually-signed report.
+      // ------------------------------------------------------------------
+      const requiresSignedReport: StudyStatus[] = [
+        StudyStatus.RADIOLOGIST_SIGNED,
+        StudyStatus.MANAGER_REVIEW,
+        StudyStatus.MANAGER_APPROVED,
+        StudyStatus.DELIVERED_TO_HOSPITAL,
+        StudyStatus.HOSPITAL_REVIEW,
+        StudyStatus.HOSPITAL_ACCEPTED,
+        StudyStatus.COMPLETED,
+      ];
+      if (requiresSignedReport.includes(dto.status)) {
+        const signedReport = await tx.report.findFirst({
+          where: { studyId: study.id, status: 'SIGNED' },
+          orderBy: { version: 'desc' },
+        });
+        if (!signedReport) {
+          throw new BadRequestException(
+            `A signed clinical report is required before the study can be moved to ${dto.status}.`,
+          );
+        }
+      }
 
-    const data: Record<string, unknown> = { status: dto.status };
-    const now = new Date();
+      if (
+        dto.status === StudyStatus.DELIVERED_TO_HOSPITAL &&
+        !study.hospitalId
+      ) {
+        throw new BadRequestException('The study is not linked to a destination hospital.');
+      }
 
-    if (dto.status === 'IN_READING') data.reportingStartedAt = now;
-    if (dto.status === 'RADIOLOGIST_SIGNED') data.signedOffAt = now;
-    if (dto.status === 'MANAGER_REVIEW') data.managerReviewedAt = now;
-    if (dto.status === 'MANAGER_APPROVED') data.managerApprovedAt = now;
-    if (dto.status === 'DELIVERED_TO_HOSPITAL') data.deliveredAt = now;
-    if (dto.status === 'HOSPITAL_REVIEW') data.hospitalReviewedAt = now;
-    if (dto.status === 'HOSPITAL_ACCEPTED') data.hospitalAcceptedAt = now;
-    if (dto.status === 'COMPLETED') data.completedAt = now;
+      if (
+        dto.status === StudyStatus.HOSPITAL_ACCEPTED &&
+        (!study.managerApprovedAt || !study.deliveredAt)
+      ) {
+        throw new BadRequestException(
+          'The report must be manager-approved and delivered before the hospital can accept it.',
+        );
+      }
 
-    const updated = await this.prisma.study.update({
-      where: { studyInstanceUid: studyUid },
-      data,
-      include: {
-        patient: true,
-        hospital: true,
-        assignedRadiologist: true,
-      },
-    });
+      if (dto.status === StudyStatus.COMPLETED && !study.hospitalAcceptedAt) {
+        throw new BadRequestException(
+          'The study must be accepted by the hospital before it can be completed.',
+        );
+      }
 
-    await this.audit.create({
-      actorId: user.id,
-      actorName: user.role,
-      actorRole: user.role,
-      action: 'STUDY_STATUS_CHANGED',
-      resource: 'STUDY',
-      resourceId: study.id,
-      metadata: { from: study.status, to: dto.status, studyUid },
+      const data: Record<string, unknown> = { status: dto.status };
+      const now = new Date();
+
+      if (dto.status === 'IN_READING') data.reportingStartedAt = now;
+      if (dto.status === 'RADIOLOGIST_SIGNED') data.signedOffAt = now;
+      if (dto.status === 'MANAGER_REVIEW') data.managerReviewedAt = now;
+      if (dto.status === 'MANAGER_APPROVED') data.managerApprovedAt = now;
+      if (dto.status === 'DELIVERED_TO_HOSPITAL') data.deliveredAt = now;
+      if (dto.status === 'HOSPITAL_REVIEW') data.hospitalReviewedAt = now;
+      if (dto.status === 'HOSPITAL_ACCEPTED') data.hospitalAcceptedAt = now;
+      if (dto.status === 'COMPLETED') data.completedAt = now;
+
+      const updated = await tx.study.update({
+        where: { studyInstanceUid: studyUid },
+        data,
+        include: {
+          patient: true,
+          hospital: true,
+          assignedRadiologist: true,
+        },
+      });
+
+      await this.audit.createTx(tx, {
+        actorId: user.id,
+        actorName: user.role,
+        actorRole: user.role,
+        action: 'STUDY_STATUS_CHANGED',
+        resource: 'STUDY',
+        resourceId: study.id,
+        metadata: { from: study.status, to: dto.status, studyUid },
+      });
+
+      return updated;
     });
 
     return { data: updated };
