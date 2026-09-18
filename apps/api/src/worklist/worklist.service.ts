@@ -81,20 +81,34 @@ export class WorklistService {
       };
     }
 
-    const items = await this.prisma.worklistItem.findMany({
-      where,
-      include: {
-        study: {
-          include: {
-            patient: true,
-            hospital: true,
-            assignedRadiologist: true,
+    const page = Math.max(parseInt(filters.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(filters.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
+
+    const [total, items] = await Promise.all([
+      this.prisma.worklistItem.count({ where }),
+      this.prisma.worklistItem.findMany({
+        where,
+        include: {
+          study: {
+            include: {
+              patient: true,
+              hospital: true,
+              assignedRadiologist: true,
+            },
           },
         },
-      },
-    });
+        orderBy: { id: 'asc' },
+        take,
+        skip,
+      }),
+    ]);
 
-    return { data: items };
+    return {
+      data: items,
+      pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+    };
   }
 
   async my(userId: string, userRole: UserRole, hospitalId?: string) {
