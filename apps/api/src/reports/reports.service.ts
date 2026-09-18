@@ -204,7 +204,7 @@ export class ReportsService {
     if (user.role === 'HOSPITAL' && user.hospitalId) {
       where.study = {
         hospitalId: user.hospitalId,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'] },
+        status: { in: [...HOSPITAL_VISIBLE_STATES] },
       };
     } else if (user.role === 'RADIOLOGIST') {
       where.study = { assignedRadiologistId: user.id };
@@ -232,7 +232,7 @@ export class ReportsService {
       status: { in: ['SIGNED', 'MANAGER_APPROVED', 'MANAGER_REVIEW'] },
       study: {
         hospitalId: user.hospitalId!,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'] },
+        status: { in: [...HOSPITAL_VISIBLE_STATES] },
       },
     };
 

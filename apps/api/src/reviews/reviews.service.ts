@@ -24,12 +24,7 @@ interface Actor {
  * destination hospital. A hospital may only access report content in these
  * states; before DELIVERED_TO_HOSPITAL the report must not be exposed.
  */
-export const HOSPITAL_VISIBLE_STATES: StudyStatus[] = [
-  StudyStatus.DELIVERED_TO_HOSPITAL,
-  StudyStatus.HOSPITAL_REVIEW,
-  StudyStatus.HOSPITAL_ACCEPTED,
-  StudyStatus.COMPLETED,
-];
+export { HOSPITAL_VISIBLE_STATES } from '../common/visibility/hospital-visible.js';
 
 /**
  * Phase 5 — Review & Hospital Delivery.

@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { runSerializable } from '../common/db/serializable.js';
+import { isHospitalReportVisible } from '../common/visibility/hospital-visible.js';
 import { ListStudiesDto } from './dto/list-studies.dto.js';
 import { UpdateStudyStatusDto } from './dto/update-study-status.dto.js';
 import { CreateStudyDto } from './dto/create-study.dto.js';
@@ -131,6 +132,10 @@ export class StudiesService {
     }
 
     this.assertCanView(study, user);
+
+    if (user?.role === 'HOSPITAL' && !isHospitalReportVisible(study.status)) {
+      study.reports = [];
+    }
 
     return { data: study };
   }
