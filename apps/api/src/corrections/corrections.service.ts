@@ -237,7 +237,7 @@ export class CorrectionsService {
    * GET — correction queue. Manager/ADMIN see all; RADIOLOGIST sees their own
    * assigned active corrections; HOSPITAL sees corrections for their own studies.
    */
-  async list(actor: Actor) {
+  async list(actor: Actor, query: { page?: string; pageSize?: string } = {}) {
     let where: Prisma.ChangeRequestWhereInput = {};
     if (actor.role === 'RADIOLOGIST') {
       where = { assignedToId: actor.id };
@@ -248,30 +248,48 @@ export class CorrectionsService {
       where = { study: { hospitalId: actor.hospitalId } };
     }
 
-    const items = await this.prisma.changeRequest.findMany({
-      where,
-      include: {
-        study: {
-          include: {
-            patient: true,
-            hospital: true,
-            assignedRadiologist: { select: { id: true, displayName: true } },
-          },
-        },
-        report: true,
-        requestedBy: { select: { id: true, displayName: true, role: true } },
-        assignedTo: { select: { id: true, displayName: true, role: true } },
-        reviewedBy: { select: { id: true, displayName: true, role: true } },
-        parentReportVersion: true,
-        newReportVersion: true,
-      },
-      orderBy: [
-        { status: 'asc' },
-        { createdAt: 'desc' },
-      ],
-    });
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
 
-    return { data: items };
+    const [total, items] = await Promise.all([
+      this.prisma.changeRequest.count({ where }),
+      this.prisma.changeRequest.findMany({
+        where,
+        include: {
+          study: {
+            include: {
+              patient: true,
+              hospital: true,
+              assignedRadiologist: { select: { id: true, displayName: true } },
+            },
+          },
+          report: true,
+          requestedBy: { select: { id: true, displayName: true, role: true } },
+          assignedTo: { select: { id: true, displayName: true, role: true } },
+          reviewedBy: { select: { id: true, displayName: true, role: true } },
+          parentReportVersion: true,
+          newReportVersion: true,
+        },
+        orderBy: [
+          { status: 'asc' },
+          { createdAt: 'desc' },
+        ],
+        take,
+        skip,
+      }),
+    ]);
+
+    return {
+      data: items,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+      },
+    };
   }
 
   /**
