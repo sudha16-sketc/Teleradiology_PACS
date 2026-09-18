@@ -43,7 +43,7 @@ export class RetentionService {
     });
 
     const backupExists = await this.prisma.backupRun.count({
-      where: { status: { in: [BackupStatus.VERIFIED, BackupStatus.COMPLETED] } },
+      where: { status: { in: [BackupStatus.VERIFIED] } },
     });
 
     return studies.map((s) => {

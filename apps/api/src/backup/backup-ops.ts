@@ -69,7 +69,7 @@ export async function exportOrthancVolume(
   const { stdout } = await execFileAsync(
     env.podmanBin,
     ['volume', 'export', env.orthancVolume],
-    { maxBuffer: 0, encoding: 'buffer' },
+    { maxBuffer: 1024 * 1024 * 1024, encoding: 'buffer' },
   );
   await fs.writeFile(outFile, stdout);
   const stat = await fs.stat(outFile);
