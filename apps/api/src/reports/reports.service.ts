@@ -205,7 +205,12 @@ export class ReportsService {
     const take = pageSize;
     const skip = (page - 1) * pageSize;
     const where: Record<string, unknown> = {};
-    if (user.role === 'HOSPITAL' && user.hospitalId) {
+    if (user.role === 'HOSPITAL') {
+      // A HOSPITAL account with no linked hospital must never fall through to
+      // an unscoped query (which would expose every hospital's reports).
+      if (!user.hospitalId) {
+        throw new ForbiddenException('Your account is not linked to a hospital');
+      }
       where.study = {
         hospitalId: user.hospitalId,
         status: { in: [...HOSPITAL_VISIBLE_STATES] },
@@ -380,11 +385,19 @@ export class ReportsService {
         },
         include: { author: true },
       });
-      // First draft created -> advance the study workflow to REPORT_DRAFT.
-      if (study.status !== StudyStatus.REPORT_DRAFT) {
-        await this.ensureDraftState(study, actor);
-      }
     }
+
+    // A draft can be created/edited while the study is ASSIGNED, IN_READING or
+    // REPORT_DRAFT. The workflow state must be normalised to REPORT_DRAFT on
+    // EVERY save (not just the first draft creation): if the study was moved
+    // back out of REPORT_DRAFT (reassignment, correction, etc.) while a draft
+    // already existed, leaving it in ASSIGNED/IN_READING would keep sign-off
+    // permanently disabled. ensureDraftState is idempotent and early-returns
+    // when the study is already REPORT_DRAFT.
+    await this.ensureDraftState(
+      { studyInstanceUid: study.studyInstanceUid, status: study.status },
+      actor,
+    );
 
     await this.auditLog(
       actor,

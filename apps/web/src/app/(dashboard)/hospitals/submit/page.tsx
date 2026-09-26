@@ -107,11 +107,13 @@ export default function SubmitStudyPage() {
 
       seen.add(key);
 
-      // 200 MB per file
-      if (file.size > 200 * 1024 * 1024) {
+      // 1 GB per file (server-side AXIS_DICOM_MAX_FILE_BYTES is the
+      // authoritative cap; this keeps the browser from uploading files
+      // doomed to be rejected by the API).
+      if (file.size > 1024 * 1024 * 1024) {
         setFiles([]);
         setError(
-          `File "${file.name}" exceeds the 200 MB limit.`
+          `File "${file.name}" exceeds the 1 GB limit.`
         );
         return;
       }

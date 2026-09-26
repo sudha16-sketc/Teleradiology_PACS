@@ -90,6 +90,11 @@ export class UsersService {
     hospitalId?: string;
     subspecialty?: string;
   }) {
+    if (dto.role === UserRole.HOSPITAL && !dto.hospitalId) {
+      throw new BadRequestException(
+        'A hospital must be selected when creating a hospital account',
+      );
+    }
     if (dto.hospitalId) {
       const hospital = await this.prisma.hospital.findUnique({ where: { id: dto.hospitalId } });
       if (!hospital) {
@@ -165,6 +170,30 @@ export class UsersService {
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
+
+    // A HOSPITAL account is only usable while it is bound to a hospital, and an
+    // unknown id would break every hospital-scoped query with a 403. Validate
+    // before writing so the account can never be left unlinked or dangling.
+    const effectiveRole = dto.role ?? user.role;
+    const effectiveHospitalId =
+      dto.hospitalId !== undefined ? dto.hospitalId || null : user.hospitalId;
+    if (effectiveRole === UserRole.HOSPITAL) {
+      if (!effectiveHospitalId) {
+        throw new BadRequestException(
+          'A hospital must be selected when the account has the Hospital role',
+        );
+      }
+      const hospital = await this.prisma.hospital.findUnique({
+        where: { id: effectiveHospitalId },
+        select: { id: true, isActive: true },
+      });
+      if (!hospital) {
+        throw new BadRequestException('hospitalId does not reference a known hospital');
+      }
+      if (!hospital.isActive) {
+        throw new BadRequestException('Cannot link the account to an inactive hospital');
+      }
+    }
 
     const targetedStatus = dto.status;
     if (targetedStatus === UserStatus.PENDING || targetedStatus === UserStatus.REJECTED) {

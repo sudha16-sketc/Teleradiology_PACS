@@ -366,3 +366,36 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
     expect(res.body.message).toContain('another hospital');
   });
 });
+
+describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => {
+  let cghAgent: any;
+
+  beforeAll(async () => {
+    cghAgent = await loginAgent(server, h_cgh);
+  });
+
+  it('DICOM-ING-4: a single raw .dcm upload ingests and persists hierarchy like the zipped path', async () => {
+    const studyUid = `1.2.826.0.1.3680043.98.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+    const sopUid = `1.2.826.0.1.3680043.98.9.${Date.now()}`;
+    const raw = buildP10({ studyUid, sopUid });
+
+    const res = await cghAgent
+      .post('/api/dicom/ingest')
+      .attach('file', raw, { filename: 'single.dcm', contentType: 'application/octet-stream' });
+
+    expect(res.status).toBe(201);
+    const data = res.body.data;
+    expect(data.orthancStudyId).toBeTruthy();
+    expect(data.instanceCount).toBe(1);
+    expect(data.skipped).toBe(0);
+
+    const studyId: string = data.study.id;
+    createdStudyIds.push(studyId);
+
+    const study = await prisma.study.findUniqueOrThrow({ where: { id: studyId } });
+    expect(study.studyInstanceUid).toBe(studyUid);
+    expect(study.hospitalId).toBe(CGH_HOSPITAL_ID);
+    expect(study.seriesCount).toBe(1);
+    expect(study.instanceCount).toBe(1);
+  });
+});

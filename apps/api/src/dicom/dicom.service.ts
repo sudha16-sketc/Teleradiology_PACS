@@ -217,25 +217,33 @@ export class DicomService {
     let archive: ExtractedArchive | null = null;
     let study: any = null;
 
-    // Normalise the upload into a single ZIP buffer so the hardened extraction
-    // pipeline is always used:
-    //   - a single already-zipped archive is passed through untouched;
-    //   - one or more raw DICOM instances (folder/multi-file drag, or a single
-    //     .dcm) are bundled into an in-memory ZIP first.
-    let uploadBuffer: Buffer;
-    if (files.length === 1 && isZip(files[0].buffer)) {
-      uploadBuffer = files[0].buffer;
+    // Read the uploaded bytes from the disk-backed staging area (multer
+    // diskStorage) rather than an in-memory buffer, so studies up to the 1 GiB
+    // per-file limit can be ingested without holding the whole request in heap.
+    // Files are read back one at a time; the controller removes the staging
+    // directory in finally.
+    const readUpload = async (f: Express.Multer.File): Promise<Buffer> =>
+      f.path ? readFile(f.path) : Promise.resolve(f.buffer as Buffer);
+
+    let fileBuffer: Buffer;
+    if (files.length === 1) {
+      // A single upload: if it is a ZIP it is passed to the hardened
+      // extraction pipeline untouched; if it is a raw DICOM instance it is
+      // validated and ingested directly (no in-memory re-zip round-trip).
+      fileBuffer = await readUpload(files[0]);
     } else {
+      // Multiple raw instances (folder/multi-file drag) are bundled into a
+      // single ZIP so the hardened extraction/validation pipeline is reused.
       const zip = new AdmZip();
-      files.forEach((f, i) => {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
         const base = (f.originalname || `instance`).split(/[\\/]/).pop() || `instance`;
         const ext = /\.(dcm|dicom)$/i.test(base) ? '' : '.dcm';
         const safeName = `${i + 1}_${base.replace(/\.[^.]*$/, '') || 'dicom'}${ext}`;
-        zip.addFile(safeName, f.buffer);
-      });
-      uploadBuffer = zip.toBuffer();
+        zip.addFile(safeName, await readUpload(f));
+      }
+      fileBuffer = zip.toBuffer();
     }
-    const fileBuffer = uploadBuffer;
 
     try {
       // 1. Collect the raw DICOM instances (single file or safely extracted ZIP).

@@ -30,10 +30,11 @@ export function SignOffControls({
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const canSignOff =
-    status === "REPORT_DRAFT" ||
-    status === "CORRECTION_REQUESTED" ||
-    status === "IN_READING";
+  // The backend state machine only allows RADIOLOGIST_SIGNED from REPORT_DRAFT
+  // (via the Save Draft flow the study is normalised to REPORT_DRAFT on every
+  // save, including correction/in-reading re-entry). Enabling Sign while the
+  // study is still ASSIGNED/IN_READING would hit a 400 on every attempt.
+  const canSignOff = status === "REPORT_DRAFT";
 
   const canMarkDelivered =
     status === "MANAGER_APPROVED" ||

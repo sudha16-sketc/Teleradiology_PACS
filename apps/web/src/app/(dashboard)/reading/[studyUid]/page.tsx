@@ -133,6 +133,7 @@ export default function ReadingPage() {
               <ReportPanel
                 studyInstanceUid={studyUid}
                 report={report}
+                assignedRadiologistId={study.assignedRadiologistId}
                 onReportSaved={() => void load()}
               />
               {report && <CriticalFindingBanner report={report} />}

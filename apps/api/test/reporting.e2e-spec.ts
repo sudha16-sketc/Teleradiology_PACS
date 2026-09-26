@@ -221,6 +221,53 @@ describe('Phase 4 — Reporting', () => {
     });
   });
 
+  // ---- REPORT-3b: editing an existing DRAFT must re-normalise study status ----
+  // Regression: sign-off was permanently blocked for a pre-existing DRAFT report
+  // whose study lagged in ASSIGNED/IN_READING, because ensureDraftState only ran
+  // on the create branch of saveDraft.
+  describe('REPORT-3b: editing an existing DRAFT while study is ASSIGNED enables sign-off', () => {
+    let study: { id: string; studyInstanceUid: string; patientId: string };
+    let reportId: string;
+
+    beforeAll(async () => {
+      study = await seedStudy({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.ASSIGNED, assignedRadiologist: rad1Id });
+      await prisma.assignment.create({
+        data: { studyId: study.id, radiologistId: rad1Id, assignedById: rad1Id, isActive: true },
+      });
+      const report = await prisma.report.create({
+        data: {
+          studyId: study.id,
+          authorId: rad1Id,
+          status: 'DRAFT',
+          version: 1,
+          findings: '',
+          impression: '',
+          contentHash: 'x',
+        },
+      });
+      reportId = report.id;
+    });
+
+    afterAll(async () => {
+      await cleanupStudy(study.id, study.patientId);
+    });
+
+    it('REPORT-3b: saveDraft on the existing draft advances ASSIGNED -> REPORT_DRAFT', async () => {
+      await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ findings: 'Normal', impression: 'Normal study.' })
+        .expect(200);
+
+      const afterSave = await prisma.study.findUniqueOrThrow({ where: { id: study.id } });
+      expect(afterSave.status).toBe('REPORT_DRAFT');
+    });
+
+    it('REPORT-3b: the radiologist can then sign the report', async () => {
+      const sign = await rad1Agent.post(`/api/reports/${study.studyInstanceUid}/sign`);
+      expect(sign.status).toBe(201);
+    });
+  });
+
   // ---- REPORT-4: non-radiologist cannot save draft ----
   describe('REPORT-4: non-radiologist cannot save draft', () => {
     let study: { id: string; studyInstanceUid: string; patientId: string };

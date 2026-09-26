@@ -19,6 +19,7 @@ import { CriticalFindingToggle } from "@/components/report/CriticalFindingToggle
 interface ReportPanelProps {
   studyInstanceUid: string;
   report: Report | null;
+  assignedRadiologistId?: string | null;
   onReportSaved?: () => void;
 }
 
@@ -47,6 +48,7 @@ const AUTOSAVE_DELAY_MS = 500;
 export function ReportPanel({
   studyInstanceUid,
   report,
+  assignedRadiologistId,
   onReportSaved,
 }: ReportPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
@@ -56,7 +58,16 @@ export function ReportPanel({
     isRadiologist && report
       ? report.authorId === currentUser?.id
       : false;
+  // True when the viewing radiologist is the study's assigned radiologist,
+  // regardless of whether a report row exists yet (needed for the create CTA).
+  const canAuthorReport =
+    isRadiologist &&
+    (assignedRadiologistId === currentUser?.id ||
+      (assignedRadiologistId == null && report?.authorId === currentUser?.id));
   const isEditable = isAssigned && report?.status !== "SIGNED";
+
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const [clinicalHistory, setClinicalHistory] = useState(
     report?.clinicalHistory ?? "",
@@ -208,6 +219,55 @@ export function ReportPanel({
           <div className="flex flex-col items-center gap-3 px-4 py-6">
             <FileText size={32} strokeWidth={1} className="text-text-muted" />
             <p className="text-sm text-text-muted">No report yet</p>
+            {canAuthorReport && (
+              <>
+                <button
+                  type="button"
+                  disabled={creating}
+                  onClick={async () => {
+                    if (creating) return;
+                    setCreating(true);
+                    setCreateError(null);
+                    try {
+                      // POST /reports/:studyUid is create-or-update: it creates
+                      // the v1 DRAFT (and advances the study workflow), then the
+                      // parent reloads so this panel renders the editor.
+                      await apiClient.patch(
+                        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
+                        {
+                          clinicalHistory: "",
+                          findings: "",
+                          impression: "",
+                          technique: "",
+                          comparison: "",
+                          recommendations: "",
+                          criticalFinding: false,
+                        },
+                      );
+                      onReportSaved?.();
+                    } catch (e) {
+                      setCreateError(
+                        (e as { message?: string }).message ??
+                          "Failed to start the report.",
+                      );
+                    } finally {
+                      setCreating(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {creating ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <FileText size={14} />
+                  )}
+                  {creating ? "Creating..." : "Start Report"}
+                </button>
+                {createError && (
+                  <p className="text-xs text-error">{createError}</p>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

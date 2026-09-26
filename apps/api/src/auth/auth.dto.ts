@@ -52,6 +52,17 @@ export class LoginDto {
 export class ApproveRequestDto {
   @IsEnum(UserRole)
   role!: UserRole;
+
+  /**
+   * Hospital the account belongs to. Required when the approved role is
+   * HOSPITAL: an approved HOSPITAL account with no linked hospital cannot read
+   * or write any study, report or correction (every hospital route is scoped by
+   * user.hospitalId), so approving without one produces a permanently broken
+   * login. Ignored for non-HOSPITAL roles.
+   */
+  @IsOptional()
+  @IsString()
+  hospitalId?: string;
 }
 
 export class RejectRequestDto {

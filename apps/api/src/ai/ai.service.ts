@@ -22,13 +22,37 @@ export class AIService {
     const skip = (page - 1) * pageSize;
 
     // MANAGERs are hospital-scoped: they may only view AI jobs for studies of
-    // their own hospital. An ADMIN/RADIOLOGIST covers all hospitals.
+    // their own hospital. RADIOLOGISTs are assignment-scoped: they may only
+    // view AI jobs for studies assigned to them (they must not see other
+    // radiologists'/hospitals' studies or patient data). ADMIN covers all.
     if (user.role === 'MANAGER') {
       if (!user.hospitalId) {
         return { data: [], meta: { total: 0, page, pageSize, totalPages: 0 } };
       }
       const where: Prisma.AIJobWhereInput = {
         study: { hospitalId: user.hospitalId },
+      };
+      if (status) where.status = status;
+      if (studyId) where.studyId = studyId;
+      const [data, total] = await Promise.all([
+        this.prisma.aIJob.findMany({
+          where,
+          skip,
+          take: pageSize,
+          include: { study: { include: { patient: true } } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.aIJob.count({ where }),
+      ]);
+      return {
+        data,
+        meta: { total, page, pageSize, totalPages: Math.ceil(total / pageSize) },
+      };
+    }
+
+    if (user.role === 'RADIOLOGIST') {
+      const where: Prisma.AIJobWhereInput = {
+        study: { assignedRadiologistId: user.id },
       };
       if (status) where.status = status;
       if (studyId) where.studyId = studyId;
@@ -82,9 +106,15 @@ export class AIService {
 
     if (!job) throw new NotFoundException(`AI Job ${id} not found`);
 
-    // Tenant isolation: a MANAGER cannot read job results for another
-    // hospital's study. NotFound (not Forbidden) avoids an existence oracle.
+    // Tenant isolation: non-ADMIN roles may only read jobs for studies they
+    // are allowed to see. NotFound (not Forbidden) avoids an existence oracle.
     if (user.role === 'MANAGER' && job.study.hospitalId !== user.hospitalId) {
+      throw new NotFoundException(`AI Job ${id} not found`);
+    }
+    if (
+      user.role === 'RADIOLOGIST' &&
+      job.study.assignedRadiologistId !== user.id
+    ) {
       throw new NotFoundException(`AI Job ${id} not found`);
     }
 

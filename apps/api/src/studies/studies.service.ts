@@ -70,7 +70,12 @@ export class StudiesService {
     if (modality) where.modality = modality;
     if (priority) where.priority = priority;
 
-    if (user?.role === UserRole.HOSPITAL && user.hospitalId) {
+    if (user?.role === UserRole.HOSPITAL) {
+      // A HOSPITAL account with no linked hospital must never fall through to
+      // an unscoped query (which would expose every hospital's studies).
+      if (!user.hospitalId) {
+        throw new ForbiddenException('Your account is not linked to a hospital');
+      }
       where.hospitalId = user.hospitalId;
     } else if (user?.role === UserRole.RADIOLOGIST && user.id) {
       where.assignedRadiologistId = user.id;

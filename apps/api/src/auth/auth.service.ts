@@ -182,6 +182,7 @@ export class AuthService {
         requestedRole: true,
         role: true,
         status: true,
+        hospitalId: true,
         rejectionReason: true,
         createdAt: true,
         approvedAt: true,
@@ -205,11 +206,20 @@ export class AuthService {
       );
     }
 
+    const hospitalId =
+      dto.role === UserRole.HOSPITAL
+        ? await this.resolveHospitalId(dto.hospitalId ?? request.hospitalId)
+        : null;
+
     const updated = await this.prisma.user.update({
       where: { id },
       data: {
         status: UserStatus.APPROVED,
         role: dto.role,
+        // A hospital link only means anything for a HOSPITAL account; carrying a
+        // stale one onto a radiologist/manager silently widens what they can see
+        // if the role is ever changed back.
+        hospitalId,
         isActive: true,
         approvedAt: new Date(),
         approvedById: admin.id,
@@ -225,11 +235,39 @@ export class AuthService {
         action: 'USER_UPDATED',
         resource: 'USER',
         resourceId: id,
-        metadata: { action: 'REGISTRATION_APPROVED', finalRole: dto.role },
+        metadata: {
+          action: 'REGISTRATION_APPROVED',
+          finalRole: dto.role,
+          hospitalId,
+        },
       })
       .catch(() => {});
 
     return { data: sanitizeUser(updated) };
+  }
+
+  /**
+   * Resolves the hospital a HOSPITAL account must be bound to at approval time.
+   * An unset or dangling id is a hard error rather than a silent null, because
+   * the alternative is an account that can log in but can never load data.
+   */
+  private async resolveHospitalId(hospitalId?: string | null): Promise<string> {
+    if (!hospitalId) {
+      throw new BadRequestException(
+        'A hospital must be selected when approving a hospital account',
+      );
+    }
+    const hospital = await this.prisma.hospital.findUnique({
+      where: { id: hospitalId },
+      select: { id: true, isActive: true },
+    });
+    if (!hospital) {
+      throw new BadRequestException('hospitalId does not reference a known hospital');
+    }
+    if (!hospital.isActive) {
+      throw new BadRequestException('Cannot link the account to an inactive hospital');
+    }
+    return hospital.id;
   }
 
   async rejectRegistrationRequest(

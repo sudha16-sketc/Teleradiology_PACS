@@ -5,6 +5,8 @@ import { loginAgent, USERS, prisma } from './helpers.js';
 import type { INestApplication } from '@nestjs/common';
 import type { Test } from 'supertest';
 import { randomUUID } from 'crypto';
+import { hash } from 'bcryptjs';
+import { StudyStatus, UserRole } from '@prisma/client';
 
 let app: INestApplication;
 let server: any;
@@ -136,6 +138,114 @@ describe('Phase 1 security -- tenant isolation (HOSPITAL)', () => {
     // A manager can receive it (RECEIVING requires ADMIN/MANAGER).
     const mgr = await loginAgent(server, manager);
     await transition(mgr, sel.studyUid, 'RECEIVING').expect(200);
+  });
+});
+
+describe('Phase 1 security -- HOSPITAL user with no hospital tenant must be rejected', () => {
+  let agent: any;
+  let orphanUserId: string | undefined;
+
+  beforeAll(async () => {
+    const existing = await prisma.user.findUnique({
+      where: { email: 'security.nohosp@example.com' },
+    });
+    if (existing) {
+      await prisma.auditLog.deleteMany({ where: { actorId: existing.id } });
+      await prisma.user.delete({ where: { id: existing.id } });
+    }
+    const pw = await hash('AxisDev123!', 4);
+    const u = await prisma.user.create({
+      data: {
+        email: 'security.nohosp@example.com',
+        displayName: 'Security No Hospital',
+        role: UserRole.HOSPITAL,
+        status: 'APPROVED',
+        isActive: true,
+        passwordHash: pw,
+      },
+    });
+    orphanUserId = u.id;
+    agent = await loginAgent(server, { email: u.email, password: 'AxisDev123!' });
+  });
+
+  afterAll(async () => {
+    if (orphanUserId) {
+      await prisma.user.delete({ where: { id: orphanUserId } }).catch(() => undefined);
+    }
+  });
+
+  it('HOSPITAL-4: GET /api/studies returns 403 (no global fall-through)', async () => {
+    const res = await agent.get('/api/studies');
+    expect(res.status).toBe(403);
+  });
+
+  it('HOSPITAL-5: GET /api/reports returns 403 (no global fall-through)', async () => {
+    const res = await agent.get('/api/reports');
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('Phase 1 security -- radiologist access to AI jobs is scoped to own assignments', () => {
+  let cghAgent: any;
+  let rad2Agent: any;
+
+  const ids: string[] = [];
+  let job1: string | undefined;
+  let job2: string | undefined;
+
+  beforeAll(async () => {
+    cghAgent = await loginAgent(server, h_cgh);
+    rad2Agent = await loginAgent(server, rad2);
+  });
+
+  afterAll(async () => {
+    if (job1 && job2) {
+      await prisma.aIJob.deleteMany({ where: { id: { in: [job1, job2] } } }).catch(() => undefined);
+    }
+    for (const id of ids) {
+      const s = await prisma.study.findUnique({ where: { id } }).catch(() => undefined);
+      if (!s) continue;
+      await prisma.worklistItem.deleteMany({ where: { studyId: id } });
+      await prisma.assignment.deleteMany({ where: { studyId: id } });
+      await prisma.study.delete({ where: { id: id } });
+    }
+  });
+
+  it('RAD-4: RAD2 cannot list or read RAD1-study AI jobs (jobs carry patient data)', async () => {
+    const rad1User = await prisma.user.findUniqueOrThrow({ where: { email: rad1.email } });
+    const rad2User = await prisma.user.findUniqueOrThrow({ where: { email: rad2.email } });
+
+    const s1 = await createStudy(cghAgent, 'AI Scope RAD1');
+    ids.push(s1.studyId);
+    await enableDicomOnStudy(s1.studyId);
+    const s2 = await createStudy(cghAgent, 'AI Scope RAD2');
+    ids.push(s2.studyId);
+
+    await prisma.study.update({
+      where: { id: s1.studyId },
+      data: { assignedRadiologistId: rad1User.id, status: StudyStatus.ASSIGNED },
+    });
+    await prisma.study.update({
+      where: { id: s2.studyId },
+      data: { assignedRadiologistId: rad2User.id, status: StudyStatus.ASSIGNED },
+    });
+
+    const a1 = await prisma.aIJob.create({
+      data: { studyId: s1.studyId, taskType: 'ANATOMY_DETECTION', status: 'COMPLETED', result: { ok: true } },
+    });
+    const a2 = await prisma.aIJob.create({
+      data: { studyId: s2.studyId, taskType: 'PATHOLOGY_SCREENING', status: 'COMPLETED', result: { ok: true } },
+    });
+    job1 = a1.id;
+    job2 = a2.id;
+
+    const list = await rad2Agent.get('/api/ai/jobs?pageSize=100').expect(200);
+    const listedUids = (list.body.data ?? []).map((j: any) => j.study?.studyInstanceUid ?? j.studyInstanceUid);
+    expect(listedUids).not.toContain(s1.studyUid);
+    expect(listedUids).toContain(s2.studyUid);
+
+    const detail = await rad2Agent.get(`/api/ai/jobs/${a1.id}`);
+    expect(detail.status).toBe(404);
   });
 });
 
