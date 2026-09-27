@@ -261,3 +261,81 @@ html:has(.landing) {
     scroll-behavior: auto !important;
   }
 }
+/* ---------------------------------------------------------------------------
+ * Print
+ *
+ * Applies to every route, not just the report print view: a radiologist
+ * printing a worklist or a critical-findings notice should get a usable page
+ * rather than a screenshot of a dark UI.
+ *
+ * The rules are deliberately blunt — hide the chrome, flatten the surfaces, force
+ * black on white. Print stylesheets fail in the direction of "unreadable dark
+ * page" far more often than they fail in the direction of "too plain".
+ * ------------------------------------------------------------------------- */
+@media print {
+  /* Force light text. A dark theme prints as a black rectangle on a
+     black-and-white clinical printer, which is the classic way a report
+     becomes illegible on paper. */
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Chrome that carries no clinical meaning. `display: none` rather than
+     `visibility: hidden` so the elements take no space. */
+  nav,
+  aside,
+  header button,
+  [data-print="hide"],
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* Links are useless on paper and the URLs leak query strings. */
+  a[href]::after {
+    content: none !important;
+  }
+
+  /* Keep a section heading attached to the text that follows it, and stop a
+     long report being split mid-sentence. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    break-after: avoid-page;
+    page-break-after: avoid;
+  }
+
+  tr,
+  li,
+  .report-print section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Full-width content reads better than a shrunken centred column. */
+  .max-w-3xl,
+  .max-w-4xl,
+  .max-w-6xl,
+  .max-w-7xl {
+    max-width: none !important;
+  }
+
+  /* Remove the interactive affordances a paper page cannot offer. */
+  button,
+  input,
+  select,
+  textarea {
+    box-shadow: none !important;
+    border-color: #000000 !important;
+  }
+
+  img,
+  svg {
+    /* Flatten to a solid outline: a filter or drop-shadow on a graphic
+       consumes toner and prints as a grey smear. */
+    filter: none !important;
+    box-shadow: none !important;
+  }
+}

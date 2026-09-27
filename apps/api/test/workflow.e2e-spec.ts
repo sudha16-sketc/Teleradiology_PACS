@@ -75,6 +75,7 @@ async function cleanupStudy(id: string, patientId: string) {
   await prisma.series.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.worklistItem.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.assignment.deleteMany({ where: { studyId: id } }).catch(() => undefined);
+  await prisma.notification.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.auditLog.deleteMany({ where: { resourceId: id } }).catch(() => undefined);
   await prisma.study.delete({ where: { id } }).catch(() => undefined);
   const remaining = await prisma.study.count({ where: { patientId } }).catch(() => 0);
@@ -194,6 +195,14 @@ describe('Phase 3 -- Assignment (canonical, transactional)', () => {
     const active = await prisma.assignment.findMany({ where: { studyId: study.id, isActive: true } });
     expect(active.length).toBe(1);
     expect(active[0].radiologistId).toBe(rad1Id);
+
+    const notification = await prisma.notification.findFirst({
+      where: { recipientUserId: rad1Id, type: 'STUDY_ASSIGNED', studyId: study.id },
+    });
+    expect(notification).toMatchObject({
+      title: 'New study assigned',
+      message: 'A study has been assigned to your worklist.',
+    });
   });
 
   it('ASSIGN-2: Hospital cannot assign', async () => {
@@ -506,5 +515,150 @@ describe('Phase 3 -- DICOMweb authorization', () => {
     // A hospital likewise gets 404.
     const hosp = await cghAgent.get(`/api/dicom-web/studies/${unknown}/series`);
     expect(hosp.status).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // QIDO-RS query filters are equivalent to a study-scoped path: OHIF issues
+  // /studies?StudyInstanceUID=<uid> and /series?SeriesInstanceUID=<uid>, and
+  // those must pass exactly the same study-access checks.
+  // -------------------------------------------------------------------------
+  describe('DICOMweb QIDO-RS query-filter scope', () => {
+    const UNINDEXED = '1.2.826.0.1.3680043.2.99999.000000.33333';
+
+    let adminAgent: any;
+    // MMC study deliberately left UNASSIGNED, with a Series row.
+    let qidoStudy: { id: string; studyInstanceUid: string; patientId: string };
+    let qidoSeriesUid: string;
+    // Real series of the study assigned to RAD1.
+    let assignedSeriesUid: string;
+
+    beforeAll(async () => {
+      adminAgent = await loginAgent(server, admin);
+
+      const series = await prisma.series.findFirst({ where: { studyId: real.id } });
+      expect(series).not.toBeNull();
+      assignedSeriesUid = series!.seriesInstanceUid;
+
+      qidoStudy = await seedStudy({
+        hospitalId: MMC_HOSPITAL_ID,
+        patientName: 'QIDO Filter Study',
+        status: StudyStatus.UNASSIGNED,
+        orthanc: true,
+      });
+      qidoSeriesUid = `1.2.826.0.1.3680043.9.${Date.now()}.7`;
+      await prisma.series.create({
+        data: {
+          seriesInstanceUid: qidoSeriesUid,
+          studyId: qidoStudy.id,
+          modality: 'MRI',
+          seriesNumber: 1,
+          orthancSeriesId: `orths-${qidoSeriesUid}`,
+        },
+      });
+    });
+
+    it('DICOM-QIDO-1: assigned radiologist reaches an assigned study via StudyInstanceUID', async () => {
+      const res = await rad1Agent.get(
+        `/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('DICOM-QIDO-2: unassigned radiologist is denied a StudyInstanceUID filter', async () => {
+      const res = await rad2Agent.get(
+        `/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it('DICOM-QIDO-3: manager and admin keep global access through a filter', async () => {
+      const url = `/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`;
+      await managerAgent.get(url).expect(200);
+      await adminAgent.get(url).expect(200);
+      // Global roles keep the unscoped study listing too.
+      await managerAgent.get('/api/dicom-web/studies').expect(200);
+      await adminAgent.get('/api/dicom-web/studies').expect(200);
+    });
+
+    it('DICOM-QIDO-4: the /studies/<uid>/series path form still works', async () => {
+      await rad1Agent.get(`/api/dicom-web/studies/${real.studyInstanceUid}/series`).expect(200);
+    });
+
+    it('DICOM-QIDO-5: SeriesInstanceUID is resolved to its owning study', async () => {
+      const allowed = await rad1Agent.get(
+        `/api/dicom-web/series?SeriesInstanceUID=${encodeURIComponent(assignedSeriesUid)}`,
+      );
+      expect(allowed.status).toBe(200);
+
+      // qidoStudy is unassigned, so RAD1 must be denied even though the filter
+      // names a series rather than a study.
+      const denied = await rad1Agent.get(
+        `/api/dicom-web/series?SeriesInstanceUID=${encodeURIComponent(qidoSeriesUid)}`,
+      );
+      expect(denied.status).toBe(403);
+    });
+
+    it('DICOM-QIDO-6: every value of a repeated filter must be authorized', async () => {
+      // Pairing an accessible study with a forbidden one must not be allowed to
+      // pass on the strength of the first value alone.
+      const res = await rad1Agent.get(
+        `/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}` +
+          `&StudyInstanceUID=${encodeURIComponent(qidoStudy.studyInstanceUid)}`,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it('DICOM-QIDO-7: wildcard, empty and unindexed filters are not study scope', async () => {
+      // "*" matches every study, so it is unscoped, not a specific study.
+      await rad1Agent.get('/api/dicom-web/studies?StudyInstanceUID=*').expect(403);
+      // An empty value constrains nothing either.
+      await rad1Agent.get('/api/dicom-web/studies?StudyInstanceUID=').expect(403);
+      // An unindexed UID is 404 for every role, never a silent allow.
+      await rad1Agent.get(`/api/dicom-web/studies?StudyInstanceUID=${UNINDEXED}`).expect(404);
+      await managerAgent.get(`/api/dicom-web/studies?StudyInstanceUID=${UNINDEXED}`).expect(404);
+      // An unindexed series is rejected the same way.
+      await rad1Agent.get(`/api/dicom-web/series?SeriesInstanceUID=${UNINDEXED}`).expect(404);
+    });
+
+    it('DICOM-QIDO-8: filter keys are matched case-insensitively', async () => {
+      const res = await rad1Agent.get(
+        `/api/dicom-web/studies?studyinstanceuid=${encodeURIComponent(real.studyInstanceUid)}`,
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it('DICOM-QIDO-9: a filter does not grant scope to a mutating request', async () => {
+      // The unscoped allow-list is GET-only, so a radiologist must not gain an
+      // upstream write just by adding a study filter.
+      await rad1Agent
+        .post(`/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`)
+        .expect(403);
+      await rad1Agent
+        .delete(`/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`)
+        .expect(403);
+    });
+
+    it('DICOM-QIDO-10: hospital scoping still applies to filtered requests', async () => {
+      // CGH is not the owner hospital of the MMC qidoStudy.
+      const denied = await cghAgent.get(
+        `/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(qidoStudy.studyInstanceUid)}`,
+      );
+      expect(denied.status).toBe(403);
+      // The owner hospital passes the gate (404 from Orthanc, not 403).
+      const owner = await mmcAgent.get(
+        `/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(qidoStudy.studyInstanceUid)}`,
+      );
+      expect(owner.status).not.toBe(403);
+    });
+
+    it('DICOM-QIDO-11: a filter cannot widen an already-scoped path', async () => {
+      // RAD1 owns `real` but not `qidoStudy`; naming both must be denied.
+      const res = await rad1Agent.get(
+        `/api/dicom-web/studies/${real.studyInstanceUid}/series` +
+          `?StudyInstanceUID=${encodeURIComponent(qidoStudy.studyInstanceUid)}`,
+      );
+      expect(res.status).toBe(403);
+    });
   });
 });

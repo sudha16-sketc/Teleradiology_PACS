@@ -3,8 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, CheckCheck, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { clsx } from "clsx";
 import type { AppNotification } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
+import { isDesktop } from "@/lib/platform";
+import {
+  notificationsPermitted,
+  requestNativeNotificationPermission,
+  showNativeNotification,
+} from "@/lib/desktop-bridge";
+import { notificationTitle } from "@/lib/notification-events";
 import { formatDateTime } from "@/lib/format";
 
 interface NotificationsEnvelope {
@@ -12,30 +20,59 @@ interface NotificationsEnvelope {
   unread: number;
 }
 
-const TYPE_LABELS: Record<string, string> = {
-  CORRECTION_REQUESTED: "Correction requested",
-  CORRECTION_APPROVED: "Correction approved",
-  CORRECTION_REJECTED: "Correction rejected",
-  CORRECTION_STARTED: "Correction started",
-  CORRECTED_REPORT_SIGNED: "Corrected report signed",
-  CORRECTION_RESOLVED: "Correction resolved",
-  CORRECTED_REPORT_DELIVERED: "Corrected report delivered",
-  CORRECTION_HOSPITAL_ACCEPTED: "Corrected report accepted",
-};
-
 export function NotificationBell() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [nativeNotificationsEnabled, setNativeNotificationsEnabled] =
+    useState(false);
+  const [nativePermissionDenied, setNativePermissionDenied] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Notification IDs already accounted for.
+   *
+   * The server is the only source of notifications, and this set exists purely
+   * to decide what is *new*. Two rules, both deliberate:
+   *
+   *   - The first successful poll seeds the set without toasting anything, so
+   *     starting the client does not fire a burst of toasts for everything that
+   *     happened while it was closed.
+   *   - Everything after that is new by definition, because the API only returns
+   *     the current set and an ID already seen has been seen.
+   *
+   * Held in memory rather than in storage on purpose: a toast is a prompt to look
+   * now, and re-announcing yesterday's events on tomorrow's launch is noise, not
+   * information. The in-app list is the durable record.
+   */
+  const announced = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await apiClient.get<NotificationsEnvelope>("/notifications");
-      setItems(res.data ?? []);
+      const incoming = res.data ?? [];
+      setItems(incoming);
       setUnread(res.unread ?? 0);
+
+      if (!isDesktop()) {
+        announced.current = new Set(incoming.map((n) => n.id));
+        return;
+      }
+
+      if (announced.current === null) {
+        announced.current = new Set(incoming.map((n) => n.id));
+        return;
+      }
+
+      const fresh = incoming.filter((n) => !announced.current!.has(n.id));
+      for (const n of fresh) announced.current!.add(n.id);
+      // Sequentially, and after the set is updated: a burst of parallel toasts
+      // arrives unordered and can outrun the Windows notification queue.
+      for (const n of fresh) {
+        void showNativeNotification(n.type);
+      }
     } catch {
       // transient; ignore polling failures
     }
@@ -46,6 +83,11 @@ export function NotificationBell() {
     const interval = setInterval(() => void load(), 30000);
     return () => clearInterval(interval);
   }, [load]);
+
+  useEffect(() => {
+    if (!isDesktop()) return;
+    void notificationsPermitted().then(setNativeNotificationsEnabled);
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -82,8 +124,12 @@ export function NotificationBell() {
   const openStudy = (n: AppNotification) => {
     setOpen(false);
     void markRead(n);
-    if (n.studyId) {
-      router.push(`/reading/${n.studyId}`);
+    // `/reading/[studyUid]` is keyed by the DICOM StudyInstanceUID. The
+    // notification's own `studyId` is the internal Study primary key and would
+    // 404, so the routable UID projected by the API is used instead.
+    const studyUid = n.study?.studyInstanceUid;
+    if (studyUid) {
+      router.push(`/reading/${encodeURIComponent(studyUid)}`);
     }
   };
 
@@ -130,34 +176,77 @@ export function NotificationBell() {
           </div>
 
           <div className="max-h-80 overflow-y-auto">
+            {isDesktop() && !nativeNotificationsEnabled && (
+              <div className="flex items-center justify-between gap-3 border-b border-border px-3.5 py-2.5">
+                <span className="text-xs text-text-muted">
+                  {nativePermissionDenied
+                    ? "Allow notifications in Windows settings."
+                    : "Desktop notifications are off."}
+                </span>
+                {!nativePermissionDenied && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const granted = await requestNativeNotificationPermission();
+                      setNativeNotificationsEnabled(granted);
+                      setNativePermissionDenied(!granted);
+                    }}
+                    className="shrink-0 text-xs font-medium text-accent hover:text-accent/80"
+                  >
+                    Enable
+                  </button>
+                )}
+              </div>
+            )}
             {items.length === 0 ? (
               <div className="px-4 py-8 text-center text-xs text-text-muted">
                 No notifications
               </div>
             ) : (
-              items.map((n) => (
-                <button
-                  key={n.id}
-                  type="button"
-                  onClick={() => openStudy(n)}
-                  className="flex w-full flex-col gap-0.5 border-b border-border px-3.5 py-2.5 text-left transition-colors hover:bg-surface"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-text-primary">
-                      {TYPE_LABELS[n.type] ?? n.title}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-text-muted">
-                      {formatDateTime(n.createdAt)}
-                    </span>
+              items.map((n) => {
+                // Only study-linked notifications are navigable. Ones without a
+                // resolvable StudyInstanceUID (e.g. the study was removed) stay
+                // inert rather than presenting a clickable row that does
+                // nothing.
+                const clickable = !!n.study?.studyInstanceUid;
+                const row = (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-text-primary">
+                        {notificationTitle(n.type) ?? n.title}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-text-muted">
+                        {formatDateTime(n.createdAt)}
+                      </span>
+                    </div>
+                    <span className="text-xs text-text-muted">{n.message}</span>
+                    {!n.readAt && (
+                      <span className="mt-0.5 inline-flex w-fit rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                        New
+                      </span>
+                    )}
+                  </>
+                );
+                const className =
+                  "flex w-full flex-col gap-0.5 border-b border-border px-3.5 py-2.5 text-left";
+                return clickable ? (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => openStudy(n)}
+                    className={clsx(className, "transition-colors hover:bg-surface")}
+                  >
+                    {row}
+                  </button>
+                ) : (
+                  <div
+                    key={n.id}
+                    className={clsx(className, "cursor-default opacity-80")}
+                  >
+                    {row}
                   </div>
-                  <span className="text-xs text-text-muted">{n.message}</span>
-                  {!n.readAt && (
-                    <span className="mt-0.5 inline-flex w-fit rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                      New
-                    </span>
-                  )}
-                </button>
-              ))
+                );
+              })
             )}
           </div>
         </div>

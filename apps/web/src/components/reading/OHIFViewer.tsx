@@ -2,14 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ExternalLink, Loader2, RotateCw } from "lucide-react";
+import { isDesktop, ohifViewerUrl } from "@/lib/platform";
+import { openViewerWindow } from "@/lib/desktop-bridge";
 
 interface OHIFViewerProps {
   studyInstanceUid: string;
-}
-
-function ohifStudyUrl(studyInstanceUid: string): string {
-  const base = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/ohif`;
-  return `${base}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUid)}`;
 }
 
 const LOAD_TIMEOUT_MS = 30000;
@@ -17,6 +14,7 @@ const LOAD_TIMEOUT_MS = 30000;
 export function OHIFViewer({ studyInstanceUid }: OHIFViewerProps) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [retryKey, setRetryKey] = useState(0);
+  const [popoutFailed, setPopoutFailed] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const resetState = useCallback(() => {
@@ -34,10 +32,33 @@ export function OHIFViewer({ studyInstanceUid }: OHIFViewerProps) {
     };
   }, [studyInstanceUid, retryKey, resetState]);
 
-  const source = ohifStudyUrl(studyInstanceUid);
+  const source = ohifViewerUrl(studyInstanceUid);
 
   return (
     <div className="relative h-full w-full bg-background/80">
+      {isDesktop() && (
+        <button
+          type="button"
+          onClick={async () => {
+            const result = await openViewerWindow(studyInstanceUid);
+            setPopoutFailed(!result.ok);
+          }}
+          className="absolute right-3 top-3 z-20 rounded-md border border-border bg-surface-raised p-2 text-text-muted shadow-sm transition-colors hover:text-text-primary"
+          aria-label="Open viewer in a separate window"
+          title="Open viewer in a separate window"
+        >
+          <ExternalLink size={15} />
+        </button>
+      )}
+      {popoutFailed && (
+        <p
+          role="alert"
+          className="absolute left-3 top-3 z-20 rounded-md border border-error/30 bg-surface-raised px-3 py-2 text-xs text-error"
+        >
+          Could not open the viewer window. Try again.
+        </p>
+      )}
+
       {status === "loading" && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background/80">
           <Loader2 size={28} className="animate-spin text-accent" />

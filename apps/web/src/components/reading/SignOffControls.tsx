@@ -36,11 +36,6 @@ export function SignOffControls({
   // study is still ASSIGNED/IN_READING would hit a 400 on every attempt.
   const canSignOff = status === "REPORT_DRAFT";
 
-  const canMarkDelivered =
-    status === "MANAGER_APPROVED" ||
-    status === "DELIVERED_TO_HOSPITAL" ||
-    status === "HOSPITAL_REVIEW";
-
   const handleSignOff = async () => {
     if (busy) return;
     setBusy(true);
@@ -57,25 +52,6 @@ export function SignOffControls({
     } catch (e) {
       setNotice(
         (e as { message?: string }).message ?? "Sign-off failed.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleMarkDelivered = async () => {
-    if (busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      await apiClient.post(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/deliver`,
-      );
-      setNotice("Study marked as delivered.");
-      onChanged?.();
-    } catch (e) {
-      setNotice(
-        (e as { message?: string }).message ?? "Failed to mark delivered.",
       );
     } finally {
       setBusy(false);
@@ -111,14 +87,12 @@ export function SignOffControls({
               ) : null}{" "}
               Sign Report
             </button>
-            <button
-              type="button"
-              disabled={busy || !canMarkDelivered}
-              onClick={() => void handleMarkDelivered()}
-              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Mark Delivered
-            </button>
+            {/* Delivery is deliberately NOT offered here. This panel is only
+                ever rendered for the assigned radiologist, but
+                POST /reports/:studyUid/deliver is MANAGER/ADMIN-only, so the
+                control could only ever return 403. The delivery lifecycle
+                (review -> approve -> deliver) lives in ReviewActions, which is
+                rendered for ADMIN/MANAGER. */}
           </div>
 
           {notice && <p className="text-xs text-text-muted">{notice}</p>}

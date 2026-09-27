@@ -1,0 +1,19 @@
+# Rust build output. Never commit this: it is large, machine-specific and
+# reproduced by `pnpm desktop:build:win`.
+target/
+
+# Tauri generates these from tauri.conf.json + capabilities on first build.
+/gen/schemas/
+
+# Bundle output (also produced under target/, listed for clarity).
+*.msi
+*.exe
+
+# `pnpm desktop:icon` regenerates every platform's icon set. Only the desktop
+# icons referenced by tauri.conf.json are tracked; the rest are ignored so a
+# regeneration cannot bloat the repository.
+apps/desktop/src-tauri/icons/android/
+apps/desktop/src-tauri/icons/ios/
+apps/desktop/src-tauri/icons/Square*Logo.png
+apps/desktop/src-tauri/icons/StoreLogo.png
+apps/desktop/src-tauri/icons/icon.icns

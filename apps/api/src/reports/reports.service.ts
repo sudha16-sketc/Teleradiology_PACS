@@ -4,12 +4,14 @@ import {
   ForbiddenException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ReviewsService, HOSPITAL_VISIBLE_STATES } from '../reviews/reviews.service.js';
 import { StudiesService, ALLOWED_TRANSITIONS, TRANSITION_ACTORS } from '../studies/studies.service.js';
 import { CorrectionsService } from '../corrections/corrections.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import type { AuditAction, AuditResource } from '@axis/types';
 import { createHash } from 'crypto';
 import type { Response } from 'express';
@@ -68,12 +70,15 @@ interface Actor {
 
 @Injectable()
 export class ReportsService {
+  private readonly logger = new Logger(ReportsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly studies: StudiesService,
     private readonly reviews: ReviewsService,
     private readonly corrections: CorrectionsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async auditLog(
@@ -728,6 +733,17 @@ export class ReportsService {
     await this.prisma.study.update({ where: { id: study.id }, data: { status: 'CORRECTION_REQUESTED' } });
 
     await this.auditLog(actor, 'CHANGE_REQUESTED', 'CHANGE_REQUEST', changeRequest.id, { studyUid, reportId: report.id, result: 'request_created' });
+
+    try {
+      await this.notifications.notifyRadiologist(changeRequest.assignedToId, {
+        type: 'REPORT_RETURNED',
+        title: 'Report returned',
+        message: 'A report was returned to you for revision.',
+        studyId: study.id,
+      });
+    } catch {
+      this.logger.warn('Could not persist report-return notification.');
+    }
 
     return { data: changeRequest };
   }

@@ -58,6 +58,7 @@ async function cleanupStudy(id: string, patientId: string) {
   await prisma.series.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.worklistItem.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.assignment.deleteMany({ where: { studyId: id } }).catch(() => undefined);
+  await prisma.notification.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.auditLog.deleteMany({ where: { resourceId: id } }).catch(() => undefined);
   await prisma.study.delete({ where: { id } }).catch(() => undefined);
   const remaining = await prisma.study.count({ where: { patientId } }).catch(() => 0);
@@ -415,6 +416,21 @@ describe('Phase 4 — Reporting', () => {
       expect(dbReport).toBeTruthy();
       expect(dbReport!.contentHash).toHaveLength(64);
       expect(dbReport!.contentHash).toBe(expectedHash(draftContent));
+    });
+
+    it('REPORT-8d: returned report creates a PHI-minimal radiologist notification', async () => {
+      await managerAgent
+        .post(`/api/reports/${study.studyInstanceUid}/change-request`)
+        .send({ reason: 'Please clarify the impression.' })
+        .expect(201);
+
+      const notification = await prisma.notification.findFirst({
+        where: { recipientUserId: rad1Id, type: 'REPORT_RETURNED', studyId: study.id },
+      });
+      expect(notification).toMatchObject({
+        title: 'Report returned',
+        message: 'A report was returned to you for revision.',
+      });
     });
   });
 

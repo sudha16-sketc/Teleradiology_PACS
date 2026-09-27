@@ -42,38 +42,64 @@ export default function ReadingPage() {
   const isAssigned =
     isRadiologist && study?.assignedRadiologistId === currentUser?.id;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [studyRes, reportRes] = await Promise.all([
-        apiClient.get<StudyEnvelope>(
-          `/studies/${encodeURIComponent(studyUid)}`,
-        ),
-        apiClient.get<ReportEnvelope>(
-          `/reports/${encodeURIComponent(studyUid)}`,
-        ),
-      ]);
-      setStudy(studyRes.data);
-      setReport(reportRes.data ?? null);
-    } catch (err) {
-      setError(
-        (err as ApiError).message ?? "Unable to load this study.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [studyUid]);
+  // `silent` refreshes are used by the background poll. They must NOT flip
+  // `loading`, because this component gates the whole tree on
+  // `loading || !study`: doing so would unmount and remount the OHIF iframe
+  // (discarding the radiologist's viewport, window/level, zoom and any
+  // in-progress measurements) and the report editor (discarding unsaved
+  // draft edits) on every tick.
+  const load = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = opts?.silent === true;
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const [studyRes, reportRes] = await Promise.all([
+          apiClient.get<StudyEnvelope>(
+            `/studies/${encodeURIComponent(studyUid)}`,
+          ),
+          apiClient.get<ReportEnvelope>(
+            `/reports/${encodeURIComponent(studyUid)}`,
+          ),
+        ]);
+        setStudy(studyRes.data);
+        setReport(reportRes.data ?? null);
+      } catch (err) {
+        // A failed background refresh must not replace a good view with an
+        // error screen, so only a foreground load reports a failure.
+        if (!silent) {
+          setError(
+            (err as ApiError).message ?? "Unable to load this study.",
+          );
+        }
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [studyUid],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
 
   // Light background poll — every 60s to catch external status changes.
+  // Skipped while the window is hidden (common in the desktop client) and
+  // never overlapped, so a slow response cannot queue up duplicate requests.
   useEffect(() => {
-    const interval = setInterval(() => {
-      void load();
-    }, 60000);
+    let inFlight = false;
+    const tick = async () => {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
+      try {
+        await load({ silent: true });
+      } finally {
+        inFlight = false;
+      }
+    };
+    const interval = setInterval(() => void tick(), 60000);
     return () => clearInterval(interval);
   }, [load]);
 
@@ -125,7 +151,7 @@ export default function ReadingPage() {
               <ReviewActions
                 studyInstanceUid={studyUid}
                 status={study.status}
-                onChanged={() => void load()}
+                onChanged={() => void load({ silent: true })}
               />
             </>
           ) : isRadiologist && isAssigned ? (
@@ -134,19 +160,19 @@ export default function ReadingPage() {
                 studyInstanceUid={studyUid}
                 report={report}
                 assignedRadiologistId={study.assignedRadiologistId}
-                onReportSaved={() => void load()}
+                onReportSaved={() => void load({ silent: true })}
               />
               {report && <CriticalFindingBanner report={report} />}
               <CorrectionWorkflow
                 studyInstanceUid={studyUid}
                 status={study.status}
-                onChanged={() => void load()}
+                onChanged={() => void load({ silent: true })}
               />
               <SignOffControls
                 studyInstanceUid={studyUid}
                 status={study.status}
                 reportHasContent={reportHasContent}
-                onChanged={() => void load()}
+                onChanged={() => void load({ silent: true })}
               />
             </>
           ) : (

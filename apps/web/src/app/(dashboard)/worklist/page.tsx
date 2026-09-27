@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import type {
   StudyPriority,
   WorklistItem,
@@ -113,6 +114,7 @@ function isAssignableStatus(status: string): boolean {
 }
 
 export default function WorklistPage() {
+  const router = useRouter();
   const { filterState, setFilterState, sortState } = useAppStore();
   const currentUser = useAppStore((s) => s.currentUser);
   const [searchQuery, setSearchQuery] = useState("");
@@ -248,14 +250,17 @@ export default function WorklistPage() {
           e.preventDefault();
           setSelectedIndex((prev) => Math.max(prev - 1, 0));
           break;
-        case "Enter":
-          if (filteredItems[selectedIndex]) {
-            window.location.href = `/reading/${filteredItems[selectedIndex].study.studyInstanceUid}`;
+        case "Enter": {
+          const target = filteredItems[selectedIndex];
+          if (target) {
+            e.preventDefault();
+            router.push(`/reading/${encodeURIComponent(target.study.studyInstanceUid)}`);
           }
           break;
+        }
       }
     },
-    [filteredItems, selectedIndex],
+    [filteredItems, router, selectedIndex],
   );
 
   useEffect(() => {
@@ -357,7 +362,7 @@ export default function WorklistPage() {
               role="row"
               tabIndex={0}
               onDoubleClick={() =>
-                (window.location.href = `/reading/${item.study.studyInstanceUid}`)
+                router.push(`/reading/${encodeURIComponent(item.study.studyInstanceUid)}`)
               }
             >
               <AcuityPulse

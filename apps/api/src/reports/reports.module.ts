@@ -5,9 +5,10 @@ import { AuditModule } from '../audit/audit.module.js';
 import { StudiesModule } from '../studies/studies.module.js';
 import { ReviewsModule } from '../reviews/reviews.module.js';
 import { CorrectionsModule } from '../corrections/corrections.module.js';
+import { NotificationsModule } from '../notifications/notifications.module.js';
 
 @Module({
-  imports: [AuditModule, StudiesModule, ReviewsModule, CorrectionsModule],
+  imports: [AuditModule, StudiesModule, ReviewsModule, CorrectionsModule, NotificationsModule],
   controllers: [ReportsController],
   providers: [ReportsService],
   exports: [ReportsService],

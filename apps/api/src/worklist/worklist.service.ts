@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { runSerializable } from '../common/db/serializable.js';
 import { StudyStatus, UserRole } from '@prisma/client';
 
@@ -50,6 +51,7 @@ export class WorklistService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async list(filters: Record<string, string | undefined>, user?: { id: string; role: UserRole; hospitalId?: string }) {
@@ -419,9 +421,22 @@ export class WorklistService {
         },
       });
 
-      return updatedStudy;
+      return { study: updatedStudy, previousRadiologistId };
     });
 
-    return { data: updated };
+    if (updated.previousRadiologistId !== radiologistId) {
+      try {
+        await this.notifications.notifyRadiologist(radiologistId, {
+          type: 'STUDY_ASSIGNED',
+          title: 'New study assigned',
+          message: 'A study has been assigned to your worklist.',
+          studyId: updated.study.id,
+        });
+      } catch {
+        this.logger.warn('Could not persist study-assignment notification.');
+      }
+    }
+
+    return { data: updated.study };
   }
 }

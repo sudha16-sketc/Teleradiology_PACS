@@ -4,6 +4,7 @@ import { NavigationRail } from "./NavigationRail";
 import { TopBar } from "./TopBar";
 import { useAppStore } from "@/lib/store";
 import { clsx } from "clsx";
+import { UpdateStatus, useUpdateCheck } from "@/components/UpdateStatus";
 
 export function AppShell({
   children,
@@ -13,6 +14,7 @@ export function AppShell({
   breadcrumbs?: string[];
 }) {
   const { railCollapsed } = useAppStore();
+  useUpdateCheck(true);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -24,6 +26,9 @@ export function AppShell({
         )}
       >
         <TopBar breadcrumbs={breadcrumbs} />
+        <div className="px-6 pt-3">
+          <UpdateStatus />
+        </div>
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
       </div>
     </div>

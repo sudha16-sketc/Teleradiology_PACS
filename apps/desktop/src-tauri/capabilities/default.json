@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Axis Desktop grants no Tauri permission to any web content. The window loads a remote Axis deployment over http(s), and Tauri only exposes native APIs to origins listed in a capability's `remote.urls`. Because this capability declares no `remote` block, the deployment the user signs in to has zero access to the native shell: it cannot reach the filesystem, the shell, the clipboard or any Tauri command. The opener plugin used to hand off-origin links to the system browser is called from Rust in src/lib.rs, not from JavaScript, so it needs no permission entry here.",
+  "local": true,
+  "platforms": ["windows", "linux", "macOS"],
+  "permissions": []
+}

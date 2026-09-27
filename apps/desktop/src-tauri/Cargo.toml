@@ -1,0 +1,55 @@
+[package]
+name = "axis-desktop"
+version = "0.1.0"
+description = "Axis Desktop — teleradiology PACS client for Windows"
+authors = ["Axis"]
+edition = "2021"
+# 1.77.2 is the documented MSRV floor of the Tauri 2.x line.
+rust-version = "1.77.2"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+# Tauri convention: the binary target and the mobile entry point both live in
+# the library so both can share the same setup code.
+name = "axis_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+# Focuses the existing window when a second copy is launched.
+tauri-plugin-single-instance = "2"
+# Hands off-origin links to the system browser instead of navigating the PACS
+# window away from the deployment.
+tauri-plugin-opener = "2"
+# Native Windows file/folder picker for DICOM submission (Phase 3, task 1).
+tauri-plugin-dialog = "2"
+# Native Windows toasts for PACS workflow events (Phase 3, task 3).
+tauri-plugin-notification = "2"
+# Client-side file reads, scoped per-invocation to the paths the user actually
+# picked in the native dialog. Never granted a blanket filesystem scope.
+tauri-plugin-fs = "2"
+# OS name/version for desktop crash reports (Phase 3, task 6).
+tauri-plugin-os = "2"
+# Signed-update checking. Inert until a release build supplies an endpoint and
+# minisign public key via --config; see docs/DESKTOP.md.
+tauri-plugin-updater = "2"
+# Parses the optional per-user desktop.json.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# By default Tauri runs in production mode (`tauri build`).
+# `tauri dev` sets `dev` so the frontend is served over HTTP.
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

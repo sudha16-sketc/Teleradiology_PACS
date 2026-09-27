@@ -290,6 +290,7 @@ export function ReportEditor({
         <ReportActions
           status={reportStatus}
           disabled={isSigned}
+          studyInstanceUid={studyInstanceUid}
           onSaveDraft={saveDraft}
           onSubmitSignoff={submitSignoff}
           onSignOff={signOff}
