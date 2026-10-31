@@ -229,10 +229,10 @@ export class ReportsService {
     }
 
     const where: Record<string, unknown> = {
-      status: { in: ['SIGNED', 'MANAGER_APPROVED', 'MANAGER_REVIEW'] },
+      status: { in: ['SIGNED', 'MANAGER_APPROVED'] },
       study: {
         hospitalId: user.hospitalId!,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'] },
+        status: { in: HOSPITAL_VISIBLE_STATES },
       },
     };
 
@@ -297,25 +297,6 @@ export class ReportsService {
     const study = await this.getStudy(studyUid);
     this.assertAssignedRadiologist(study, actor);
 
-    const existing = await this.prisma.report.findFirst({
-      where: { studyId: study.id },
-      orderBy: { version: 'desc' },
-    });
-
-    // Immutability: once a report is signed (or otherwise final), no metadata or
-    // content mutations are permitted. Corrections are a later-phase workflow.
-    if (existing && existing.status !== 'DRAFT') {
-      throw new ConflictException(
-        `The report is ${existing.status} and can no longer be edited. Corrections require the correction workflow.`,
-      );
-    }
-
-    if (!DRAFTABLE_STATES.includes(study.status)) {
-      throw new BadRequestException(
-        `A report draft can only be saved while the study is in ${DRAFTABLE_STATES.join(', ')} (currently ${study.status}).`,
-      );
-    }
-
     const content: ReportContent = {
       clinicalHistory: dto.clinicalHistory ?? '',
       findings: dto.findings ?? '',
@@ -327,15 +308,41 @@ export class ReportsService {
     };
     const hash = contentHash(content);
 
-    let report;
-    if (existing) {
-      report = await this.prisma.report.update({
-        where: { id: existing.id },
-        data: { ...content, contentHash: hash },
-        include: { author: true },
+    // Serialize draft creation per study. Without this lock, two concurrent
+    // first-save requests can both observe "no report" and create duplicate v1
+    // drafts. The unique (studyId, version) constraint is the final backstop.
+    const saved = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Study" WHERE id = ${study.id} FOR UPDATE`;
+
+      const existing = await tx.report.findFirst({
+        where: { studyId: study.id },
+        orderBy: { version: 'desc' },
       });
-    } else {
-      report = await this.prisma.report.create({
+
+      // Immutability: once a report is signed (or otherwise final), no metadata
+      // or content mutations are permitted.
+      if (existing && existing.status !== 'DRAFT') {
+        throw new ConflictException(
+          `The report is ${existing.status} and can no longer be edited. Corrections require the correction workflow.`,
+        );
+      }
+
+      if (!DRAFTABLE_STATES.includes(study.status)) {
+        throw new BadRequestException(
+          `A report draft can only be saved while the study is in ${DRAFTABLE_STATES.join(', ')} (currently ${study.status}).`,
+        );
+      }
+
+      if (existing) {
+        const report = await tx.report.update({
+          where: { id: existing.id },
+          data: { ...content, contentHash: hash },
+          include: { author: true },
+        });
+        return { report, created: false };
+      }
+
+      const report = await tx.report.create({
         data: {
           studyId: study.id,
           authorId: actor.id,
@@ -346,21 +353,29 @@ export class ReportsService {
         },
         include: { author: true },
       });
-      // First draft created -> advance the study workflow to REPORT_DRAFT.
-      if (study.status !== StudyStatus.REPORT_DRAFT) {
-        await this.ensureDraftState(study, actor);
-      }
+      return { report, created: true };
+    });
+
+    // A draft save is the recovery path for a study left in IN_READING (for
+    // example by an interrupted amendment), so advance the workflow for both
+    // newly created and existing drafts.
+    if (study.status !== StudyStatus.REPORT_DRAFT) {
+      await this.ensureDraftState(study, actor);
     }
 
     await this.auditLog(
       actor,
-      existing ? 'REPORT_EDITED' : 'REPORT_CREATED',
+      saved.created ? 'REPORT_CREATED' : 'REPORT_EDITED',
       'REPORT',
-      report.id,
-      { studyUid, studyStatus: existing ? undefined : study.status, version: report.version },
+      saved.report.id,
+      {
+        studyUid,
+        studyStatus: saved.created ? study.status : undefined,
+        version: saved.report.version,
+      },
     );
 
-    return { data: report };
+    return { data: saved.report };
   }
 
   /**
@@ -523,41 +538,36 @@ export class ReportsService {
     const study = await this.getStudy(studyUid);
     this.assertAssignedRadiologist(study, actor);
 
-    const previous = await this.prisma.report.findFirst({
-      where: { studyId: study.id },
-      orderBy: { version: 'desc' },
-    });
+    if (study.status !== StudyStatus.RADIOLOGIST_SIGNED) {
+      throw new BadRequestException(
+        `An amendment can only be initiated while the study is in RADIOLOGIST_SIGNED (currently ${study.status}).`,
+      );
+    }
 
-    const content: ReportContent = {
-      clinicalHistory: dto.clinicalHistory ?? '',
-      findings: dto.findings ?? '',
-      impression: dto.impression ?? '',
-      technique: dto.technique ?? '',
-      comparison: dto.comparison ?? '',
-      recommendations: dto.recommendations ?? '',
-      criticalFinding: dto.criticalFinding ?? false,
-    };
-    const newVersion = previous ? previous.version + 1 : 1;
-    const hash = contentHash(content);
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Study" WHERE id = ${study.id} FOR UPDATE`;
 
-    const created = await this.prisma.report.create({
-      data: {
-        studyId: study.id,
-        authorId: actor.id,
-        status: 'DRAFT',
-        version: newVersion,
-        ...content,
-        contentHash: hash,
-      },
-      include: { author: true },
-    });
+      const previous = await tx.report.findFirst({
+        where: { studyId: study.id },
+        orderBy: { version: 'desc' },
+      });
 
-    if (previous && previous.status === 'SIGNED') {
-      const existingVersion = await this.prisma.reportVersion.findFirst({
+      if (!previous) {
+        throw new NotFoundException(`No report found for study ${studyUid}`);
+      }
+
+      if (previous.status !== 'SIGNED') {
+        throw new BadRequestException(
+          `Only a signed report can be amended (current status: ${previous.status})`,
+        );
+      }
+
+      // Ensure the signed version is preserved as a ReportVersion snapshot.
+      const signedVersion = await tx.reportVersion.findFirst({
         where: { reportId: previous.id, version: previous.version },
       });
-      if (!existingVersion) {
-        await this.prisma.reportVersion.create({
+      if (!signedVersion) {
+        await tx.reportVersion.create({
           data: {
             reportId: previous.id,
             version: previous.version,
@@ -573,11 +583,62 @@ export class ReportsService {
           },
         });
       }
-    }
 
-    await this.auditLog(actor, 'REPORT_AMENDED', 'REPORT', created.id, { studyUid });
+      // Seed the new draft from the signed report content.
+      const content: ReportContent = {
+        clinicalHistory: dto.clinicalHistory ?? previous.clinicalHistory ?? '',
+        findings: dto.findings ?? previous.findings ?? '',
+        impression: dto.impression ?? previous.impression ?? '',
+        technique: dto.technique ?? previous.technique ?? '',
+        comparison: dto.comparison ?? previous.comparison ?? '',
+        recommendations: dto.recommendations ?? previous.recommendations ?? '',
+        criticalFinding: dto.criticalFinding ?? previous.criticalFinding ?? false,
+      };
+      const newVersion = previous.version + 1;
+      const hash = contentHash(content);
 
-    return { data: created };
+      const created = await tx.report.create({
+        data: {
+          studyId: study.id,
+          authorId: actor.id,
+          status: 'DRAFT',
+          version: newVersion,
+          ...content,
+          contentHash: hash,
+        },
+        include: { author: true },
+      });
+
+      return { created, previous };
+    });
+
+    // An amendment is editable immediately: RADIOLOGIST_SIGNED -> IN_READING ->
+    // REPORT_DRAFT. The final state is required for sign-off to be allowed.
+    await this.studies.updateStatus(
+      studyUid,
+      { status: StudyStatus.IN_READING },
+      actor,
+    );
+    await this.studies.updateStatus(
+      studyUid,
+      { status: StudyStatus.REPORT_DRAFT },
+      actor,
+    );
+
+    await this.auditLog(
+      actor,
+      'REPORT_AMENDED',
+      'REPORT',
+      result.created.id,
+      {
+        studyUid,
+        previousReportId: result.previous.id,
+        previousVersion: result.previous.version,
+        newVersion: result.created.version,
+      },
+    );
+
+    return { data: result.created };
   }
 
   /**
@@ -717,7 +778,7 @@ export class ReportsService {
     if (user.role === 'HOSPITAL' && study.hospitalId !== user.hospitalId) {
       throw new ForbiddenException('You do not have access to studies from this hospital');
     }
-    if (!['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'].includes(study.status)) {
+    if (!HOSPITAL_VISIBLE_STATES.includes(study.status)) {
       throw new NotFoundException('Final report is not yet available for this study');
     }
 

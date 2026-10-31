@@ -7,7 +7,6 @@ interface ReportActionsProps {
   status: ReportStatus;
   disabled?: boolean;
   onSaveDraft?: () => void;
-  onSubmitSignoff?: () => void;
   onSignOff?: () => void;
   onAmend?: () => void;
 }
@@ -16,49 +15,39 @@ export function ReportActions({
   status,
   disabled = false,
   onSaveDraft,
-  onSubmitSignoff,
   onSignOff,
   onAmend,
 }: ReportActionsProps) {
+  const isSigned = status === "SIGNED" || status === "RADIOLOGIST_SIGNED";
+  const canAmend = isSigned || status === "CORRECTION_REQUESTED";
+
   return (
     <div className="flex items-center gap-3 border-t border-border px-6 py-4">
       <button
         type="button"
         onClick={onSaveDraft}
-        disabled={disabled}
+        disabled={disabled || isSigned}
         className={clsx(
           "rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors",
           "hover:bg-surface-raised",
-          disabled && "cursor-not-allowed opacity-50",
+          (disabled || isSigned) && "cursor-not-allowed opacity-50",
         )}
       >
         Save Draft
       </button>
       <button
         type="button"
-        onClick={onSubmitSignoff}
-        disabled={disabled || status === "SIGNED"}
-        className={clsx(
-          "rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors",
-          "hover:bg-surface-raised",
-          (disabled || status === "SIGNED") && "cursor-not-allowed opacity-50",
-        )}
-      >
-        Submit for Sign-off
-      </button>
-      <button
-        type="button"
         onClick={onSignOff}
-        disabled={disabled || status === "SIGNED"}
+        disabled={disabled || isSigned}
         className={clsx(
           "rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors",
           "hover:bg-accent/90",
-          (disabled || status === "SIGNED") && "cursor-not-allowed opacity-50",
+          (disabled || isSigned) && "cursor-not-allowed opacity-50",
         )}
       >
         Sign Off
       </button>
-      {status === "CORRECTION_REQUESTED" && (
+      {canAmend && onAmend && (
         <button
           type="button"
           onClick={onAmend}

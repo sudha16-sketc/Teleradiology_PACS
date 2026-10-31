@@ -42,9 +42,32 @@ export default function ReportEditorPage() {
     }
   }, [studyUid]);
 
+  const createDraftReport = useCallback(async () => {
+    try {
+      const res = await apiClient.post<{ data: Report }>(
+        `/reports/${encodeURIComponent(studyUid)}`,
+        {}
+      );
+      setReport(res.data);
+      return res.data;
+    } catch (e) {
+      console.error("Failed to create draft report", e);
+      throw e;
+    }
+  }, [studyUid]);
+
   useEffect(() => {
     if (studyUid) load();
   }, [studyUid, load]);
+
+  useEffect(() => {
+    // Auto-create draft report if user is assigned radiologist and no report exists,
+    // but only if the study is in a draftable state (not already signed/finalized)
+    const isSignedStatus = report?.status === "SIGNED" || report?.status === "RADIOLOGIST_SIGNED";
+    if (study && !report && isRadiologist && study.assignedRadiologistId === currentUser?.id && !isSignedStatus) {
+      createDraftReport();
+    }
+  }, [study, report, isRadiologist, currentUser?.id, createDraftReport]);
 
   if (hasError) {
     return (

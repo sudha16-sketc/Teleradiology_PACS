@@ -391,9 +391,27 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       expect(before.status).toBe(403);
       await managerAgent.post(`/api/studies/${s.studyInstanceUid}/review`).send({}).expect(201);
       await managerAgent.post(`/api/studies/${s.studyInstanceUid}/approve`).send({}).expect(201);
+
+      const listBefore = await cghAgent.get('/api/reports/hospital').expect(200);
+      expect(
+        listBefore.body.data.map((r: any) => r.study.studyInstanceUid),
+      ).not.toContain(s.studyInstanceUid);
+      await cghAgent
+        .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
+        .expect(404);
+
       await managerAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(201);
       const after = await cghAgent.get(`/api/reports/${s.studyInstanceUid}`);
       expect(after.status).toBe(200);
+
+      const listAfter = await cghAgent.get('/api/reports/hospital').expect(200);
+      expect(
+        listAfter.body.data.map((r: any) => r.study.studyInstanceUid),
+      ).toContain(s.studyInstanceUid);
+      await cghAgent
+        .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
+        .expect(200);
+
       await cleanupStudy(s.id, s.patientId);
     });
   });

@@ -11,3 +11,6 @@ coverage/
 .turbo/
 prisma/*.db
 backups/
+
+# TypeScript build artifacts
+*.tsbuildinfo

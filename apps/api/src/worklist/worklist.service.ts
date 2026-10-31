@@ -142,8 +142,7 @@ export class WorklistService {
       const studies = await this.prisma.study.findMany({
         where: {
           assignedRadiologistId: userId,
-          status: { in: ['ASSIGNED', 'IN_READING', 'REPORT_DRAFT', 'CORRECTION_REQUESTED'] },
-          orthancStudyId: { not: null },
+          status: { in: ['ASSIGNED', 'IN_READING', 'REPORT_DRAFT', 'RADIOLOGIST_SIGNED', 'CORRECTION_REQUESTED'] },
         },
         include: {
           patient: true,

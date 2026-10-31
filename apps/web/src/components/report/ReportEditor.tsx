@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, Loader2 } from "lucide-react";
 import { clsx } from "clsx";
-import type { ApiError, ReportStatus } from "@axis/types";
+import type { ApiError, ReportStatus, ReportTemplate } from "@axis/types";
 import { CriticalFindingToggle } from "./CriticalFindingToggle";
 import { ReportActions } from "./ReportActions";
 import { apiClient } from "@/lib/api-client";
@@ -18,13 +18,19 @@ interface ReportEditorProps {
   initialRecommendations?: string;
   initialCriticalFinding?: boolean;
   status?: ReportStatus;
+  onAmend?: () => void;
 }
 
-const TEMPLATES = [
-  { id: "general", name: "General Radiology" },
-  { id: "chest-ct", name: "CT Chest" },
-  { id: "msk", name: "MSK Study" },
-];
+interface TemplateOption {
+  id: string;
+  name: string;
+  clinicalHistory?: string;
+  findings?: string;
+  impression?: string;
+  technique?: string;
+  comparison?: string;
+  recommendations?: string;
+}
 
 export function ReportEditor({
   studyInstanceUid,
@@ -36,6 +42,7 @@ export function ReportEditor({
   initialRecommendations = "",
   initialCriticalFinding = false,
   status = "DRAFT",
+  onAmend,
 }: ReportEditorProps) {
   const [clinicalHistory, setClinicalHistory] = useState(initialClinicalHistory);
   const [findings, setFindings] = useState(initialFindings);
@@ -44,13 +51,16 @@ export function ReportEditor({
   const [comparison, setComparison] = useState(initialComparison);
   const [recommendations, setRecommendations] = useState(initialRecommendations);
   const [criticalFinding, setCriticalFinding] = useState(initialCriticalFinding);
-  const [selectedTemplate, setSelectedTemplate] = useState(TEMPLATES[0].id);
+  const [templates, setTemplates] = useState<TemplateOption[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [reportStatus, setReportStatus] = useState<ReportStatus>(status);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  const [isAmending, setIsAmending] = useState(false);
 
-  const isSigned = reportStatus === "SIGNED";
+  const isSigned = (reportStatus === "SIGNED" || reportStatus === "RADIOLOGIST_SIGNED") && !isAmending;
 
   const contentFields = {
     clinicalHistory,
@@ -62,12 +72,60 @@ export function ReportEditor({
     criticalFinding,
   };
 
+  useEffect(() => {
+    let mounted = true;
+    setTemplatesLoading(true);
+    apiClient
+      .get<{ data: ReportTemplate[] }>(
+        `/templates/for-study/${encodeURIComponent(studyInstanceUid)}`,
+      )
+      .then((res) => {
+        if (mounted) {
+          const templateOptions: TemplateOption[] = (res.data ?? []).map((t) => ({
+            id: t.id,
+            name: t.name,
+            clinicalHistory: t.clinicalHistory ?? undefined,
+            findings: t.findings ?? undefined,
+            impression: t.impression ?? undefined,
+            technique: t.technique ?? undefined,
+            comparison: t.comparison ?? undefined,
+            recommendations: t.recommendations ?? undefined,
+          }));
+          setTemplates(templateOptions);
+          if (templateOptions.length > 0 && !selectedTemplateId) {
+            setSelectedTemplateId(templateOptions[0].id);
+          }
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setTemplates([]);
+        }
+      })
+      .finally(() => {
+        if (mounted) setTemplatesLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [studyInstanceUid, selectedTemplateId]);
+
+  const applyTemplate = (template: TemplateOption) => {
+    if (template.clinicalHistory !== undefined) setClinicalHistory(template.clinicalHistory);
+    if (template.findings !== undefined) setFindings(template.findings);
+    if (template.impression !== undefined) setImpression(template.impression);
+    if (template.technique !== undefined) setTechnique(template.technique);
+    if (template.comparison !== undefined) setComparison(template.comparison);
+    if (template.recommendations !== undefined) setRecommendations(template.recommendations);
+    setSelectedTemplateId(template.id);
+  };
+
   const saveDraft = async () => {
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
+      await apiClient.post(
+        `/reports/${encodeURIComponent(studyInstanceUid)}`,
         contentFields,
       );
       setNotice("Draft saved.");
@@ -80,33 +138,10 @@ export function ReportEditor({
     }
   };
 
-  const submitSignoff = async () => {
-    setSaving(true);
-    setNotice(null);
-    try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
-      setReportStatus("DRAFT");
-      setNotice("Report submitted for sign-off.");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : (e as ApiError)?.message;
-      setNotice(message ?? "Failed to submit for sign-off.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const signOff = async () => {
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/sign`,
         {},
@@ -128,10 +163,12 @@ export function ReportEditor({
     try {
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
-        contentFields,
+        {},
       );
+      setIsAmending(true);
       setReportStatus("DRAFT");
-      setNotice("Report amended.");
+      setNotice("Report amended. You can now edit and save as draft.");
+      onAmend?.();
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : (e as ApiError)?.message;
@@ -148,25 +185,36 @@ export function ReportEditor({
           <button
             type="button"
             onClick={() => setTemplateOpen(!templateOpen)}
-            disabled={isSigned}
+            disabled={isSigned || templatesLoading || templates.length === 0}
             className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {TEMPLATES.find((t) => t.id === selectedTemplate)?.name ?? "Template"}
-            <ChevronDown size={14} className="text-text-muted" />
+            {templatesLoading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Loading templates...
+              </>
+            ) : templates.length === 0 ? (
+              "No templates available"
+            ) : (
+              <>
+                {templates.find((t) => t.id === selectedTemplateId)?.name ?? "Select template"}
+                <ChevronDown size={14} className="text-text-muted" />
+              </>
+            )}
           </button>
-          {templateOpen && (
-            <div className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border border-border bg-surface shadow-lg">
-              {TEMPLATES.map((t) => (
+          {!templatesLoading && templateOpen && templates.length > 0 && (
+            <div className="absolute left-0 top-full z-10 mt-1 w-64 rounded-md border border-border bg-surface shadow-lg">
+              {templates.map((t) => (
                 <button
                   key={t.id}
                   type="button"
                   onClick={() => {
-                    setSelectedTemplate(t.id);
+                    applyTemplate(t);
                     setTemplateOpen(false);
                   }}
                   className={clsx(
                     "flex w-full items-center px-3 py-2 text-left text-sm transition-colors hover:bg-surface-raised",
-                    t.id === selectedTemplate
+                    t.id === selectedTemplateId
                       ? "text-accent"
                       : "text-text-primary",
                   )}
@@ -291,7 +339,6 @@ export function ReportEditor({
           status={reportStatus}
           disabled={isSigned}
           onSaveDraft={saveDraft}
-          onSubmitSignoff={submitSignoff}
           onSignOff={signOff}
           onAmend={amend}
         />

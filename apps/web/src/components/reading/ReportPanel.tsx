@@ -20,13 +20,25 @@ interface ReportPanelProps {
   studyInstanceUid: string;
   report: Report | null;
   onReportSaved?: () => void;
+  onAmend?: () => void;
 }
 
 type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error";
 
+interface ReportFormFields {
+  clinicalHistory: string;
+  findings: string;
+  impression: string;
+  technique: string;
+  comparison: string;
+  recommendations: string;
+  criticalFinding: boolean;
+}
+
 const REPORT_STATUS_STYLES: Record<ReportStatus, string> = {
   DRAFT: "bg-surface text-text-muted",
   SIGNED: "bg-accent/10 text-accent",
+  RADIOLOGIST_SIGNED: "bg-accent/10 text-accent",
   MANAGER_REVIEW: "bg-warning/10 text-warning",
   MANAGER_APPROVED: "bg-success/10 text-success",
   HOSPITAL_REVIEW: "bg-warning/10 text-warning",
@@ -36,6 +48,7 @@ const REPORT_STATUS_STYLES: Record<ReportStatus, string> = {
 const REPORT_STATUS_LABELS: Record<ReportStatus, string> = {
   DRAFT: "Draft",
   SIGNED: "Signed",
+  RADIOLOGIST_SIGNED: "Signed",
   MANAGER_REVIEW: "Manager Review",
   MANAGER_APPROVED: "Approved",
   HOSPITAL_REVIEW: "Hospital Review",
@@ -48,15 +61,23 @@ export function ReportPanel({
   studyInstanceUid,
   report,
   onReportSaved,
+  onAmend,
 }: ReportPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
+  const [isAmending, setIsAmending] = useState(false);
+  const [amendBusy, setAmendBusy] = useState(false);
+  const [amendError, setAmendError] = useState<string | null>(null);
   const currentUser = useAppStore((s) => s.currentUser);
   const isRadiologist = currentUser?.role === "RADIOLOGIST";
   const isAssigned =
     isRadiologist && report
       ? report.authorId === currentUser?.id
       : false;
-  const isEditable = isAssigned && report?.status !== "SIGNED";
+  const isSigned = report?.status === "SIGNED" || report?.status === "RADIOLOGIST_SIGNED";
+  const isEditable = isAssigned && (!isSigned || isAmending);
+  const reportKey = report
+    ? `${report.id}:${report.version}:${report.status}`
+    : null;
 
   const [clinicalHistory, setClinicalHistory] = useState(
     report?.clinicalHistory ?? "",
@@ -77,17 +98,32 @@ export function ReportPanel({
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const dirtyRef = useRef(false);
+  const editVersionRef = useRef(0);
+  const lastReportKeyRef = useRef<string | null>(reportKey);
 
-  // Sync form state when report prop changes (e.g. after load/refresh).
+  // Sync form state when the report identity/version changes. Background
+  // refreshes must not clobber edits the radiologist is still typing.
   useEffect(() => {
-    if (report) {
-      setClinicalHistory(report.clinicalHistory ?? "");
-      setFindings(report.findings ?? "");
-      setImpression(report.impression ?? "");
-      setTechnique(report.technique ?? "");
-      setComparison(report.comparison ?? "");
-      setRecommendations(report.recommendations ?? "");
-      setCriticalFinding(report.criticalFinding ?? false);
+    if (!report) return;
+    const key = `${report.id}:${report.version}:${report.status}`;
+    const keyChanged = key !== lastReportKeyRef.current;
+    if (!keyChanged && dirtyRef.current) return;
+
+    lastReportKeyRef.current = key;
+    setClinicalHistory(report.clinicalHistory ?? "");
+    setFindings(report.findings ?? "");
+    setImpression(report.impression ?? "");
+    setTechnique(report.technique ?? "");
+    setComparison(report.comparison ?? "");
+    setRecommendations(report.recommendations ?? "");
+    setCriticalFinding(report.criticalFinding ?? false);
+    if (report.status !== "SIGNED" && report.status !== "RADIOLOGIST_SIGNED") {
+      setIsAmending(false);
+    }
+    if (!dirtyRef.current) {
+      setSaveStatus("idle");
+      setErrorMessage(null);
     }
   }, [report]);
 
@@ -98,17 +134,32 @@ export function ReportPanel({
     };
   }, []);
 
+  const handleAmend = useCallback(async () => {
+    if (amendBusy) return;
+    setAmendBusy(true);
+    setAmendError(null);
+    try {
+      await apiClient.post(
+        `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
+        {},
+      );
+      setIsAmending(true);
+      setSaveStatus("idle");
+      onAmend?.();
+      onReportSaved?.();
+    } catch (e) {
+      setAmendError(
+        (e as { message?: string }).message ?? "Failed to amend report.",
+      );
+    } finally {
+      setAmendBusy(false);
+    }
+  }, [amendBusy, studyInstanceUid, onAmend, onReportSaved]);
+
   const saveDraft = useCallback(
-    async (fields: {
-      clinicalHistory: string;
-      findings: string;
-      impression: string;
-      technique: string;
-      comparison: string;
-      recommendations: string;
-      criticalFinding: boolean;
-    }) => {
+    async (fields: ReportFormFields) => {
       if (!mountedRef.current) return;
+      const editVersion = editVersionRef.current;
       setSaveStatus("saving");
       setErrorMessage(null);
       try {
@@ -123,6 +174,9 @@ export function ReportPanel({
         const ss = String(now.getUTCSeconds()).padStart(2, "0");
         setSavedAt(`${hh}:${mm}:${ss}`);
         setSaveStatus("saved");
+        if (editVersionRef.current === editVersion) {
+          dirtyRef.current = false;
+        }
         onReportSaved?.();
       } catch (e) {
         if (!mountedRef.current) return;
@@ -136,15 +190,7 @@ export function ReportPanel({
   );
 
   const scheduleAutoSave = useCallback(
-    (fields: {
-      clinicalHistory: string;
-      findings: string;
-      impression: string;
-      technique: string;
-      comparison: string;
-      recommendations: string;
-      criticalFinding: boolean;
-    }) => {
+    (fields: ReportFormFields) => {
       if (timerRef.current) clearTimeout(timerRef.current);
       setSaveStatus("unsaved");
       setErrorMessage(null);
@@ -164,26 +210,44 @@ export function ReportPanel({
 
   const updateField = useCallback(
     (
-      field: string,
+      field: keyof ReportFormFields,
       value: string | boolean,
-      current: {
-        clinicalHistory: string;
-        findings: string;
-        impression: string;
-        technique: string;
-        comparison: string;
-        recommendations: string;
-        criticalFinding: boolean;
-      },
+      current: ReportFormFields,
     ) => {
-      const next = { ...current, [field]: value };
-      if (isEditable) scheduleAutoSave(next);
+      if (!isEditable) return;
+      switch (field) {
+        case "clinicalHistory":
+          setClinicalHistory(value as string);
+          break;
+        case "findings":
+          setFindings(value as string);
+          break;
+        case "impression":
+          setImpression(value as string);
+          break;
+        case "technique":
+          setTechnique(value as string);
+          break;
+        case "comparison":
+          setComparison(value as string);
+          break;
+        case "recommendations":
+          setRecommendations(value as string);
+          break;
+        case "criticalFinding":
+          setCriticalFinding(value as boolean);
+          break;
+      }
+      const next = { ...current, [field]: value } as ReportFormFields;
+      dirtyRef.current = true;
+      editVersionRef.current += 1;
+      scheduleAutoSave(next);
     },
     [isEditable, scheduleAutoSave],
   );
 
   // Build the latest form state for the autosave callback.
-  const formState = {
+  const formState: ReportFormFields = {
     clinicalHistory,
     findings,
     impression,
@@ -194,6 +258,8 @@ export function ReportPanel({
   };
 
   if (!report) {
+    const isAssigned = isRadiologist && studyInstanceUid; // studyInstanceUid implies we have a study context
+    
     return (
       <div className="border-b border-border">
         <button
@@ -208,6 +274,17 @@ export function ReportPanel({
           <div className="flex flex-col items-center gap-3 px-4 py-6">
             <FileText size={32} strokeWidth={1} className="text-text-muted" />
             <p className="text-sm text-text-muted">No report yet</p>
+            {isAssigned && (
+              <button
+                type="button"
+                onClick={() => {
+                  window.location.href = `/reports/${encodeURIComponent(studyInstanceUid)}`;
+                }}
+                className="mt-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-accent/90"
+              >
+                Create Report
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -234,6 +311,28 @@ export function ReportPanel({
       </button>
       {isOpen && (
         <div className="flex flex-col gap-3 px-4 pb-4">
+          {/* Amend action for signed reports */}
+          {isSigned && isAssigned && !isAmending && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleAmend()}
+                disabled={amendBusy}
+                className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {amendBusy && <Loader2 size={12} className="animate-spin" />}
+                Amend Report
+              </button>
+            </div>
+          )}
+          {amendError && (
+            <p className="text-xs text-error">{amendError}</p>
+          )}
+          {isAmending && (
+            <div className="flex items-center gap-2 text-sm text-accent">
+              <span>Amendment mode — editing enabled</span>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-xs text-text-muted">
             <span>v{report.version}</span>
             {report.author && (
@@ -332,14 +431,13 @@ export function ReportPanel({
             <div className="mt-2">
               <CriticalFindingToggle
                 active={criticalFinding}
-                onToggle={() => {
-                  setCriticalFinding(!criticalFinding);
+                onToggle={() =>
                   updateField(
                     "criticalFinding",
                     !criticalFinding,
                     formState,
-                  );
-                }}
+                  )
+                }
               />
             </div>
           ) : report.criticalFinding ? (

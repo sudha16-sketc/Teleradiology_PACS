@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
-import type { UserRole } from '@prisma/client';
+import type { UserRole, Modality } from '@prisma/client';
 import type { AuditAction, AuditResource } from '@axis/types';
 
 interface Actor {
@@ -246,43 +246,63 @@ export class TemplatesService {
       throw new NotFoundException(`Study ${studyUid} not found`);
     }
 
-    interface TemplateWhere {
-      isActive: boolean;
-      OR: Array<Record<string, unknown>>;
-    }
-
-    const where: TemplateWhere = {
-      isActive: true,
-      OR: [
-        { modality: study.modality },
-        { modality: null },
-      ],
+    // Normalize DICOM modality codes to template modality values
+    const modalityMap: Record<string, string> = {
+      MR: 'MRI',
+      CT: 'CT',
+      XR: 'XR',
+      US: 'US',
+      NM: 'NM',
+      PT: 'PET',
+      MG: 'MG',
+      DX: 'DX',
+      CR: 'CR',
+      RF: 'Fluoro',
+      ES: 'US',
+      OT: 'CT',
     };
+    const normalizedModality = (modalityMap[study.modality] ?? study.modality) as Modality;
 
-    if (study.subspecialty) {
-      where.OR = [
-        ...where.OR,
-        { subspecialty: study.subspecialty },
-        { subspecialty: null },
-      ];
-    }
-
-    if (study.bodyPart) {
-      where.OR = [
-        ...where.OR,
-        { bodyPart: { contains: study.bodyPart, mode: 'insensitive' } },
-        { bodyPart: null },
-      ];
-    }
-
+    // Fetch all active templates that could potentially match
+    // We'll sort by priority in memory for correct precedence
     const templates = await this.prisma.reportTemplate.findMany({
-      where,
+      where: {
+        isActive: true,
+        OR: [
+          { modality: normalizedModality },
+          { modality: study.modality }, // fallback for already-normalized
+          { modality: null },
+        ],
+      },
       include: {
         creator: { select: { id: true, displayName: true, email: true } },
       },
-      orderBy: { updatedAt: 'desc' },
     });
 
-    return { data: templates };
+    // Filter and score templates by priority
+    // Priority 1: exact modality + subspecialty + bodyPart
+    // Priority 2: modality + subspecialty
+    // Priority 3: modality
+    // Priority 4: general (no modality, no subspecialty, no bodyPart)
+    const scored = templates
+      .map((t) => {
+        let score = 0;
+        const modalityMatch = t.modality === normalizedModality || t.modality === study.modality;
+        const subspecialtyMatch = t.subspecialty && t.subspecialty === study.subspecialty;
+        const bodyPartMatch = t.bodyPart && study.bodyPart && t.bodyPart.toLowerCase() === study.bodyPart.toLowerCase();
+
+        if (!modalityMatch && t.modality !== null) {
+          return null; // modality mismatch and not general
+        }
+        if (subspecialtyMatch) score += 100;
+        if (bodyPartMatch) score += 10;
+        if (modalityMatch) score += 5;
+        if (t.modality === null && t.subspecialty === null && t.bodyPart === null) score += 1; // general template
+        return { template: t, score };
+      })
+      .filter((s): s is { template: typeof templates[0]; score: number } => s !== null)
+      .sort((a, b) => b.score - a.score);
+
+    return { data: scored.map((s) => s.template) };
   }
 }

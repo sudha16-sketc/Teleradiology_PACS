@@ -21,6 +21,7 @@ import { HealthModule } from './health/health.module.js';
 import { SlaModule } from './sla/sla.module.js';
 import { BackupModule } from './backup/backup.module.js';
 import { RetentionModule } from './retention/retention.module.js';
+import { TemplatesModule } from './templates/templates.module.js';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { RetentionModule } from './retention/retention.module.js';
     SlaModule,
     BackupModule,
     RetentionModule,
+    TemplatesModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AuthGuard },

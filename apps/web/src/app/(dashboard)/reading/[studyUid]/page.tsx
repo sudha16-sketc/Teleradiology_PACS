@@ -22,7 +22,7 @@ interface StudyEnvelope {
 }
 
 interface ReportEnvelope {
-  data: Report | null;
+  data: (Report & { versions?: unknown[]; changeRequests?: unknown[] }) | null;
 }
 
 export default function ReadingPage() {
@@ -42,8 +42,9 @@ export default function ReadingPage() {
   const isAssigned =
     isRadiologist && study?.assignedRadiologistId === currentUser?.id;
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (!background) setLoading(true);
     setError(null);
     try {
       const [studyRes, reportRes] = await Promise.all([
@@ -57,11 +58,13 @@ export default function ReadingPage() {
       setStudy(studyRes.data);
       setReport(reportRes.data ?? null);
     } catch (err) {
-      setError(
-        (err as ApiError).message ?? "Unable to load this study.",
-      );
+      if (!background) {
+        setError(
+          (err as ApiError).message ?? "Unable to load this study.",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [studyUid]);
 
@@ -70,9 +73,11 @@ export default function ReadingPage() {
   }, [load]);
 
   // Light background poll — every 60s to catch external status changes.
+  // Never toggle the page-level loading state here: that would unmount the
+  // viewer and report panel and discard in-progress edits.
   useEffect(() => {
     const interval = setInterval(() => {
-      void load();
+      void load({ background: true });
     }, 60000);
     return () => clearInterval(interval);
   }, [load]);
@@ -125,7 +130,7 @@ export default function ReadingPage() {
               <ReviewActions
                 studyInstanceUid={studyUid}
                 status={study.status}
-                onChanged={() => void load()}
+                onChanged={() => void load({ background: true })}
               />
             </>
           ) : isRadiologist && isAssigned ? (
@@ -133,19 +138,19 @@ export default function ReadingPage() {
               <ReportPanel
                 studyInstanceUid={studyUid}
                 report={report}
-                onReportSaved={() => void load()}
+                onReportSaved={() => void load({ background: true })}
               />
               {report && <CriticalFindingBanner report={report} />}
               <CorrectionWorkflow
                 studyInstanceUid={studyUid}
                 status={study.status}
-                onChanged={() => void load()}
+                onChanged={() => void load({ background: true })}
               />
               <SignOffControls
                 studyInstanceUid={studyUid}
                 status={study.status}
                 reportHasContent={reportHasContent}
-                onChanged={() => void load()}
+                onChanged={() => void load({ background: true })}
               />
             </>
           ) : (

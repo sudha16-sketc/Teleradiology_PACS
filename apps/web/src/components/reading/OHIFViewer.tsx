@@ -8,7 +8,9 @@ interface OHIFViewerProps {
 }
 
 function ohifStudyUrl(studyInstanceUid: string): string {
-  const base = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/ohif`;
+  // Use Next.js proxy path so OHIF shares the same origin as the parent page,
+  // allowing cookie-based authentication to work for DICOMweb requests.
+  const base = "/ohif";
   return `${base}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUid)}`;
 }
 
