@@ -11,6 +11,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { ReviewsService, HOSPITAL_VISIBLE_STATES } from '../reviews/reviews.service.js';
 import { StudiesService, ALLOWED_TRANSITIONS, TRANSITION_ACTORS } from '../studies/studies.service.js';
 import { CorrectionsService } from '../corrections/corrections.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { htmlToPlainText, sanitizeReportHtml } from '../common/html.js';
 import type { AuditAction, AuditResource } from '@axis/types';
 import { createHash } from 'crypto';

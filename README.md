@@ -285,9 +285,9 @@ Copy `.env.example` to `.env` and adjust as needed.
 | Variable                   | Default                                              | Description                             |
 | -------------------------- | ---------------------------------------------------- | --------------------------------------- |
 | `NEXT_PUBLIC_APP_NAME`     | `Axis`                                               | Application display name                |
-| `NEXT_PUBLIC_APP_URL`      | `http://localhost:3000`                               | Frontend base URL                       |
+| `NEXT_PUBLIC_APP_URL`      | `http://localhost:3000`                               | Optional canonical frontend origin      |
 | `NODE_ENV`                 | `development`                                        | Environment mode                        |
-| `NEXT_PUBLIC_API_URL`      | `http://localhost:4000/api`                           | API base URL (browser)                  |
+| `NEXT_PUBLIC_API_URL`      | `http://localhost:4000/api`                           | Next.js `/api` rewrite upstream         |
 | `API_PORT`                 | `4000`                                               | NestJS listen port                      |
 | `DATABASE_URL`             | `postgresql://axis:axis_dev@localhost:5432/axis_pacs` | PostgreSQL connection string            |
 | `NEXT_PUBLICORTHANC_URL`   | `http://localhost:8042`                               | Orthanc URL (browser, public)           |
@@ -295,8 +295,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `DICOMweb_URL`             | `http://localhost:8042/dicom-web`                     | DICOMweb base URL                       |
 | `ORTHANC_USERNAME`         | `orthanc`                                            | Orthanc HTTP auth username              |
 | `ORTHANC_PASSWORD`         | `orthanc`                                            | Orthanc HTTP auth password              |
-| `NEXT_PUBLIC_OHIF_URL`     | `http://localhost:3001`                               | OHIF Viewer URL (browser)               |
-| `OHIF_URL`                 | `http://localhost:3001`                               | OHIF Viewer URL (server-side)           |
+| `OHIF_URL`                 | `http://localhost:3001`                               | Next.js `/ohif` rewrite upstream        |
 | `KEYCLOAK_URL`             | `http://localhost:8180`                               | Keycloak base URL                       |
 | `KEYCLOAK_REALM`           | `axis`                                               | Keycloak realm name                     |
 | `KEYCLOAK_CLIENT_ID`       | `axis-web`                                           | Keycloak client ID                      |
@@ -315,6 +314,21 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `SESSION_EXPIRY`           | `3600`                                               | Session TTL in seconds                  |
 | `AXIS_DESKTOP_SERVER_URL`  | _(unset)_                                            | Desktop deployment origin (see below)   |
 | `NEXT_PUBLIC_DESKTOP_API_URL` | _(unset)_                                        | Escape hatch only — leave empty         |
+
+### Vercel web deployment
+
+Configure these non-secret environment variables in the Vercel project for each
+deployment environment:
+
+- `NEXT_PUBLIC_API_URL`: the deployed API base URL, including `/api`.
+- `OHIF_URL`: the deployed OHIF service origin.
+
+Both are read while Next.js builds the rewrites. Vercel builds fail if either is
+missing, points to localhost/loopback, or does not use HTTPS; do not set these
+to the local-development values from `.env.example`. `NEXT_PUBLIC_APP_URL` is
+optional and may be set to the canonical frontend origin. Keep backend-only
+secrets such as `DATABASE_URL` and `AUTH_SECRET` on the API host, not in the web
+project.
 
 ---
 

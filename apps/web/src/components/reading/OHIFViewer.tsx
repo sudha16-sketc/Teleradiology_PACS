@@ -9,13 +9,6 @@ interface OHIFViewerProps {
   studyInstanceUid: string;
 }
 
-function ohifStudyUrl(studyInstanceUid: string): string {
-  // Use Next.js proxy path so OHIF shares the same origin as the parent page,
-  // allowing cookie-based authentication to work for DICOMweb requests.
-  const base = "/ohif";
-  return `${base}/viewer?StudyInstanceUIDs=${encodeURIComponent(studyInstanceUid)}`;
-}
-
 const LOAD_TIMEOUT_MS = 30000;
 
 export function OHIFViewer({ studyInstanceUid }: OHIFViewerProps) {

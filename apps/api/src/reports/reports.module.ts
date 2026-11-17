@@ -10,7 +10,13 @@ import { CorrectionsModule } from '../corrections/corrections.module.js';
 import { NotificationsModule } from '../notifications/notifications.module.js';
 
 @Module({
-  imports: [AuditModule, StudiesModule, ReviewsModule, CorrectionsModule],
+  imports: [
+    AuditModule,
+    StudiesModule,
+    ReviewsModule,
+    CorrectionsModule,
+    NotificationsModule,
+  ],
   controllers: [ReportsController, ReportImagesController],
   providers: [ReportsService, ReportImagesService],
   exports: [ReportsService],
