@@ -15,6 +15,7 @@ import { CorrectionWorkflow } from "@/components/reading/CorrectionWorkflow";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAppStore } from "@/lib/store";
+import { htmlToPlainText } from "@/lib/report-html";
 import type { ApiError, Study, Report } from "@axis/types";
 
 interface StudyEnvelope {
@@ -22,7 +23,7 @@ interface StudyEnvelope {
 }
 
 interface ReportEnvelope {
-  data: Report | null;
+  data: (Report & { versions?: unknown[]; changeRequests?: unknown[] }) | null;
 }
 
 export default function ReadingPage() {
@@ -42,64 +43,43 @@ export default function ReadingPage() {
   const isAssigned =
     isRadiologist && study?.assignedRadiologistId === currentUser?.id;
 
-  // `silent` refreshes are used by the background poll. They must NOT flip
-  // `loading`, because this component gates the whole tree on
-  // `loading || !study`: doing so would unmount and remount the OHIF iframe
-  // (discarding the radiologist's viewport, window/level, zoom and any
-  // in-progress measurements) and the report editor (discarding unsaved
-  // draft edits) on every tick.
-  const load = useCallback(
-    async (opts?: { silent?: boolean }) => {
-      const silent = opts?.silent === true;
-      if (!silent) {
-        setLoading(true);
-        setError(null);
+  const load = useCallback(async (options?: { background?: boolean }) => {
+    const background = options?.background ?? false;
+    if (!background) setLoading(true);
+    setError(null);
+    try {
+      const [studyRes, reportRes] = await Promise.all([
+        apiClient.get<StudyEnvelope>(
+          `/studies/${encodeURIComponent(studyUid)}`,
+        ),
+        apiClient.get<ReportEnvelope>(
+          `/reports/${encodeURIComponent(studyUid)}`,
+        ),
+      ]);
+      setStudy(studyRes.data);
+      setReport(reportRes.data ?? null);
+    } catch (err) {
+      if (!background) {
+        setError(
+          (err as ApiError).message ?? "Unable to load this study.",
+        );
       }
-      try {
-        const [studyRes, reportRes] = await Promise.all([
-          apiClient.get<StudyEnvelope>(
-            `/studies/${encodeURIComponent(studyUid)}`,
-          ),
-          apiClient.get<ReportEnvelope>(
-            `/reports/${encodeURIComponent(studyUid)}`,
-          ),
-        ]);
-        setStudy(studyRes.data);
-        setReport(reportRes.data ?? null);
-      } catch (err) {
-        // A failed background refresh must not replace a good view with an
-        // error screen, so only a foreground load reports a failure.
-        if (!silent) {
-          setError(
-            (err as ApiError).message ?? "Unable to load this study.",
-          );
-        }
-      } finally {
-        if (!silent) setLoading(false);
-      }
-    },
-    [studyUid],
-  );
+    } finally {
+      if (!background) setLoading(false);
+    }
+  }, [studyUid]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   // Light background poll — every 60s to catch external status changes.
-  // Skipped while the window is hidden (common in the desktop client) and
-  // never overlapped, so a slow response cannot queue up duplicate requests.
+  // Never toggle the page-level loading state here: that would unmount the
+  // viewer and report panel and discard in-progress edits.
   useEffect(() => {
-    let inFlight = false;
-    const tick = async () => {
-      if (inFlight || document.hidden) return;
-      inFlight = true;
-      try {
-        await load({ silent: true });
-      } finally {
-        inFlight = false;
-      }
-    };
-    const interval = setInterval(() => void tick(), 60000);
+    const interval = setInterval(() => {
+      void load({ background: true });
+    }, 60000);
     return () => clearInterval(interval);
   }, [load]);
 
@@ -125,14 +105,14 @@ export default function ReadingPage() {
     );
   }
 
-  const reportHasContent = !!(
-    report?.findings?.trim() && report?.impression?.trim()
-  );
+  const reportHasContent =
+    htmlToPlainText(report?.contentHtml).length > 0 ||
+    !!(report?.findings?.trim() && report?.impression?.trim());
 
   return (
     <div className="flex h-full flex-col gap-4">
       <StudyContextBar
-        patientName={study.patient.displayName}
+        patientUid={study.patient?.patientId ?? "—"}
         accessionNumber={study.accessionNumber}
       />
 
@@ -146,12 +126,16 @@ export default function ReadingPage() {
           <PriorStudiesList studyUid={studyUid} />
           {isReviewer ? (
             <>
-              <ReportPanel studyInstanceUid={studyUid} report={report} />
+              <ReportPanel
+                studyInstanceUid={studyUid}
+                report={report}
+                study={study}
+              />
               {report && <CriticalFindingBanner report={report} />}
               <ReviewActions
                 studyInstanceUid={studyUid}
                 status={study.status}
-                onChanged={() => void load({ silent: true })}
+                onChanged={() => void load({ background: true })}
               />
             </>
           ) : isRadiologist && isAssigned ? (
@@ -159,20 +143,20 @@ export default function ReadingPage() {
               <ReportPanel
                 studyInstanceUid={studyUid}
                 report={report}
-                assignedRadiologistId={study.assignedRadiologistId}
-                onReportSaved={() => void load({ silent: true })}
+                study={study}
+                onReportSaved={() => void load({ background: true })}
               />
               {report && <CriticalFindingBanner report={report} />}
               <CorrectionWorkflow
                 studyInstanceUid={studyUid}
                 status={study.status}
-                onChanged={() => void load({ silent: true })}
+                onChanged={() => void load({ background: true })}
               />
               <SignOffControls
                 studyInstanceUid={studyUid}
                 status={study.status}
                 reportHasContent={reportHasContent}
-                onChanged={() => void load({ silent: true })}
+                onChanged={() => void load({ background: true })}
               />
             </>
           ) : (
@@ -180,6 +164,7 @@ export default function ReadingPage() {
               <ReportPanel
                 studyInstanceUid={studyUid}
                 report={report}
+                study={study}
               />
               {report && <CriticalFindingBanner report={report} />}
             </>

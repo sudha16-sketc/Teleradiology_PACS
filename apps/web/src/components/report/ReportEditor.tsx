@@ -1,15 +1,33 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronDown, Eye, Loader2, Search } from "lucide-react";
 import { clsx } from "clsx";
-import type { ApiError, ReportStatus } from "@axis/types";
+import type {
+  ApiError,
+  CompanySettings,
+  ReportStatus,
+  ReportTemplate,
+  Study,
+} from "@axis/types";
 import { CriticalFindingToggle } from "./CriticalFindingToggle";
 import { ReportActions } from "./ReportActions";
+import { ReportPreview } from "./ReportPreview";
+import { RichReportEditor } from "./RichReportEditor";
+import { TemplatePreview } from "./TemplatePreview";
 import { apiClient } from "@/lib/api-client";
+import {
+  canAmendReport,
+  canEditReportContent,
+} from "@/lib/report-access";
+import { legacyFieldsToHtml } from "@/lib/report-html";
 
 interface ReportEditorProps {
+  study: Study;
   studyInstanceUid: string;
+  reportId: string;
+  reportVersion: number;
+  initialContentHtml?: string | null;
   initialClinicalHistory?: string;
   initialFindings?: string;
   initialImpression?: string;
@@ -18,16 +36,30 @@ interface ReportEditorProps {
   initialRecommendations?: string;
   initialCriticalFinding?: boolean;
   status?: ReportStatus;
+  isAssigned?: boolean;
+  company?: CompanySettings | null;
+  onAmend?: () => void;
+  onSaved?: () => void;
 }
 
-const TEMPLATES = [
-  { id: "general", name: "General Radiology" },
-  { id: "chest-ct", name: "CT Chest" },
-  { id: "msk", name: "MSK Study" },
-];
+interface TemplateOption {
+  id: string;
+  name: string;
+  contentHtml?: string;
+  clinicalHistory?: string;
+  findings?: string;
+  impression?: string;
+  technique?: string;
+  comparison?: string;
+  recommendations?: string;
+}
 
 export function ReportEditor({
+  study,
   studyInstanceUid,
+  reportId,
+  reportVersion,
+  initialContentHtml,
   initialClinicalHistory = "",
   initialFindings = "",
   initialImpression = "",
@@ -36,41 +68,113 @@ export function ReportEditor({
   initialRecommendations = "",
   initialCriticalFinding = false,
   status = "DRAFT",
+  isAssigned = true,
+  company,
+  onAmend,
+  onSaved,
 }: ReportEditorProps) {
-  const [clinicalHistory, setClinicalHistory] = useState(initialClinicalHistory);
-  const [findings, setFindings] = useState(initialFindings);
-  const [impression, setImpression] = useState(initialImpression);
-  const [technique, setTechnique] = useState(initialTechnique);
-  const [comparison, setComparison] = useState(initialComparison);
-  const [recommendations, setRecommendations] = useState(initialRecommendations);
+  const fallbackHtml = legacyFieldsToHtml({
+    clinicalHistory: initialClinicalHistory,
+    findings: initialFindings,
+    impression: initialImpression,
+    technique: initialTechnique,
+    comparison: initialComparison,
+    recommendations: initialRecommendations,
+  });
+  const [contentHtml, setContentHtml] = useState(
+    initialContentHtml?.trim() ? initialContentHtml : fallbackHtml,
+  );
   const [criticalFinding, setCriticalFinding] = useState(initialCriticalFinding);
-  const [selectedTemplate, setSelectedTemplate] = useState(TEMPLATES[0].id);
+  const [templates, setTemplates] = useState<TemplateOption[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
+    null,
+  );
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [templateSearch, setTemplateSearch] = useState("");
+  const [previewTemplate, setPreviewTemplate] =
+    useState<TemplateOption | null>(null);
   const [reportStatus, setReportStatus] = useState<ReportStatus>(status);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [templatesLoading, setTemplatesLoading] = useState(true);
+  const [isAmending, setIsAmending] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [currentVersion, setCurrentVersion] = useState(reportVersion);
 
-  const isSigned = reportStatus === "SIGNED";
+  const isReadOnly = !canEditReportContent(
+    reportStatus,
+    isAssigned,
+    isAmending,
+  );
+  const canAmend =
+    isAssigned &&
+    canAmendReport(reportStatus) &&
+    study.status === "RADIOLOGIST_SIGNED";
+  const isBusy = saving || uploading;
 
-  const contentFields = {
-    clinicalHistory,
-    findings,
-    impression,
-    technique,
-    comparison,
-    recommendations,
-    criticalFinding,
+  useEffect(() => {
+    let mounted = true;
+    setTemplatesLoading(true);
+    apiClient
+      .get<{ data: ReportTemplate[] }>(
+        `/templates/for-study/${encodeURIComponent(studyInstanceUid)}`,
+      )
+      .then((res) => {
+        if (mounted) {
+          const templateOptions: TemplateOption[] = (res.data ?? []).map((t) => ({
+            id: t.id,
+            name: t.name,
+            contentHtml: t.contentHtml ?? undefined,
+            clinicalHistory: t.clinicalHistory ?? undefined,
+            findings: t.findings ?? undefined,
+            impression: t.impression ?? undefined,
+            technique: t.technique ?? undefined,
+            comparison: t.comparison ?? undefined,
+            recommendations: t.recommendations ?? undefined,
+          }));
+          setTemplates(templateOptions);
+        }
+      })
+      .catch(() => {
+        if (mounted) setTemplates([]);
+      })
+      .finally(() => {
+        if (mounted) setTemplatesLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [studyInstanceUid]);
+
+  const applyTemplate = (template: TemplateOption) => {
+    const html = template.contentHtml?.trim()
+      ? template.contentHtml
+      : legacyFieldsToHtml(template);
+    setContentHtml(html);
+    setSelectedTemplateId(template.id);
+    setPreviewTemplate(null);
+    setTemplateOpen(false);
   };
+
+  const filteredTemplates = useMemo(() => {
+    const query = templateSearch.trim().toLowerCase();
+    if (!query) return templates;
+    return templates.filter((template) =>
+      template.name.toLowerCase().includes(query),
+    );
+  }, [templates, templateSearch]);
 
   const saveDraft = async () => {
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
+      await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}`, {
+        contentHtml,
+        criticalFinding,
+      });
       setNotice("Draft saved.");
+      onSaved?.();
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : (e as ApiError)?.message;
@@ -80,39 +184,17 @@ export function ReportEditor({
     }
   };
 
-  const submitSignoff = async () => {
-    setSaving(true);
-    setNotice(null);
-    try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
-      setReportStatus("DRAFT");
-      setNotice("Report submitted for sign-off.");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : (e as ApiError)?.message;
-      setNotice(message ?? "Failed to submit for sign-off.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const signOff = async () => {
     setSaving(true);
     setNotice(null);
     try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/sign`,
         {},
       );
       setReportStatus("SIGNED");
       setNotice("Report signed off.");
+      onSaved?.();
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : (e as ApiError)?.message;
@@ -128,10 +210,13 @@ export function ReportEditor({
     try {
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
-        contentFields,
+        {},
       );
+      setIsAmending(true);
       setReportStatus("DRAFT");
-      setNotice("Report amended.");
+      setCurrentVersion((version) => version + 1);
+      setNotice("Report amended. You can now edit and save as draft.");
+      onAmend?.();
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : (e as ApiError)?.message;
@@ -143,133 +228,132 @@ export function ReportEditor({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden rounded-md border border-border">
-      <div className="flex items-center gap-3 border-b border-border bg-surface-raised px-6 py-3">
+      <div className="flex flex-wrap items-center gap-3 border-b border-border bg-surface-raised px-6 py-3">
         <div className="relative">
           <button
             type="button"
             onClick={() => setTemplateOpen(!templateOpen)}
-            disabled={isSigned}
+            disabled={isReadOnly || templatesLoading || templates.length === 0}
             className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {TEMPLATES.find((t) => t.id === selectedTemplate)?.name ?? "Template"}
-            <ChevronDown size={14} className="text-text-muted" />
+            {templatesLoading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Loading templates...
+              </>
+            ) : templates.length === 0 ? (
+              "No templates available"
+            ) : (
+              <>
+                {templates.find((t) => t.id === selectedTemplateId)?.name ??
+                  "Insert template"}
+                <ChevronDown size={14} className="text-text-muted" />
+              </>
+            )}
           </button>
-          {templateOpen && (
-            <div className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border border-border bg-surface shadow-lg">
-              {TEMPLATES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedTemplate(t.id);
-                    setTemplateOpen(false);
-                  }}
-                  className={clsx(
-                    "flex w-full items-center px-3 py-2 text-left text-sm transition-colors hover:bg-surface-raised",
-                    t.id === selectedTemplate
-                      ? "text-accent"
-                      : "text-text-primary",
-                  )}
-                >
-                  {t.name}
-                </button>
-              ))}
+          {!templatesLoading && templateOpen && templates.length > 0 && (
+            <div className="absolute left-0 top-full z-20 mt-1 w-80 rounded-md border border-border bg-surface shadow-lg">
+              <div className="border-b border-border p-2">
+                <div className="relative">
+                  <Search
+                    size={13}
+                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                  />
+                  <input
+                    type="text"
+                    value={templateSearch}
+                    onChange={(event) => setTemplateSearch(event.target.value)}
+                    placeholder="Search templates..."
+                    className="w-full rounded-md border border-border bg-editor py-1.5 pl-8 pr-2 text-sm text-text-primary placeholder-text-muted focus:border-accent focus:outline-none"
+                  />
+                </div>
+              </div>
+              {filteredTemplates.length === 0 ? (
+                <p className="px-3 py-3 text-xs text-text-muted">
+                  No templates match your search.
+                </p>
+              ) : (
+                <div className="max-h-60 overflow-y-auto">
+                  {filteredTemplates.map((t) => (
+                    <div
+                      key={t.id}
+                      className="flex items-center border-b border-border/50 last:border-b-0"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => applyTemplate(t)}
+                        className={clsx(
+                          "flex min-w-0 flex-1 items-center px-3 py-2 text-left text-sm transition-colors hover:bg-surface-raised",
+                          t.id === selectedTemplateId
+                            ? "text-accent"
+                            : "text-text-primary",
+                        )}
+                      >
+                        <span className="truncate">{t.name}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewTemplate(t)}
+                        className="mr-2 rounded-md p-1.5 text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary"
+                        aria-label={`Preview ${t.name}`}
+                        title="Preview template"
+                      >
+                        <Eye size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
         <span className="text-xs text-text-muted">Report Template</span>
-        <span className="ml-auto text-xs font-medium uppercase tracking-wider text-text-muted">
-          {reportStatus.replace(/_/g, " ")}
-        </span>
+
+        <div className="ml-auto flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            disabled={!contentHtml.trim()}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Eye size={14} />
+            Preview
+          </button>
+          <span className="font-mono text-[10px] text-text-muted">
+            {reportId}
+          </span>
+          <span className="text-xs font-medium uppercase tracking-wider text-text-muted">
+            {reportStatus.replace(/_/g, " ")}
+          </span>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto bg-editor">
         <div className="mx-auto max-w-3xl px-6 py-6">
-          <div className="font-serif">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Clinical History
-            </label>
-            <textarea
-              value={clinicalHistory}
-              onChange={(e) => setClinicalHistory(e.target.value)}
-              disabled={isSigned}
-              placeholder="Relevant clinical history..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={3}
-            />
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Technique
-            </label>
-            <textarea
-              value={technique}
-              onChange={(e) => setTechnique(e.target.value)}
-              disabled={isSigned}
-              placeholder="Imaging technique / protocol..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={2}
-            />
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Comparison
-            </label>
-            <textarea
-              value={comparison}
-              onChange={(e) => setComparison(e.target.value)}
-              disabled={isSigned}
-              placeholder="Prior studies for comparison..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={2}
-            />
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Findings <span className="text-error">*</span>
-            </label>
-            <textarea
-              value={findings}
-              onChange={(e) => setFindings(e.target.value)}
-              disabled={isSigned}
-              placeholder="Enter radiological findings..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              style={{ minHeight: 200 }}
-            />
-            <div className="mt-1 text-right text-xs text-editor-ink/50">
-              {findings.length} characters
-            </div>
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Impression <span className="text-error">*</span>
-            </label>
-            <textarea
-              value={impression}
-              onChange={(e) => setImpression(e.target.value)}
-              disabled={isSigned}
-              placeholder="Enter impression / conclusion..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              style={{ minHeight: 200 }}
-            />
-            <div className="mt-1 text-right text-xs text-editor-ink/50">
-              {impression.length} characters
-            </div>
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Recommendations
-            </label>
-            <textarea
-              value={recommendations}
-              onChange={(e) => setRecommendations(e.target.value)}
-              disabled={isSigned}
-              placeholder="Follow-up / management recommendations..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={3}
-            />
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-editor-ink/60">
+            <span className="font-mono">
+              Patient UID: {study.patient?.patientId ?? "—"}
+            </span>
+            <span className="font-mono">
+              Study UID: {study.studyInstanceUid}
+            </span>
           </div>
+
+          <RichReportEditor
+            value={contentHtml}
+            onChange={setContentHtml}
+            studyUid={studyInstanceUid}
+            disabled={isReadOnly}
+            enableImages
+            minHeight={420}
+            onUploadingChange={setUploading}
+          />
 
           <div className="mt-6">
             <CriticalFindingToggle
               active={criticalFinding}
-              onToggle={() => !isSigned && setCriticalFinding(!criticalFinding)}
-              disabled={isSigned}
+              onToggle={() => !isReadOnly && setCriticalFinding(!criticalFinding)}
+              disabled={isReadOnly}
             />
           </div>
         </div>
@@ -281,26 +365,40 @@ export function ReportEditor({
         </div>
       )}
 
-      {saving ? (
+      {isBusy ? (
         <div className="flex items-center gap-2 border-t border-border px-6 py-4 text-sm text-text-muted">
           <Loader2 size={15} className="animate-spin" />
-          Saving...
+          {uploading ? "Uploading image..." : "Saving..."}
         </div>
       ) : (
         <ReportActions
           status={reportStatus}
-          disabled={isSigned}
-          studyInstanceUid={studyInstanceUid}
+          studyStatus={study.status}
+          disabled={isReadOnly && !canAmend}
           onSaveDraft={saveDraft}
-          onSubmitSignoff={submitSignoff}
           onSignOff={signOff}
-          onAmend={amend}
+          onAmend={canAmend ? amend : undefined}
+        />
+      )}
+
+      {previewOpen && (
+        <ReportPreview
+          study={study}
+          reportId={reportId}
+          reportVersion={currentVersion}
+          contentHtml={contentHtml}
+          company={company}
+          onClose={() => setPreviewOpen(false)}
+        />
+      )}
+
+      {previewTemplate && (
+        <TemplatePreview
+          template={previewTemplate}
+          onClose={() => setPreviewTemplate(null)}
+          onUse={() => applyTemplate(previewTemplate)}
         />
       )}
     </div>
   );
 }
-
-const textareaClasses =
-  "w-full resize-y rounded-md border border-border/60 bg-editor p-4 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 transition-colors focus:border-accent focus:bg-editor focus:outline-none";
-const disabledClasses = "cursor-not-allowed bg-surface opacity-70";

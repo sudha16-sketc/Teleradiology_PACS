@@ -7,6 +7,486 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id                      String           @id @default(cuid())
+  email                   String           @unique
+  displayName             String
+  role                    UserRole
+  hospitalId              String?
+  subspecialty            String?
+  isActive                Boolean          @default(true)
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+  approvedAt              DateTime?
+  approvedById            String?
+  licenseNumber           String?
+  organization            String?
+  passwordHash            String
+  phone                   String?
+  rejectionReason         String?
+  requestedRole           UserRole?
+  status                  UserStatus       @default(PENDING)
+  assignmentsMade         Assignment[]     @relation("AssignmentAssigner")
+  assignmentsReceived     Assignment[]     @relation("AssignmentRadiologist")
+  auditLogs               AuditLog[]       @relation("AuditActor")
+  backupRuns              BackupRun[]      @relation("BackupCreator")
+  changeRequestsAssigned  ChangeRequest[]  @relation("ChangeRequestAssignedTo")
+  changeRequestsRequested ChangeRequest[]  @relation("ChangeRequestRequestedBy")
+  changeRequestsReviewed  ChangeRequest[]  @relation("ChangeRequestReviewedBy")
+  notifications           Notification[]   @relation("NotificationRecipient")
+  authoredReports         Report[]         @relation("ReportAuthor")
+  createdTemplates        ReportTemplate[] @relation("TemplateCreator")
+  reportImages            ReportImage[]    @relation("ReportImageUploader")
+  reportVersions          ReportVersion[]  @relation("VersionAuthor")
+  routingRules            RoutingRule[]    @relation("RoutingRuleCreator")
+  assignedStudies         Study[]          @relation("AssignedRadiologist")
+  approvedBy              User?            @relation("UserApproval", fields: [approvedById], references: [id])
+  approvedUsers           User[]           @relation("UserApproval")
+  hospital                Hospital?        @relation(fields: [hospitalId], references: [id])
+
+  @@index([status])
+  @@index([role])
+}
+
+model Hospital {
+  id               String            @id @default(cuid())
+  name             String
+  code             String            @unique
+  address          String?
+  timezone         String            @default("UTC")
+  isActive         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  deliveryAttempts DeliveryAttempt[]
+  patients         Patient[]
+  sites            Site[]
+  studies          Study[]
+  users            User[]
+}
+
+model Site {
+  id         String   @id @default(cuid())
+  hospitalId String
+  name       String
+  code       String
+  isActive   Boolean  @default(true)
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+}
+
+model Patient {
+  id          String    @id @default(cuid())
+  patientId   String    @unique
+  displayName String
+  dateOfBirth DateTime?
+  gender      Gender?
+  hospitalId  String
+  hospital    Hospital  @relation(fields: [hospitalId], references: [id])
+  studies     Study[]
+}
+
+model Study {
+  id                    String            @id @default(cuid())
+  studyInstanceUid      String            @unique
+  patientId             String
+  accessionNumber       String            @unique
+  studyDate             DateTime
+  studyTime             String            @default("")
+  modality              Modality
+  bodyPart              String
+  hospitalId            String
+  referringPhysician    String            @default("")
+  studyDescription      String            @default("")
+  priority              StudyPriority     @default(ROUTINE)
+  status                StudyStatus       @default(HOSPITAL_SUBMITTED)
+  subspecialty          Subspecialty      @default(GENERAL)
+  assignedRadiologistId String?
+  seriesCount           Int               @default(0)
+  instanceCount         Int               @default(0)
+  slaDeadline           DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  assignedAt            DateTime?
+  assignedBy            String?
+  clinicalHistory       String            @default("")
+  dueAt                 DateTime?
+  receivedAt            DateTime?
+  reportingStartedAt    DateTime?
+  deliveredAt           DateTime?
+  orthancPatientId      String?
+  orthancStudyId        String?
+  uploadedFileName      String?
+  completedAt           DateTime?
+  hospitalAcceptedAt    DateTime?
+  hospitalReviewedAt    DateTime?
+  managerApprovedAt     DateTime?
+  managerReviewedAt     DateTime?
+  signedOffAt           DateTime?
+  archivedAt            DateTime?
+  aiJobs                AIJob[]
+  assignments           Assignment[]
+  changeRequests        ChangeRequest[]
+  deliveryAttempts      DeliveryAttempt[]
+  instances             Instance[]
+  reportImages          ReportImage[]
+  reports               Report[]
+  series                Series[]
+  assignedRadiologist   User?             @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
+  hospital              Hospital          @relation(fields: [hospitalId], references: [id])
+  patient               Patient           @relation(fields: [patientId], references: [id])
+  worklistItem          WorklistItem?
+
+  @@index([orthancStudyId])
+  @@index([status])
+  @@index([hospitalId])
+  @@index([assignedRadiologistId])
+  @@index([priority])
+  @@index([studyDate])
+}
+
+model Series {
+  id                String     @id @default(cuid())
+  seriesInstanceUid String     @unique
+  studyId           String
+  modality          Modality
+  seriesNumber      Int
+  seriesDescription String     @default("")
+  instanceCount     Int        @default(0)
+  bodyPart          String     @default("")
+  createdAt         DateTime   @default(now())
+  orthancSeriesId   String?
+  aiJobs            AIJob[]
+  instances         Instance[]
+  study             Study      @relation(fields: [studyId], references: [id])
+
+  @@index([orthancSeriesId])
+}
+
+model Instance {
+  id                String   @id @default(cuid())
+  sopInstanceUid    String   @unique
+  seriesId          String
+  studyId           String
+  instanceNumber    Int
+  sopClassUid       String
+  createdAt         DateTime @default(now())
+  orthancInstanceId String?
+  aiJobs            AIJob[]
+  series            Series   @relation(fields: [seriesId], references: [id])
+  study             Study    @relation(fields: [studyId], references: [id])
+
+  @@index([orthancInstanceId])
+}
+
+model WorklistItem {
+  id           String    @id @default(cuid())
+  studyId      String    @unique
+  assignedAt   DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  tatMinutes   Int?
+  slaRemaining Int?
+  study        Study     @relation(fields: [studyId], references: [id])
+}
+
+model Report {
+  id                            String            @id @default(cuid())
+  studyId                       String
+  authorId                      String
+  status                        ReportStatus      @default(DRAFT)
+  version                       Int               @default(1)
+  findings                      String            @default("")
+  impression                    String            @default("")
+  criticalFinding               Boolean           @default(false)
+  criticalFindingAcknowledged   Boolean           @default(false)
+  criticalFindingAcknowledgedBy String?
+  criticalFindingAcknowledgedAt DateTime?
+  signedOffBy                   String?
+  signedOffAt                   DateTime?
+  contentHash                   String
+  createdAt                     DateTime          @default(now())
+  updatedAt                     DateTime          @updatedAt
+  recommendations               String            @default("")
+  clinicalHistory               String            @default("")
+  comparison                    String            @default("")
+  technique                     String            @default("")
+  contentHtml                   String?
+  images                        ReportImage[]
+  changeRequests                ChangeRequest[]
+  deliveryAttempts              DeliveryAttempt[]
+  author                        User              @relation("ReportAuthor", fields: [authorId], references: [id])
+  study                         Study             @relation(fields: [studyId], references: [id])
+  versions                      ReportVersion[]
+
+  @@unique([studyId, version])
+  @@index([studyId])
+  @@index([status])
+}
+
+model ReportVersion {
+  id                  String          @id @default(cuid())
+  reportId            String
+  version             Int
+  status              ReportStatus
+  findings            String
+  impression          String
+  authorId            String
+  contentHash         String
+  createdAt           DateTime        @default(now())
+  recommendations     String          @default("")
+  clinicalHistory     String          @default("")
+  comparison          String          @default("")
+  technique           String          @default("")
+  contentHtml         String?
+  resultOfCorrections ChangeRequest[] @relation("CorrectionNewVersion")
+  parentOfCorrections ChangeRequest[] @relation("CorrectionParentVersion")
+  author              User            @relation("VersionAuthor", fields: [authorId], references: [id])
+  report              Report          @relation(fields: [reportId], references: [id])
+}
+
+model ReportTemplate {
+  id              String        @id @default(cuid())
+  name            String
+  description     String?
+  modality        Modality?
+  subspecialty    Subspecialty?
+  bodyPart        String?
+  clinicalHistory String        @default("")
+  findings        String        @default("")
+  impression      String        @default("")
+  technique       String        @default("")
+  comparison      String        @default("")
+  recommendations String        @default("")
+  contentHtml     String        @default("")
+  isActive        Boolean       @default(true)
+  createdById     String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  creator         User          @relation("TemplateCreator", fields: [createdById], references: [id])
+
+  @@index([modality])
+  @@index([subspecialty])
+  @@index([isActive])
+}
+
+/// Images embedded in rich report bodies. Binary content lives on disk under a
+/// configurable upload directory; only stable metadata and the storage key are
+/// persisted. Images are scoped to a report/study and an authenticated uploader.
+model ReportImage {
+  id           String   @id @default(cuid())
+  reportId     String
+  studyId      String
+  uploadedById String
+  storageKey   String   @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+  report       Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  study        Study    @relation(fields: [studyId], references: [id])
+  uploadedBy   User     @relation("ReportImageUploader", fields: [uploadedById], references: [id])
+
+  @@index([reportId])
+  @@index([studyId])
+  @@index([uploadedById])
+}
+
+/// Singleton organization profile used by the automated report footer. An empty
+/// string means "not configured" so the UI can render a clearly identified
+/// placeholder instead of inventing company information.
+model CompanySettings {
+  id          String   @id @default("default")
+  name        String   @default("")
+  phone       String   @default("")
+  email       String   @default("")
+  description String   @default("")
+  disclaimer  String   @default("")
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model ChangeRequest {
+  id                    String              @id @default(cuid())
+  studyId               String
+  reportId              String
+  requestedById         String
+  assignedToId          String
+  reason                String
+  status                ChangeRequestStatus @default(OPEN)
+  resolution            String?
+  createdAt             DateTime            @default(now())
+  resolvedAt            DateTime?
+  newReportVersionId    String?
+  parentReportVersionId String?
+  requestedByRole       String              @default("")
+  reviewedAt            DateTime?
+  reviewedById          String?
+  sourceStatus          StudyStatus?
+  comment               String              @default("")
+  assignedTo            User                @relation("ChangeRequestAssignedTo", fields: [assignedToId], references: [id])
+  newReportVersion      ReportVersion?      @relation("CorrectionNewVersion", fields: [newReportVersionId], references: [id])
+  parentReportVersion   ReportVersion?      @relation("CorrectionParentVersion", fields: [parentReportVersionId], references: [id])
+  report                Report              @relation(fields: [reportId], references: [id])
+  requestedBy           User                @relation("ChangeRequestRequestedBy", fields: [requestedById], references: [id])
+  reviewedBy            User?               @relation("ChangeRequestReviewedBy", fields: [reviewedById], references: [id])
+  study                 Study               @relation(fields: [studyId], references: [id])
+
+  @@index([studyId])
+  @@index([reportId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([parentReportVersionId])
+  @@index([newReportVersionId])
+}
+
+model Assignment {
+  id            String    @id @default(cuid())
+  studyId       String
+  radiologistId String
+  assignedById  String
+  assignedAt    DateTime  @default(now())
+  unassignedAt  DateTime?
+  reason        String    @default("")
+  isActive      Boolean   @default(true)
+  assignedBy    User      @relation("AssignmentAssigner", fields: [assignedById], references: [id])
+  radiologist   User      @relation("AssignmentRadiologist", fields: [radiologistId], references: [id])
+  study         Study     @relation(fields: [studyId], references: [id])
+
+  @@index([studyId])
+  @@index([radiologistId])
+  @@index([isActive])
+}
+
+model AuditLog {
+  id            String        @id @default(cuid())
+  actorId       String
+  actorName     String
+  actorRole     String
+  action        AuditAction
+  resource      AuditResource
+  resourceId    String
+  timestamp     DateTime      @default(now())
+  ipAddress     String?
+  userAgent     String?
+  metadata      Json?
+  correlationId String?
+  actor         User          @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([timestamp])
+  @@index([actorId])
+  @@index([action])
+  @@index([actorRole])
+  @@index([resource, resourceId])
+  @@index([correlationId])
+}
+
+model RoutingRule {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @default("")
+  priority    Int      @default(0)
+  isActive    Boolean  @default(true)
+  conditions  Json
+  actions     Json
+  createdBy   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  creator     User     @relation("RoutingRuleCreator", fields: [createdBy], references: [id])
+}
+
+/// Application notifications for workflow events. Recipients are always derived
+/// server-side from workflow participants (never accepted from the client).
+/// Messages contain minimal metadata and never embed full report content.
+model Notification {
+  id                  String    @id @default(cuid())
+  recipientUserId     String
+  type                String
+  title               String
+  message             String
+  studyId             String?
+  correctionRequestId String?
+  readAt              DateTime?
+  createdAt           DateTime  @default(now())
+  recipient           User      @relation("NotificationRecipient", fields: [recipientUserId], references: [id])
+
+  @@index([recipientUserId])
+  @@index([readAt])
+  @@index([studyId])
+}
+
+model DeliveryAttempt {
+  id            String         @id @default(cuid())
+  studyId       String
+  reportId      String
+  hospitalId    String
+  status        DeliveryStatus @default(PENDING)
+  attemptNumber Int            @default(1)
+  deliveredAt   DateTime?
+  errorMessage  String?
+  metadata      Json?
+  createdAt     DateTime       @default(now())
+  hospital      Hospital       @relation(fields: [hospitalId], references: [id])
+  report        Report         @relation(fields: [reportId], references: [id])
+  study         Study          @relation(fields: [studyId], references: [id])
+}
+
+model AIJob {
+  id            String      @id @default(cuid())
+  studyId       String
+  seriesId      String?
+  sopInstanceId String?
+  taskType      AITaskType
+  status        AIJobStatus @default(QUEUED)
+  result        Json?
+  errorMessage  String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime    @default(now())
+  series        Series?     @relation(fields: [seriesId], references: [id])
+  instance      Instance?   @relation(fields: [sopInstanceId], references: [id])
+  study         Study       @relation(fields: [studyId], references: [id])
+
+  @@index([status])
+  @@index([studyId])
+}
+
+/// Operational metadata for a single backup run (PostgreSQL and/or Orthanc).
+/// Statuses progress RUNNING -> COMPLETED -> VERIFIED, or -> FAILED. Verified
+/// backups are the only ones eligible to release retained clinical data.
+model BackupRun {
+  id               String       @id @default(cuid())
+  type             BackupType
+  status           BackupStatus @default(RUNNING)
+  startedAt        DateTime     @default(now())
+  completedAt      DateTime?
+  failedAt         DateTime?
+  databaseArtifact String?
+  dicomArtifact    String?
+  checksum         String?
+  sizeBytes        BigInt?
+  backupDirectory  String?
+  verifiedAt       DateTime?
+  failureReason    String?
+  createdById      String?
+  createdAt        DateTime     @default(now())
+  createdBy        User?        @relation("BackupCreator", fields: [createdById], references: [id])
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([verifiedAt])
+}
+
+/// Server-side operational SLA thresholds keyed by study priority. A global
+/// default is applied when no row exists for a study's priority. The server
+/// (never the browser) computes deadlines, remaining time, and breach state.
+model SlaConfig {
+  id        String      @id @default(cuid())
+  priority  SlaPriority @unique
+  minutes   Int
+  isActive  Boolean     @default(true)
+  updatedBy String?
+  updatedAt DateTime    @updatedAt
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -95,24 +575,16 @@ enum AuditAction {
   LOGOUT
   STUDY_VIEWED
   STUDY_DOWNLOADED
-  STUDY_SUBMITTED
-  STUDY_UPLOADED
-  DICOM_IMPORTED
-  DICOM_IMPORT_FAILED
-  STUDY_VALIDATED
   STUDY_ASSIGNED
-  STUDY_REASSIGNED
   STUDY_STATUS_CHANGED
   REPORT_VIEWED
   REPORT_CREATED
   REPORT_EDITED
-  REPORT_SUBMITTED
-  REPORT_VERIFIED
+  REPORT_TEMPLATE_CREATED
+  REPORT_TEMPLATE_UPDATED
+  REPORT_TEMPLATE_DELETED
   REPORT_SIGNED
   REPORT_AMENDED
-  REPORT_REVISED
-  REPORT_RELEASED
-  CHANGE_REQUESTED
   REPORT_FINALIZED
   CRITICAL_FINDING_FLAGGED
   CRITICAL_FINDING_ACKNOWLEDGED
@@ -122,14 +594,25 @@ enum AuditAction {
   DELIVERY_ATTEMPTED
   DELIVERY_FAILED
   DELIVERY_COMPLETED
-  HOSPITAL_ACCEPTED
-  HOSPITAL_CHANGE_REQUESTED
+  STUDY_SUBMITTED
+  STUDY_VALIDATED
+  STUDY_REASSIGNED
+  REPORT_SUBMITTED
+  REPORT_VERIFIED
+  REPORT_REVISED
+  REPORT_RELEASED
+  CHANGE_REQUESTED
+  STUDY_UPLOADED
+  DICOM_IMPORTED
+  DICOM_IMPORT_FAILED
   CORRECTION_REQUESTED
   CORRECTION_APPROVED
   CORRECTION_REJECTED
   CORRECTION_STARTED
   CORRECTED_REPORT_SIGNED
   CORRECTION_RESOLVED
+  HOSPITAL_ACCEPTED
+  HOSPITAL_CHANGE_REQUESTED
   SLA_CONFIG_CHANGED
   BACKUP_STARTED
   BACKUP_COMPLETED
@@ -143,7 +626,7 @@ enum AuditAction {
 enum AuditResource {
   STUDY
   REPORT
-  CHANGE_REQUEST
+  REPORT_TEMPLATE
   USER
   ROUTING_RULE
   HOSPITAL
@@ -151,6 +634,7 @@ enum AuditResource {
   DELIVERY
   AI_JOB
   AUTH
+  CHANGE_REQUEST
   ASSIGNMENT
   BACKUP
   RETENTION
@@ -205,437 +689,4 @@ enum SlaPriority {
   STAT
   URGENT
   ROUTINE
-}
-
-model User {
-  id             String     @id @default(cuid())
-  email          String     @unique
-  displayName    String
-  role           UserRole
-  status         UserStatus @default(PENDING)
-  passwordHash   String
-  phone          String?
-  organization   String?
-  licenseNumber  String?
-  requestedRole  UserRole?
-  rejectionReason String?
-  approvedAt     DateTime?
-  approvedById   String?
-  hospitalId     String?
-  subspecialty   String?
-  isActive       Boolean    @default(true)
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
-
-  hospital          Hospital?     @relation(fields: [hospitalId], references: [id])
-  approvedBy        User?         @relation("UserApproval", fields: [approvedById], references: [id])
-  approvedUsers     User[]        @relation("UserApproval")
-  assignedStudies   Study[]       @relation("AssignedRadiologist")
-  authoredReports   Report[]      @relation("ReportAuthor")
-  reportVersions    ReportVersion[] @relation("VersionAuthor")
-  auditLogs         AuditLog[]    @relation("AuditActor")
-  routingRules      RoutingRule[] @relation("RoutingRuleCreator")
-  changeRequestsRequested ChangeRequest[] @relation("ChangeRequestRequestedBy")
-  changeRequestsAssigned  ChangeRequest[] @relation("ChangeRequestAssignedTo")
-  changeRequestsReviewed  ChangeRequest[] @relation("ChangeRequestReviewedBy")
-  notifications           Notification[] @relation("NotificationRecipient")
-  assignmentsMade   Assignment[]  @relation("AssignmentAssigner")
-  assignmentsReceived Assignment[] @relation("AssignmentRadiologist")
-  backupRuns        BackupRun[]   @relation("BackupCreator")
-
-  @@index([status])
-  @@index([role])
-}
-
-model Hospital {
-  id        String    @id @default(cuid())
-  name      String
-  code      String    @unique
-  address   String?
-  timezone  String    @default("UTC")
-  isActive  Boolean   @default(true)
-  createdAt DateTime  @default(now())
-
-  users     User[]
-  sites     Site[]
-  patients  Patient[]
-  studies   Study[]
-  deliveryAttempts DeliveryAttempt[]
-}
-
-model Site {
-  id         String   @id @default(cuid())
-  hospitalId String
-  name       String
-  code       String
-  isActive   Boolean  @default(true)
-
-  hospital Hospital @relation(fields: [hospitalId], references: [id])
-}
-
-model Patient {
-  id          String   @id @default(cuid())
-  patientId   String   @unique
-  displayName String
-  dateOfBirth DateTime?
-  gender      Gender?
-  hospitalId  String
-
-  hospital Hospital @relation(fields: [hospitalId], references: [id])
-  studies  Study[]
-}
-
-model Study {
-  id                    String          @id @default(cuid())
-  studyInstanceUid      String          @unique
-  orthancStudyId        String?
-  orthancPatientId      String?
-  patientId             String
-  accessionNumber       String          @unique
-  studyDate             DateTime
-  studyTime             String          @default("")
-  modality              Modality
-  bodyPart              String
-  hospitalId            String
-  referringPhysician    String          @default("")
-  studyDescription      String          @default("")
-  clinicalHistory       String          @default("")
-  priority              StudyPriority   @default(ROUTINE)
-  status                StudyStatus     @default(HOSPITAL_SUBMITTED)
-  subspecialty          Subspecialty    @default(GENERAL)
-  assignedRadiologistId String?
-  assignedBy            String?
-  receivedAt            DateTime?
-  assignedAt            DateTime?
-  reportingStartedAt    DateTime?
-  signedOffAt           DateTime?
-  managerReviewedAt     DateTime?
-  managerApprovedAt     DateTime?
-  deliveredAt           DateTime?
-  hospitalReviewedAt    DateTime?
-  hospitalAcceptedAt    DateTime?
-  completedAt           DateTime?
-  archivedAt            DateTime?
-  dueAt                 DateTime?
-  seriesCount           Int             @default(0)
-  instanceCount         Int             @default(0)
-  slaDeadline           DateTime?
-  uploadedFileName      String?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
-
-  patient                Patient         @relation(fields: [patientId], references: [id])
-  hospital               Hospital        @relation(fields: [hospitalId], references: [id])
-  assignedRadiologist    User?           @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
-  series                 Series[]
-  instances              Instance[]
-  worklistItem           WorklistItem?
-  reports                Report[]
-  deliveryAttempts       DeliveryAttempt[]
-  aiJobs                 AIJob[]
-  changeRequests         ChangeRequest[]
-  assignments            Assignment[]
-
-  @@index([orthancStudyId])
-  @@index([status])
-  @@index([hospitalId])
-  @@index([assignedRadiologistId])
-  @@index([priority])
-  @@index([studyDate])
-}
-
-model Series {
-  id                String   @id @default(cuid())
-  seriesInstanceUid String   @unique
-  orthancSeriesId   String?
-  studyId           String
-  modality          Modality
-  seriesNumber      Int
-  seriesDescription String   @default("")
-  instanceCount     Int      @default(0)
-  bodyPart          String   @default("")
-  createdAt         DateTime @default(now())
-
-  study     Study      @relation(fields: [studyId], references: [id])
-  instances Instance[]
-  aiJobs    AIJob[]
-
-  @@index([orthancSeriesId])
-}
-
-model Instance {
-  id               String   @id @default(cuid())
-  sopInstanceUid   String   @unique
-  orthancInstanceId String?
-  seriesId         String
-  studyId          String
-  instanceNumber   Int
-  sopClassUid      String
-  createdAt        DateTime @default(now())
-
-  series   Series @relation(fields: [seriesId], references: [id])
-  study    Study  @relation(fields: [studyId], references: [id])
-  aiJobs   AIJob[]
-
-  @@index([orthancInstanceId])
-}
-
-model WorklistItem {
-  id           String    @id @default(cuid())
-  studyId      String    @unique
-  assignedAt   DateTime?
-  startedAt    DateTime?
-  completedAt  DateTime?
-  tatMinutes   Int?
-  slaRemaining Int?
-
-  study Study @relation(fields: [studyId], references: [id])
-}
-
-model Report {
-  id                           String       @id @default(cuid())
-  studyId                      String
-  authorId                     String
-  status                       ReportStatus @default(DRAFT)
-  version                      Int          @default(1)
-  clinicalHistory              String       @default("")
-  findings                     String       @default("")
-  impression                   String       @default("")
-  technique                    String       @default("")
-  comparison                   String       @default("")
-  recommendations              String       @default("")
-  criticalFinding              Boolean      @default(false)
-  criticalFindingAcknowledged  Boolean      @default(false)
-  criticalFindingAcknowledgedBy String?
-  criticalFindingAcknowledgedAt DateTime?
-  signedOffBy                  String?
-  signedOffAt                  DateTime?
-  contentHash                  String
-  createdAt                    DateTime     @default(now())
-  updatedAt                    DateTime     @updatedAt
-
-  study              Study           @relation(fields: [studyId], references: [id])
-  author             User            @relation("ReportAuthor", fields: [authorId], references: [id])
-  versions           ReportVersion[]
-  deliveryAttempts   DeliveryAttempt[]
-  changeRequests     ChangeRequest[]
-
-  @@unique([studyId, version])
-  @@index([studyId])
-  @@index([status])
-}
-
-model ReportVersion {
-  id             String       @id @default(cuid())
-  reportId       String
-  version        Int
-  status         ReportStatus
-  clinicalHistory String      @default("")
-  findings       String
-  impression     String
-  technique      String       @default("")
-  comparison     String       @default("")
-  recommendations String       @default("")
-  authorId       String
-  contentHash    String
-  createdAt      DateTime     @default(now())
-
-  report Report @relation(fields: [reportId], references: [id])
-  author User   @relation("VersionAuthor", fields: [authorId], references: [id])
-
-  parentOfCorrections ChangeRequest[] @relation("CorrectionParentVersion")
-  resultOfCorrections ChangeRequest[] @relation("CorrectionNewVersion")
-
-  @@unique([reportId, version])
-}
-
-model ChangeRequest {
-  id              String              @id @default(cuid())
-  studyId         String
-  reportId        String
-  requestedById   String
-  requestedByRole String              @default("")
-  assignedToId    String
-  reason          String
-  comment         String              @default("")
-  status          ChangeRequestStatus @default(OPEN)
-  sourceStatus    StudyStatus?
-  parentReportVersionId String?
-  newReportVersionId    String?
-  reviewedById    String?
-  reviewedAt      DateTime?
-  resolution      String?
-  createdAt       DateTime            @default(now())
-  resolvedAt      DateTime?
-
-  study       Study @relation(fields: [studyId], references: [id])
-  report      Report @relation(fields: [reportId], references: [id])
-  requestedBy User  @relation("ChangeRequestRequestedBy", fields: [requestedById], references: [id])
-  assignedTo  User  @relation("ChangeRequestAssignedTo", fields: [assignedToId], references: [id])
-  reviewedBy  User? @relation("ChangeRequestReviewedBy", fields: [reviewedById], references: [id])
-  parentReportVersion ReportVersion? @relation("CorrectionParentVersion", fields: [parentReportVersionId], references: [id])
-  newReportVersion    ReportVersion? @relation("CorrectionNewVersion", fields: [newReportVersionId], references: [id])
-
-  @@index([studyId])
-  @@index([reportId])
-  @@index([assignedToId])
-  @@index([status])
-  @@index([parentReportVersionId])
-  @@index([newReportVersionId])
-}
-
-model Assignment {
-  id             String    @id @default(cuid())
-  studyId        String
-  radiologistId  String
-  assignedById   String
-  assignedAt     DateTime  @default(now())
-  unassignedAt   DateTime?
-  reason         String    @default("")
-  isActive       Boolean   @default(true)
-
-  study       Study @relation(fields: [studyId], references: [id])
-  radiologist User  @relation("AssignmentRadiologist", fields: [radiologistId], references: [id])
-  assignedBy  User  @relation("AssignmentAssigner", fields: [assignedById], references: [id])
-
-  @@index([studyId])
-  @@index([radiologistId])
-  @@index([isActive])
-}
-
-model AuditLog {
-  id            String       @id @default(cuid())
-  actorId       String
-  actorName     String
-  actorRole     String
-  action        AuditAction
-  resource      AuditResource
-  resourceId    String
-  timestamp     DateTime     @default(now())
-  ipAddress     String?
-  userAgent     String?
-  correlationId String?
-  metadata      Json?
-
-  actor User @relation("AuditActor", fields: [actorId], references: [id])
-
-  @@index([timestamp])
-  @@index([actorId])
-  @@index([action])
-  @@index([actorRole])
-  @@index([resource, resourceId])
-  @@index([correlationId])
-}
-
-model RoutingRule {
-  id          String   @id @default(cuid())
-  name        String
-  description String   @default("")
-  priority    Int      @default(0)
-  isActive    Boolean  @default(true)
-  conditions  Json
-  actions     Json
-  createdBy   String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  creator User @relation("RoutingRuleCreator", fields: [createdBy], references: [id])
-}
-
-/// Application notifications for workflow events. Recipients are always derived
-/// server-side from workflow participants (never accepted from the client).
-/// Messages contain minimal metadata and never embed full report content.
-model Notification {
-  id                  String    @id @default(cuid())
-  recipientUserId     String
-  type                String
-  title               String
-  message             String
-  studyId             String?
-  correctionRequestId String?
-  readAt              DateTime?
-  createdAt           DateTime  @default(now())
-
-  recipient User @relation("NotificationRecipient", fields: [recipientUserId], references: [id])
-
-  @@index([recipientUserId])
-  @@index([readAt])
-  @@index([studyId])
-}
-
-model DeliveryAttempt {
-  id            String        @id @default(cuid())
-  studyId       String
-  reportId      String
-  hospitalId    String
-  status        DeliveryStatus @default(PENDING)
-  attemptNumber Int           @default(1)
-  deliveredAt   DateTime?
-  errorMessage  String?
-  metadata      Json?
-  createdAt     DateTime      @default(now())
-
-  study    Study    @relation(fields: [studyId], references: [id])
-  report   Report   @relation(fields: [reportId], references: [id])
-  hospital Hospital @relation(fields: [hospitalId], references: [id])
-}
-
-model AIJob {
-  id             String     @id @default(cuid())
-  studyId        String
-  seriesId       String?
-  sopInstanceId  String?
-  taskType       AITaskType
-  status         AIJobStatus @default(QUEUED)
-  result         Json?
-  errorMessage   String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime   @default(now())
-
-  study    Study      @relation(fields: [studyId], references: [id])
-  series   Series?    @relation(fields: [seriesId], references: [id])
-  instance Instance?  @relation(fields: [sopInstanceId], references: [id])
-
-  @@index([status])
-  @@index([studyId])
-}
-
-/// Operational metadata for a single backup run (PostgreSQL and/or Orthanc).
-/// Statuses progress RUNNING -> COMPLETED -> VERIFIED, or -> FAILED. Verified
-/// backups are the only ones eligible to release retained clinical data.
-model BackupRun {
-  id               String       @id @default(cuid())
-  type             BackupType
-  status           BackupStatus @default(RUNNING)
-  startedAt        DateTime     @default(now())
-  completedAt      DateTime?
-  failedAt         DateTime?
-  databaseArtifact String?
-  dicomArtifact    String?
-  checksum         String?
-  sizeBytes        BigInt?
-  backupDirectory  String?
-  verifiedAt       DateTime?
-  failureReason    String?
-  createdById      String?
-  createdAt        DateTime     @default(now())
-
-  createdBy User? @relation("BackupCreator", fields: [createdById], references: [id])
-
-  @@index([status])
-  @@index([createdAt])
-  @@index([verifiedAt])
-}
-
-/// Server-side operational SLA thresholds keyed by study priority. A global
-/// default is applied when no row exists for a study's priority. The server
-/// (never the browser) computes deadlines, remaining time, and breach state.
-model SlaConfig {
-  id         String       @id @default(cuid())
-  priority   SlaPriority  @unique
-  minutes    Int
-  isActive   Boolean      @default(true)
-  updatedBy  String?
-  updatedAt  DateTime     @updatedAt
 }

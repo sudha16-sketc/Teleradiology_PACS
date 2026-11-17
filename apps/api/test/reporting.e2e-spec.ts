@@ -785,6 +785,26 @@ describe('Phase 4 — Reporting', () => {
       expect(versions.length).toBe(1);
       expect(versions[0].version).toBe(1);
       expect(versions[0].status).toBe('SIGNED');
+
+      const dbStudy = await prisma.study.findUniqueOrThrow({ where: { id: study.id } });
+      expect(dbStudy.status).toBe('REPORT_DRAFT');
+    });
+
+    it('REPORT-19b: amended v2 draft can be saved and signed', async () => {
+      await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ findings: 'Amended v2 findings', impression: 'Amended v2 impression' })
+        .expect(200);
+
+      const res = await rad1Agent
+        .post(`/api/reports/${study.studyInstanceUid}/sign`)
+        .send({})
+        .expect(201);
+      expect(res.body.data.status).toBe('SIGNED');
+      expect(res.body.data.version).toBe(2);
+
+      const dbStudy = await prisma.study.findUniqueOrThrow({ where: { id: study.id } });
+      expect(dbStudy.status).toBe('RADIOLOGIST_SIGNED');
     });
   });
 

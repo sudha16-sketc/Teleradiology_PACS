@@ -4,6 +4,8 @@
   "DicomCheckCalledAet": false,
   "DicomPort": 4242,
   "HttpPort": 8042,
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
   "AuthenticationEnabled": false,
   "RegisteredUsers": {
     "orthanc": "orthanc"

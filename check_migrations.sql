@@ -1,0 +1,1 @@
+SELECT * FROM "_prisma_migrations" ORDER BY finished_at;

@@ -2,13 +2,17 @@
 
 import { Printer } from "lucide-react";
 import { clsx } from "clsx";
-import type { ReportStatus } from "@axis/types";
+import type { ReportStatus, StudyStatus } from "@axis/types";
+import {
+  canAmendReport,
+  canSaveOrSignReport,
+} from "@/lib/report-access";
 
 interface ReportActionsProps {
   status: ReportStatus;
+  studyStatus: StudyStatus;
   disabled?: boolean;
   onSaveDraft?: () => void;
-  onSubmitSignoff?: () => void;
   onSignOff?: () => void;
   onAmend?: () => void;
   /**
@@ -20,52 +24,44 @@ interface ReportActionsProps {
 
 export function ReportActions({
   status,
+  studyStatus,
   disabled = false,
   onSaveDraft,
-  onSubmitSignoff,
   onSignOff,
   onAmend,
   studyInstanceUid,
 }: ReportActionsProps) {
+  const locked = disabled || !canSaveOrSignReport(status);
+  const canAmend =
+    canAmendReport(status) && studyStatus === "RADIOLOGIST_SIGNED";
+
   return (
     <div className="flex items-center gap-3 border-t border-border px-6 py-4">
       <button
         type="button"
         onClick={onSaveDraft}
-        disabled={disabled}
+        disabled={locked}
         className={clsx(
           "rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors",
           "hover:bg-surface-raised",
-          disabled && "cursor-not-allowed opacity-50",
+          locked && "cursor-not-allowed opacity-50",
         )}
       >
         Save Draft
       </button>
       <button
         type="button"
-        onClick={onSubmitSignoff}
-        disabled={disabled || status === "SIGNED"}
-        className={clsx(
-          "rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors",
-          "hover:bg-surface-raised",
-          (disabled || status === "SIGNED") && "cursor-not-allowed opacity-50",
-        )}
-      >
-        Submit for Sign-off
-      </button>
-      <button
-        type="button"
         onClick={onSignOff}
-        disabled={disabled || status === "SIGNED"}
+        disabled={locked}
         className={clsx(
           "rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors",
           "hover:bg-accent/90",
-          (disabled || status === "SIGNED") && "cursor-not-allowed opacity-50",
+          locked && "cursor-not-allowed opacity-50",
         )}
       >
         Sign Off
       </button>
-      {status === "CORRECTION_REQUESTED" && (
+      {canAmend && onAmend && (
         <button
           type="button"
           onClick={onAmend}

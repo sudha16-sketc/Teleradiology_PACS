@@ -8,6 +8,9 @@ export type AuditAction =
   | 'REPORT_VIEWED'
   | 'REPORT_CREATED'
   | 'REPORT_EDITED'
+  | 'REPORT_TEMPLATE_CREATED'
+  | 'REPORT_TEMPLATE_UPDATED'
+  | 'REPORT_TEMPLATE_DELETED'
   | 'REPORT_SIGNED'
   | 'REPORT_AMENDED'
   | 'REPORT_FINALIZED'
@@ -50,6 +53,7 @@ export type AuditAction =
 export type AuditResource =
   | 'STUDY'
   | 'REPORT'
+  | 'REPORT_TEMPLATE'
   | 'USER'
   | 'ROUTING_RULE'
   | 'HOSPITAL'

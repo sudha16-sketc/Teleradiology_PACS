@@ -2,12 +2,12 @@ import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 
 interface StudyContextBarProps {
-  patientName: string;
+  patientUid: string;
   accessionNumber: string;
 }
 
 export function StudyContextBar({
-  patientName,
+  patientUid,
   accessionNumber,
 }: StudyContextBarProps) {
   return (
@@ -26,9 +26,13 @@ export function StudyContextBar({
         Reading
       </Link>
       <ChevronRight size={12} className="text-text-muted" />
-      <span className="text-text-primary">{patientName}</span>
+      <span className="break-all font-mono text-xs text-text-primary">
+        {patientUid || "—"}
+      </span>
       <ChevronRight size={12} className="text-text-muted" />
-      <span className="text-text-primary">{accessionNumber}</span>
+      <span className="font-mono text-xs text-text-primary">
+        {accessionNumber}
+      </span>
     </nav>
   );
 }

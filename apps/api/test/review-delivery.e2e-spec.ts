@@ -222,6 +222,8 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       const db = await prisma.study.findUniqueOrThrow({ where: { id: s.id } });
       expect(db.status).toBe('MANAGER_APPROVED');
       expect(db.managerApprovedAt).toBeTruthy();
+      const report = await prisma.report.findUniqueOrThrow({ where: { id: s.reportId } });
+      expect(report.status).toBe('SIGNED');
       await cleanupStudy(s.id, s.patientId);
     });
 
@@ -236,6 +238,8 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       expect(attempt!.hospitalId).toBe(CGH_HOSPITAL_ID);
       expect(attempt!.reportId).toBe(s.reportId);
       expect(attempt!.status).toBe('COMPLETED');
+      const report = await prisma.report.findUniqueOrThrow({ where: { id: s.reportId } });
+      expect(report.status).toBe('SIGNED');
       await cleanupStudy(s.id, s.patientId);
     });
 
@@ -385,15 +389,45 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       await cleanupStudy(s.id, s.patientId);
     });
 
-    it('WORKFLOW-5: report not visible to hospital until delivered; visible after', async () => {
+    it('WORKFLOW-5: approved report remains signed and cannot be edited as a draft', async () => {
+      const s = await seedSigned({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.MANAGER_APPROVED, assignedRadiologist: rad1Id, managerApprovedAt: true });
+      const res = await rad1Agent
+        .patch(`/api/reports/${s.studyInstanceUid}/draft`)
+        .send({ contentHtml: '<p>TAMPERED</p>' });
+      expect(res.status).toBe(409);
+      const dbReport = await prisma.report.findUniqueOrThrow({ where: { id: s.reportId } });
+      expect(dbReport.status).toBe('SIGNED');
+      expect(dbReport.findings).toBe('Phase5 findings');
+      await cleanupStudy(s.id, s.patientId);
+    });
+
+    it('WORKFLOW-6: report not visible to hospital until delivered; visible after', async () => {
       const s = await seedSigned({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.RADIOLOGIST_SIGNED, assignedRadiologist: rad1Id });
       const before = await cghAgent.get(`/api/reports/${s.studyInstanceUid}`);
       expect(before.status).toBe(403);
       await managerAgent.post(`/api/studies/${s.studyInstanceUid}/review`).send({}).expect(201);
       await managerAgent.post(`/api/studies/${s.studyInstanceUid}/approve`).send({}).expect(201);
+
+      const listBefore = await cghAgent.get('/api/reports/hospital').expect(200);
+      expect(
+        listBefore.body.data.map((r: any) => r.study.studyInstanceUid),
+      ).not.toContain(s.studyInstanceUid);
+      await cghAgent
+        .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
+        .expect(404);
+
       await managerAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(201);
       const after = await cghAgent.get(`/api/reports/${s.studyInstanceUid}`);
       expect(after.status).toBe(200);
+
+      const listAfter = await cghAgent.get('/api/reports/hospital').expect(200);
+      expect(
+        listAfter.body.data.map((r: any) => r.study.studyInstanceUid),
+      ).toContain(s.studyInstanceUid);
+      await cghAgent
+        .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
+        .expect(200);
+
       await cleanupStudy(s.id, s.patientId);
     });
   });

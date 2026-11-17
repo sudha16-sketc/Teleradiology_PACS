@@ -11,8 +11,7 @@ coverage/
 .turbo/
 prisma/*.db
 backups/
+uploads/
 
-# Tauri desktop build output (see also apps/desktop/.gitignore)
-/apps/desktop/src-tauri/target/
-/apps/desktop/src-tauri/gen/
-*.msi
+# TypeScript build artifacts
+*.tsbuildinfo

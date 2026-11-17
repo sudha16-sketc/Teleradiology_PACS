@@ -105,7 +105,7 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   const port = Number(process.env.PORT) || 4000;
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   logger.info('axis_api_started', { port, env: process.env.NODE_ENV ?? 'development' });
 }
 

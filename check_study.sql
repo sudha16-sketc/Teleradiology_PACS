@@ -1,0 +1,1 @@
+SELECT id, "studyInstanceUid", modality, "bodyPart", subspecialty FROM "Study" WHERE "studyInstanceUid" = '1.2.826.0.1.3680043.2.1143.3365540476747857567072393009509418480';
