@@ -54,17 +54,17 @@ export class WorklistService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  async list(filters: Record<string, string | undefined>, user?: { id: string; role: UserRole; hospitalId?: string }) {
+  async list(filters: Record<string, string | undefined>, user: { id: string; role: UserRole; hospitalId?: string }) {
     const where: Record<string, unknown> = {};
 
-    if (user?.role === UserRole.RADIOLOGIST) {
+    if (user.role === UserRole.RADIOLOGIST) {
       where.study = { assignedRadiologistId: user.id };
     }
 
     if (filters.status) {
       where.study = { ...(where.study as Record<string, unknown>), status: filters.status };
     }
-    if (filters.hospitalId && (user?.role === UserRole.ADMIN || user?.role === UserRole.MANAGER)) {
+    if (filters.hospitalId && (user.role === UserRole.ADMIN || user.role === UserRole.MANAGER)) {
       where.study = { ...(where.study as Record<string, unknown>), hospitalId: filters.hospitalId };
     }
     if (filters.priority) {

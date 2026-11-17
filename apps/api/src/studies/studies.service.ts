@@ -61,7 +61,7 @@ export class StudiesService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(dto: ListStudiesDto, user?: { id: string; role: UserRole; hospitalId?: string }) {
+  async list(dto: ListStudiesDto, user: { id: string; role: UserRole; hospitalId?: string }) {
     const { page = 1, pageSize = 20, status, modality, hospitalId, priority, search } = dto;
     const skip = (page - 1) * pageSize;
 
@@ -77,9 +77,9 @@ export class StudiesService {
         throw new ForbiddenException('Your account is not linked to a hospital');
       }
       where.hospitalId = user.hospitalId;
-    } else if (user?.role === UserRole.RADIOLOGIST && user.id) {
+    } else if (user.role === UserRole.RADIOLOGIST) {
       where.assignedRadiologistId = user.id;
-    } else if (hospitalId && (user?.role === UserRole.ADMIN || user?.role === UserRole.MANAGER)) {
+    } else if (hospitalId && (user.role === UserRole.ADMIN || user.role === UserRole.MANAGER)) {
       where.hospitalId = hospitalId;
     }
 

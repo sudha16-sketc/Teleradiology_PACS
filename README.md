@@ -330,6 +330,24 @@ optional and may be set to the canonical frontend origin. Keep backend-only
 secrets such as `DATABASE_URL` and `AUTH_SECRET` on the API host, not in the web
 project.
 
+### Render API deployment
+
+Deploy the API from the monorepo root so pnpm can resolve workspace packages:
+
+- **Root Directory:** `.`
+- **Build Command:** `pnpm install --frozen-lockfile && pnpm run build`
+- **Start Command:** `pnpm --filter @axis/api start:prod`
+
+The root build generates Prisma Client from `apps/api/prisma/schema.prisma`,
+builds `@axis/types`, and compiles the API. To build the web app separately,
+run `pnpm run build:web`; its deployment also requires the web upstream settings
+documented above.
+
+Set the API's production environment variables in Render: `DATABASE_URL`,
+`AUTH_SECRET`, `CORS_ORIGIN`, and `ORTHANC_URL`. Render supplies `PORT`; the API
+listens on it. Configure additional integrations such as Redis, RabbitMQ,
+Keycloak, or object storage only when enabled for that deployment.
+
 ---
 
 ## Docker Services
