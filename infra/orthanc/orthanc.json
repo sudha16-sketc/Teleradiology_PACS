@@ -12,7 +12,7 @@
   },
   "RemoteAccessAllowed": true,
   "Plugins": [
-    "/usr/local/share/orthanc/plugins/libOrthancDicomWeb.so"
+    "/usr/share/orthanc/plugins/"
   ],
   "StoringOrthancComputer": "127.0.0.1",
   "DicomWeb": {
