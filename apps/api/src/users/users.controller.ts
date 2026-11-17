@@ -7,7 +7,8 @@ import {
   IsEnum,
   MinLength,
 } from 'class-validator';
-import { Roles } from '../auth/auth.decorators.js';
+import { Roles, CurrentUser } from '../auth/auth.decorators.js';
+import type { AuthenticatedUser } from '../auth/auth.constants.js';
 import { UsersService } from './users.service.js';
 import { IsStrongPassword } from '../common/validators/strong-password.js';
 
@@ -124,17 +125,27 @@ export class UsersController {
   }
 
   @Post()
-  create(@Body() dto: CreateUserDto) {
-    return this.usersService.create(dto);
+  create(
+    @Body() dto: CreateUserDto,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.usersService.create(dto, admin);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return this.usersService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.usersService.update(id, dto, admin);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.usersService.remove(id);
+  remove(
+    @Param('id') id: string,
+    @CurrentUser() admin: AuthenticatedUser,
+  ) {
+    return this.usersService.remove(id, admin);
   }
 }

@@ -136,6 +136,11 @@ interface UpdaterUpdate {
   install(): Promise<void>;
 }
 
+interface DownloadEvent {
+  event?: "Started" | "Progress" | "Finished";
+  data?: { contentLength?: number; chunkLength?: number };
+}
+
 /**
  * Check for an update.
  *
@@ -194,15 +199,20 @@ export async function installAvailableUpdate(): Promise<UpdateState> {
       setState({ status: "upToDate" });
       return state;
     }
-    await update.download((event) => {
-      const progress = (event as { data?: { contentLength?: number; chunkLength?: number } })
-        .data;
-      if (!progress?.contentLength) return;
-      const percent = Math.min(
-        100,
-        Math.round(((progress.chunkLength ?? 0) / progress.contentLength) * 100),
-      );
-      setState({ status: "downloading", progress: percent, version: update.version });
+    let contentLength: number | undefined;
+    let downloaded = 0;
+    await update.download((rawEvent) => {
+      const event = rawEvent as DownloadEvent;
+      if (event.event === "Started") {
+        contentLength = event.data?.contentLength;
+        setState({ status: "downloading", progress: 0, version: update.version });
+        return;
+      }
+      if (event.event !== "Progress") return;
+      downloaded += event.data?.chunkLength ?? 0;
+      if (!contentLength || contentLength <= 0) return;
+      const progress = Math.min(100, Math.round((downloaded / contentLength) * 100));
+      setState({ status: "downloading", progress, version: update.version });
     });
     setState({ status: "readyToInstall", version: update.version });
     await update.install();

@@ -2,12 +2,7 @@ import { Controller, Get, Post, Body } from '@nestjs/common';
 import { SlaService } from './sla.service.js';
 import { SaveSlaConfigDto } from './dto/save-sla-config.dto.js';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
-
-interface RequestUser {
-  id: string;
-  role: string;
-  displayName?: string;
-}
+import type { AuthenticatedUser } from '../auth/auth.constants.js';
 
 @Controller('sla')
 export class SlaController {
@@ -15,8 +10,8 @@ export class SlaController {
 
   @Get('overview')
   @Roles('ADMIN', 'MANAGER')
-  overview() {
-    return this.sla.operationalOverview();
+  overview(@CurrentUser() user: AuthenticatedUser) {
+    return this.sla.operationalOverview(user);
   }
 
   @Get('config')
@@ -27,7 +22,7 @@ export class SlaController {
 
   @Post('config')
   @Roles('ADMIN')
-  saveConfig(@Body() dto: SaveSlaConfigDto, @CurrentUser() user: RequestUser) {
+  saveConfig(@Body() dto: SaveSlaConfigDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sla.saveConfig(dto.priority, dto.minutes, user.id, user.displayName ?? user.role);
   }
 }

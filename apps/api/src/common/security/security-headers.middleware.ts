@@ -34,7 +34,11 @@ export function securityHeadersMiddleware(
 
   // Strict-Transport-Security is only meaningful over HTTPS and is therefore
   // enabled in production only.
-  if (process.env.NODE_ENV === 'production' || process.env.AXIS_ENV === 'production') {
+  if (
+    process.env.NODE_ENV === 'production' ||
+    process.env.AXIS_ENV === 'production' ||
+    process.env.AXIS_ENV === 'staging'
+  ) {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
 

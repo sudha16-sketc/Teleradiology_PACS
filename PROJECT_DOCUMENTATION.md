@@ -67,7 +67,7 @@ It uses:
 - **Orthanc** for DICOM storage and DICOMweb APIs
 - **OHIF** for interactive diagnostic image viewing
 - **PostgreSQL** for workflow metadata, reports, and audit
-- **Keycloak** for authentication
+- **NestJS session auth** with an httpOnly cookie and database-backed users
 
 Axis owns everything else: the worklist, the routing, the reporting, the
 sign-off workflow, the audit trail, the analytics, and the hospital portal.
@@ -104,11 +104,10 @@ sign-off workflow, the audit trail, the analytics, and the hospital portal.
 └──┬────────┬────────┬────────┬────────┬────────┬────────┬───────────┘
    │        │        │        │        │        │        │
    ▼        ▼        ▼        ▼        ▼        ▼        ▼
-┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐
-│Postgr││Orthan││Redis ││Rabbit││Keycl ││MinIO ││OHIF  │
-│eSQL  ││c     ││      ││MQ    ││ock   ││      ││Viewer│
-│:5432 ││:8042 ││:6379 ││:5672 ││:8180 ││:9000 ││:3001 │
-└──────┘└──────┘└──────┘└──────┘└──────┘└──────┘└──────┘
+┌──────────┐ ┌───────────────┐ ┌────────────┐
+│PostgreSQL│ │Orthanc/DICOMweb│ │OHIF Viewer │
+│:5432     │ │:8042 / :4242  │ │:3001       │
+└──────────┘ └───────────────┘ └────────────┘
 ```
 
 ### How Each Piece Connects
@@ -117,15 +116,11 @@ sign-off workflow, the audit trail, the analytics, and the hospital portal.
 |---|---|---|
 | Frontend → Backend | REST/JSON over HTTP | All CRUD, workflow operations |
 | Frontend → OHIF | iframe / redirect | DICOM image viewing |
-| Frontend → Keycloak | OIDC / OAuth2 | User authentication |
 | Backend → PostgreSQL | Prisma TCP | Metadata persistence |
-| Backend → Orthanc | DICOMweb (HTTP) | Study metadata queries |
+| Backend → Orthanc | REST/DICOMweb (HTTP) | DICOM ingest and authorized image access |
 | Orthanc → Scanner | DICOM C-STORE (TCP :4242) | Receive images from modality |
-| OHIF → Orthanc | DICOMweb WADO-RS | Load images for display |
-| Backend → Redis | TCP | Session cache, rate limiting |
-| Backend → RabbitMQ | AMQP | Async job queues, events |
-| Backend → MinIO | S3 API | Object storage |
-| Keycloak → Frontend | OIDC tokens | Session management |
+| Browser/OHIF → API proxy → Orthanc | DICOMweb | Load authorized images for display |
+| Browser → API | httpOnly `axis_session` cookie | Database-backed authentication and role checks |
 
 ---
 
@@ -145,12 +140,9 @@ sign-off workflow, the audit trail, the analytics, and the hospital portal.
 | **Backend** | NestJS | 10.3 | Node.js API framework |
 | **ORM** | Prisma | 5.15 | Database access, migrations |
 | **Database** | PostgreSQL | 16 | Primary data store |
-| **PACS** | Orthanc | latest | DICOM archive + DICOMweb |
-| **Viewer** | OHIF | latest | Diagnostic DICOM viewer |
-| **Cache** | Redis | 7 | Session, caching, pub/sub |
-| **Queue** | RabbitMQ | 3 | Async messaging |
-| **Auth** | Keycloak | 24.0 | OIDC identity provider |
-| **Object Store** | MinIO | latest | S3-compatible file storage |
+| **PACS** | Orthanc | 1.12.6 | DICOM archive + DICOMweb |
+| **Viewer** | OHIF | 3.13.0 | Diagnostic DICOM viewer |
+| **Auth** | NestJS session auth | — | httpOnly cookie and database-backed users/roles |
 | **Infrastructure** | Docker Compose | 3.9 | Local development services |
 
 ---
@@ -949,16 +941,17 @@ This installs dependencies for all 3 workspace packages (@axis/web, @axis/api, @
 cp .env.example .env
 ```
 
-The defaults in `.env.example` work with the Docker Compose services.
-You do **not** need to edit `.env` for local development.
+Copy `.env.example` to `.env`, replace the PostgreSQL password placeholder,
+and keep it in sync with `DATABASE_URL`.
 
 ### Step 7: Start Infrastructure Services
 
 ```bash
-docker compose up -d
+docker compose config --quiet
+docker compose up -d --wait postgres orthanc ohif
 ```
 
-This starts 6 services. Wait for them to be healthy:
+This starts the three required services. Wait for them to be healthy:
 
 ```bash
 docker compose ps
@@ -969,14 +962,15 @@ because Docker needs to pull the images.
 
 **What just started:**
 
-| Service | URL | Credentials |
+| Service | Local access | Purpose |
 |---|---|---|
-| PostgreSQL | `localhost:5432` | axis / axis_dev / axis_pacs |
-| Redis | `localhost:6379` | (none) |
-| RabbitMQ | `localhost:5672` (AMQP), `localhost:15672` (console) | axis / axis_dev |
-| Orthanc | `localhost:8042` (HTTP), `localhost:4242` (DICOM) | orthanc / orthanc |
-| Keycloak | `localhost:8180/auth` | admin / admin |
-| MinIO | `localhost:9000` (API), `localhost:9001` (console) | minioadmin / minioadmin |
+| PostgreSQL | `localhost:5432` (loopback only) | Prisma relational data |
+| Orthanc | `localhost:8042` HTTP; `localhost:4242` DICOM | DICOM archive and DICOMweb |
+| OHIF | `localhost:3001`; normally use app `/ohif` | DICOM viewer |
+
+For environment variables, health checks, service lifecycle, and troubleshooting,
+see [`infra/README.md`](infra/README.md). Keycloak, Redis, RabbitMQ, and MinIO are
+intentionally omitted because no active runtime workflow uses them.
 
 ### Step 8: Set Up the Database
 
@@ -984,8 +978,8 @@ because Docker needs to pull the images.
 # Generate the Prisma client (reads schema.prisma, generates TypeScript types)
 pnpm db:generate
 
-# Run database migrations (creates all tables)
-pnpm db:migrate
+# Apply checked-in database migrations
+pnpm db:migrate:deploy
 
 # Seed the database with synthetic data
 pnpm db:seed
@@ -1065,7 +1059,7 @@ Then access OHIF at **http://localhost:3001**.
 | `pnpm db:generate` | Generate Prisma client |
 | `pnpm db:migrate` | Run database migrations |
 | `pnpm db:seed` | Seed database with synthetic data |
-| `docker compose up -d` | Start all infrastructure services |
+| `docker compose up -d --wait postgres orthanc ohif` | Start required infrastructure |
 | `docker compose ps` | Check service health |
 | `docker compose down` | Stop all services |
 | `docker compose logs -f` | Follow service logs |
@@ -1074,24 +1068,8 @@ Then access OHIF at **http://localhost:3001**.
 
 ## 14. Docker Services Reference
 
-| Service | Image | Ports | Purpose | Volume | Healthcheck |
-|---|---|---|---|---|---|
-| **postgres** | `postgres:16-alpine` | 5432 | Primary database | `postgres_data` | `pg_isready` every 5s |
-| **redis** | `redis:7-alpine` | 6379 | Cache, sessions, pub/sub | — | `redis-cli ping` every 5s |
-| **rabbitmq** | `rabbitmq:3-management-alpine` | 5672, 15672 | Async messaging, job queues | — | `rabbitmq-diagnostics` every 10s |
-| **orthanc** | `jodogne/orthanc-plugins:latest` | 8042, 4242 | DICOM archive + DICOMweb | `orthanc_data` | `curl /is-alive` every 10s |
-| **keycloak** | `quay.io/keycloak/keycloak:24.0` | 8180 | OIDC identity provider | `keycloak_data` | — |
-| **minio** | `minio/minio:latest` | 9000, 9001 | S3 object storage | `minio_data` | — |
-
-### Service Credentials
-
-| Service | Username | Password | Database |
-|---|---|---|---|
-| PostgreSQL | `axis` | `axis_dev` | `axis_pacs` |
-| Orthanc | `orthanc` | `orthanc` | — |
-| RabbitMQ | `axis` | `axis_dev` | — |
-| Keycloak | `admin` | `admin` | — |
-| MinIO | `minioadmin` | `minioadmin` | — |
+The current Compose services, credentials, health checks, and persistent volume
+behavior are maintained in the [infrastructure runbook](infra/README.md).
 
 ---
 
@@ -1216,7 +1194,7 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 - [x] NestJS backend with 9 feature modules
 - [x] Prisma schema with 14 models and 12 enums
 - [x] Database seed script
-- [x] Docker Compose with 6 services
+- [x] Docker Compose with PostgreSQL, Orthanc, and OHIF
 - [x] Orthanc DICOMweb configuration
 
 ### Requires Running Infrastructure (Docker)
@@ -1226,15 +1204,15 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 | Backend API | PostgreSQL running | `docker compose up -d postgres` |
 | Database migrations | Prisma + PostgreSQL | `pnpm db:generate && pnpm db:migrate` |
 | Seed data | PostgreSQL + Prisma | `pnpm db:seed` |
-| DICOM viewing | Orthanc + OHIF | `docker compose up -d orthanc` |
+| DICOM viewing | Orthanc + OHIF | `docker compose up -d --wait orthanc ohif` |
 
 ### Not Yet Implemented
 
 | Feature | Status | What Exists |
 |---|---|---|
-| **OIDC Authentication** | Schema + Keycloak running, guards not wired | Keycloak Docker service, OIDC env vars |
-| **Route Authorization** | RBAC types defined, guards not implemented | UserRole enum, role badges in UI |
-| **OHIF Embedding** | Placeholder only | `OHIFViewerPlaceholder` component, documented integration |
+| **OIDC Authentication** | Not configured; active auth uses NestJS sessions | Do not start Keycloak unless an OIDC migration is planned and verified |
+| **Route Authorization** | Implemented in API guards | Role, hospital, and radiologist assignment checks |
+| **OHIF Embedding** | Integrated through same-origin `/ohif` and authorized DICOMweb proxy | See `DICOM_SETUP.md` |
 | **Routing Rule Engine** | UI builder exists, evaluation logic not built | `RoutingRuleBuilder` component, Prisma model |
 | **Report Delivery** | Schema exists, delivery not implemented | `DeliveryAttempt` model, status types |
 | **AI Inference** | Schema + endpoints exist, no ML connected | `AIJob` model, queue monitor UI |
@@ -1249,29 +1227,22 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 
 ### Security
 
-- Replace all default credentials in `.env`
-- Enable Orthanc authentication
-- Configure Keycloak with TLS
+- Replace local placeholders and keep database credentials in a secret store
 - Set `AUTH_SECRET` to a cryptographically random value (32+ chars)
 - Enable HTTPS behind a reverse proxy
 - Restrict CORS origins
-- Enable PostgreSQL SSL
-- Rotate MinIO access keys
 - Implement rate limiting
 
 ### Infrastructure
 
 - Use managed PostgreSQL (RDS, Cloud SQL, Azure Database)
-- Use managed Redis with authentication
-- Use managed RabbitMQ or deploy with clustering
 - Configure Orthanc with TLS for DICOM TLS receiving
-- Set up MinIO with erasure coding
+- Keep database and Orthanc administration endpoints private
 
 ### Performance
 
 - Enable Next.js ISR/caching for static-heavy pages
 - Configure PostgreSQL connection pooling (PgBouncer)
-- Add Redis caching for frequently accessed study metadata
 - Use CDN for Orthanc WADO-RS image delivery
 - Optimize Orthanc database for expected volume
 
@@ -1294,9 +1265,4 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 | PostgreSQL | localhost:5432 | 5432 |
 | Orthanc | http://localhost:8042 | 8042 |
 | Orthanc DICOM | localhost:4242 | 4242 |
-| Redis | localhost:6379 | 6379 |
-| RabbitMQ | localhost:5672 / http://localhost:15672 | 5672 / 15672 |
-| Keycloak | http://localhost:8180/auth | 8180 |
-| MinIO API | http://localhost:9000 | 9000 |
-| MinIO Console | http://localhost:9001 | 9001 |
-| OHIF (optional) | http://localhost:3001 | 3001 |
+| OHIF | http://localhost:3001 (prefer app `/ohif`) | 3001 |

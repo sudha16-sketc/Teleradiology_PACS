@@ -4,6 +4,8 @@ import { loginAgent, USERS, prisma } from './helpers.js';
 import type { INestApplication } from '@nestjs/common';
 import { StudyStatus } from '@prisma/client';
 import { createHash } from 'crypto';
+import { buildReportRichContent } from '@axis/types';
+import { contentHash } from '../src/reports/reports.service.js';
 
 let app: INestApplication;
 let server: any;
@@ -49,6 +51,30 @@ async function seedStudy(opts: {
   });
   seeded.push({ id: study.id, patientId: patient.id });
   return { id: study.id, studyInstanceUid, patientId: patient.id };
+}
+
+async function seedRelatedStudy(opts: {
+  patientId: string;
+  hospitalId: string;
+  status: StudyStatus;
+  assignedRadiologist?: string;
+}) {
+  const studyInstanceUid = `1.2.826.0.1.3680043.9.P-${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+  const study = await prisma.study.create({
+    data: {
+      studyInstanceUid,
+      accessionNumber: `AX-PRIOR-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      patientId: opts.patientId,
+      hospitalId: opts.hospitalId,
+      studyDate: new Date(),
+      modality: 'MRI',
+      bodyPart: 'BRAIN',
+      status: opts.status,
+      assignedRadiologistId: opts.assignedRadiologist ?? null,
+    },
+  });
+  seeded.push({ id: study.id, patientId: opts.patientId });
+  return study;
 }
 
 async function cleanupStudy(id: string, patientId: string) {
@@ -162,6 +188,134 @@ describe('Phase 4 — Reporting', () => {
       expect(dbReport).toBeTruthy();
       expect(dbReport!.status).toBe('DRAFT');
       expect(dbReport!.contentHash).toBe(expectedHash(draftBody));
+    });
+  });
+
+  describe('rich report content', () => {
+    let study: { id: string; studyInstanceUid: string; patientId: string };
+
+    beforeAll(async () => {
+      study = await seedStudy({
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.ASSIGNED,
+        assignedRadiologist: rad1Id,
+      });
+    });
+
+    afterAll(async () => {
+      await cleanupStudy(study.id, study.patientId);
+    });
+
+    it('validates, persists, hashes, and snapshots rich report content', async () => {
+      const richContent = buildReportRichContent({
+        clinicalHistory: 'Persistent headache',
+        findings: 'No acute intracranial abnormality.',
+        impression: 'No acute intracranial abnormality.',
+      });
+      const fields = {
+        clinicalHistory: 'Persistent headache',
+        technique: '',
+        comparison: '',
+        findings: 'No acute intracranial abnormality.',
+        impression: 'No acute intracranial abnormality.',
+        recommendations: '',
+      };
+
+      await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({
+          richContent: {
+            type: 'doc',
+            content: [{ type: 'image', attrs: { src: 'unsafe' } }],
+          },
+        })
+        .expect(400);
+
+      const response = await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ richContent, criticalFinding: true })
+        .expect(200);
+
+      expect(response.body.data.richContent).toEqual(richContent);
+      expect(response.body.data.findings).toBe(fields.findings);
+      expect(response.body.data.impression).toBe(fields.impression);
+      expect(response.body.data.contentHash).toBe(
+        contentHash({ ...fields, criticalFinding: true, richContent }),
+      );
+
+      await rad1Agent
+        .post(`/api/reports/${study.studyInstanceUid}/sign`)
+        .send({})
+        .expect(201);
+
+      const version = await prisma.reportVersion.findFirstOrThrow({
+        where: { report: { studyId: study.id } },
+      });
+      expect(version.richContent).toEqual(richContent);
+      expect(version.contentHash).toBe(response.body.data.contentHash);
+    });
+  });
+
+  describe('prior patient records access', () => {
+    it('limits radiologist priors to finalized studies assigned to that radiologist', async () => {
+      const current = await seedStudy({
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.IN_READING,
+        assignedRadiologist: rad1Id,
+      });
+      const visible = await seedRelatedStudy({
+        patientId: current.patientId,
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.COMPLETED,
+        assignedRadiologist: rad1Id,
+      });
+      await seedRelatedStudy({
+        patientId: current.patientId,
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.COMPLETED,
+        assignedRadiologist: rad2Id,
+      });
+
+      const response = await rad1Agent
+        .get(`/api/studies/${current.studyInstanceUid}/priors`)
+        .expect(200);
+
+      expect(
+        response.body.data.map((prior: { studyInstanceUid: string }) => prior.studyInstanceUid),
+      ).toEqual([visible.studyInstanceUid]);
+    });
+
+    it('limits hospital priors to released studies in the same hospital', async () => {
+      const current = await seedStudy({
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.COMPLETED,
+      });
+      const visible = await seedRelatedStudy({
+        patientId: current.patientId,
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.COMPLETED,
+        assignedRadiologist: rad1Id,
+      });
+      await seedRelatedStudy({
+        patientId: current.patientId,
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.MANAGER_APPROVED,
+        assignedRadiologist: rad1Id,
+      });
+      await seedRelatedStudy({
+        patientId: current.patientId,
+        hospitalId: MMC_HOSPITAL_ID,
+        status: StudyStatus.COMPLETED,
+        assignedRadiologist: rad1Id,
+      });
+
+      const response = await cghAgent
+        .get(`/api/studies/${current.studyInstanceUid}/priors`)
+        .expect(200);
+
+      expect(
+        response.body.data.map((prior: { studyInstanceUid: string }) => prior.studyInstanceUid),
+      ).toEqual([visible.studyInstanceUid]);
     });
   });
 

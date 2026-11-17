@@ -1,3 +1,9 @@
+import { readFileSync } from "node:fs";
+
+const rootPackage = JSON.parse(
+  readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+);
+
 /**
  * Next.js configuration for @axis/web.
  *
@@ -18,29 +24,48 @@
 const DEV_API_FALLBACK = "http://localhost:4000/api";
 const DEV_OHIF_FALLBACK = "http://localhost:3001";
 
+const axisEnvironment = process.env.AXIS_ENV ?? process.env.NODE_ENV ?? "development";
+
 /**
  * Resolve a proxied upstream from the environment.
  *
- * The value is read here, on the server, at request time — not inlined into the
- * client bundle — so a single build can be pointed at a different API or viewer
- * by changing the environment of the running Next.js process.
+ * Next.js serializes these rewrite destinations into its build output, so build
+ * a separate artifact for development, staging, and production. The upstream
+ * URLs are server configuration, never credentials, and are not read by browser
+ * API calls.
  *
- * A loopback fallback in a non-development environment is reported loudly: the
- * client bundle itself never contains a host (it asks for the root-relative
- * "/api"), so a missing value here is the only way a production deployment can
- * end up proxying to the server's own localhost. We deliberately keep serving
- * rather than refusing to boot, so an under-configured deployment fails the same
- * way it always has, just with a visible cause.
+ * Loopback defaults are available only in development. A staging or production
+ * build without both upstreams fails immediately instead of proxying to its own
+ * localhost.
  */
 function resolveUpstream(name, fallback) {
   const raw = process.env[name]?.trim();
   if (raw) {
-    return { url: raw.replace(/\/+$/, ""), source: name };
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error(`[axis/web] ${name} must be an absolute HTTP(S) URL.`);
+    }
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error(
+        `[axis/web] ${name} must be an HTTP(S) URL without credentials, query, or fragment.`,
+      );
+    }
+    return {
+      url: parsed.toString().replace(/\/+$/, ""),
+      source: name,
+    };
   }
-  if (process.env.NODE_ENV !== "development") {
-    console.warn(
-      `[axis/web] ${name} is not set; falling back to the development default ${fallback}. ` +
-        `Set ${name} on the Next.js server before serving a real deployment.`,
+  if (axisEnvironment !== "development") {
+    throw new Error(
+      `[axis/web] ${name} is required for the ${axisEnvironment} environment.`,
     );
   }
   return { url: fallback.replace(/\/+$/, ""), source: "development-default" };
@@ -48,6 +73,10 @@ function resolveUpstream(name, fallback) {
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: {
+    NEXT_PUBLIC_APP_VERSION: rootPackage.version,
+    NEXT_PUBLIC_APP_ENV: axisEnvironment,
+  },
   transpilePackages: ["@axis/types"],
   async rewrites() {
     const apiUrl = resolveUpstream("NEXT_PUBLIC_API_URL", DEV_API_FALLBACK);

@@ -23,6 +23,7 @@ import {
   toggleMaximizeWindow,
 } from "@/lib/desktop-bridge";
 import { isDesktop } from "@/lib/platform";
+import { APP_VERSION } from "@/lib/version";
 
 function avatarInitials(name: string): string {
   return name
@@ -184,6 +185,10 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
                   Settings
                 </Link>
               )}
+
+              <div className="border-t border-border px-3.5 py-2 text-xs text-text-muted">
+                Version {APP_VERSION}
+              </div>
 
               <button
                 type="button"

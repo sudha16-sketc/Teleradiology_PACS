@@ -11,6 +11,7 @@ import {
 import { ReportsService } from './reports.service.js';
 import { ListReportsQueryDto } from './dto/reports.dto.js';
 import {
+  IsObject,
   IsOptional,
   IsString,
   IsBoolean,
@@ -19,6 +20,7 @@ import {
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
 import type { Response } from 'express';
 import type { UserRole } from '@prisma/client';
+import type { ReportRichContent } from '@axis/types';
 
 /**
  * Clinical report content. Actor identity (author) is NEVER accepted here --
@@ -49,6 +51,10 @@ class ReportContentDto {
   @IsOptional()
   @IsString()
   recommendations?: string;
+
+  @IsOptional()
+  @IsObject()
+  richContent?: ReportRichContent;
 
   @IsOptional()
   @IsBoolean()

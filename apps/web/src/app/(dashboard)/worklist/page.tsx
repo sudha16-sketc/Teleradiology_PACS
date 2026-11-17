@@ -13,12 +13,13 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PriorityBadge } from "@/components/ui/PriorityBadge";
 import { AcuityPulse } from "@/components/ui/AcuityPulse";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { ErrorState } from "@/components/ui/ErrorState";
+import { ErrorPanel } from "@/components/ErrorPanel";
 import { SkeletonTable } from "@/components/ui/Skeleton";
 import { FilterBar } from "@/components/ui/FilterBar";
 import type { FilterConfig } from "@/components/ui/FilterBar";
 import { useAppStore } from "@/lib/store";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, failureOf } from "@/lib/api-client";
+import type { ApiFailure } from "@/lib/api-error";
 
 interface Radiologist {
   id: string;
@@ -121,7 +122,7 @@ export default function WorklistPage() {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [items, setItems] = useState<WorklistItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
+  const [loadFailure, setLoadFailure] = useState<ApiFailure | null>(null);
 
   const [assigning, setAssigning] = useState<WorklistItem | null>(null);
   const [radiologists, setRadiologists] = useState<Radiologist[]>([]);
@@ -134,14 +135,14 @@ export default function WorklistPage() {
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    setHasError(false);
+    setLoadFailure(null);
     try {
       const endpoint = "/worklist/my";
       const res = await apiClient.get<{ data: WorklistItem[] }>(endpoint);
       setItems(res.data ?? []);
     } catch (e) {
       console.error("Failed to load worklist", e);
-      setHasError(true);
+      setLoadFailure(failureOf(e));
     } finally {
       setIsLoading(false);
     }
@@ -276,13 +277,15 @@ export default function WorklistPage() {
     setFilterState({ [key]: values } as Partial<WorklistFilters>);
   };
 
-  if (hasError) {
+  if (loadFailure) {
     return (
-      <ErrorState
-        title="Failed to load worklist"
-        description="Unable to fetch studies. Please check your connection and try again."
-        onRetry={() => load()}
-      />
+      <div className="p-6">
+        <ErrorPanel
+          failure={loadFailure}
+          title="Failed to load worklist"
+          onRetry={() => void load()}
+        />
+      </div>
     );
   }
 

@@ -216,6 +216,8 @@ export class DicomService {
 
     let archive: ExtractedArchive | null = null;
     let study: any = null;
+    // True once this upload is found to target a study that already exists.
+    let isReingest = false;
 
     // Read the uploaded bytes from the disk-backed staging area (multer
     // diskStorage) rather than an in-memory buffer, so studies up to the 1 GiB
@@ -311,6 +313,12 @@ export class DicomService {
       const existingStudy = await this.prisma.study.findUnique({
         where: { studyInstanceUid: studyUid },
       });
+      isReingest = Boolean(existingStudy);
+      // Tracks whether *this* ingest created the row, independently of whether a
+      // row already existed when the lookup ran. A concurrent upload that loses
+      // the unique-constraint race below has found a pre-existing study and must
+      // be treated as a re-ingest even though the initial lookup saw nothing.
+      let createdNewStudy = false;
 
       const seriesSet = new Set(parsedList.map((p) => p.seriesInstanceUid));
       const baseStudyData = {
@@ -333,6 +341,29 @@ export class DicomService {
         slaDeadline: this.computeSlaDeadline('ROUTINE' as StudyPriority),
       };
 
+      // Re-ingesting a study that already exists must be purely additive: the
+      // DICOM upload only supplies imaging facts (PACS ids, counts, modality
+      // metadata, file name). Clinical and workflow attributes chosen by a human
+      // — priority, subspecialty, receivedAt, SLA deadline, and the assigned /
+      // signed / approved / delivered / completed timestamps — are left exactly
+      // as they are, so a supplementary upload can never demote a delivered
+      // report or reset the worklist.
+      const reingestUpdateData = (prior: { priority: StudyPriority; subspecialty: Subspecialty; receivedAt: Date | null; slaDeadline: Date | null }) => ({
+        orthancPatientId: null as string | null,
+        orthancStudyId: null as string | null,
+        studyTime: this.parseTime(first.studyTime),
+        modality,
+        bodyPart: first.bodyPart || '',
+        studyDescription: first.studyDescription || '',
+        priority: prior.priority,
+        subspecialty: prior.subspecialty,
+        receivedAt: prior.receivedAt,
+        slaDeadline: prior.slaDeadline,
+        seriesCount: seriesSet.size,
+        instanceCount: parsedList.length,
+        uploadedFileName: originalName,
+      });
+
       if (existingStudy) {
         // A5: a StudyInstanceUID is unique system-wide. Only the owning hospital
         // may append to / re-ingest it; a different hospital forging the same UID
@@ -342,12 +373,13 @@ export class DicomService {
             'A study with this StudyInstanceUID already belongs to another hospital and cannot be modified',
           );
         }
+        // Status is deliberately not touched: the study keeps its current
+        // workflow state across a re-ingest.
         study = await this.prisma.study.update({
           where: { id: existingStudy.id },
           data: {
-            ...baseStudyData,
+            ...reingestUpdateData(existingStudy),
             hospitalId: existingStudy.hospitalId,
-            status: 'RECEIVING',
           },
           include: { patient: true, hospital: true },
         });
@@ -362,6 +394,7 @@ export class DicomService {
             },
             include: { patient: true, hospital: true },
           });
+          createdNewStudy = true;
         } catch (err) {
           // Concurrent first-time uploads of the same UID race the unique
           // constraint (P2002). Resolve in favor of the existing row instead of
@@ -371,6 +404,10 @@ export class DicomService {
               where: { studyInstanceUid: studyUid },
             });
             if (!raced) throw err;
+            // The row exists and belongs to someone else, or is a pre-existing
+            // study of ours: either way this is not a study we created, so the
+            // workflow-preserving re-ingest rules apply.
+            isReingest = true;
             if (raced.hospitalId !== hospitalId) {
               throw new ForbiddenException(
                 'A study with this StudyInstanceUID already belongs to another hospital and cannot be modified',
@@ -379,9 +416,8 @@ export class DicomService {
             study = await this.prisma.study.update({
               where: { id: raced.id },
               data: {
-                ...baseStudyData,
+                ...reingestUpdateData(raced),
                 hospitalId: raced.hospitalId,
-                status: 'RECEIVING',
               },
               include: { patient: true, hospital: true },
             });
@@ -472,7 +508,11 @@ export class DicomService {
         }
       }
 
-      // 8. Finalize the study as an UNASSIGNED case for the manager worklist.
+      // 8. Finalize the persisted hierarchy counts against the PACS identifiers
+      //    that were actually stored. A brand-new study is placed on the manager
+      //    worklist as UNASSIGNED; a re-ingest keeps the study's current workflow
+      //    state and its worklist assignment untouched.
+      const isNewStudy = createdNewStudy;
       study = await this.prisma.study.update({
         where: { id: study.id },
         data: {
@@ -480,17 +520,25 @@ export class DicomService {
           orthancPatientId,
           seriesCount: seriesGroups.size,
           instanceCount: stored.length,
-          status: 'UNASSIGNED',
-          completedAt: null,
+          ...(isNewStudy
+            ? {
+                status: 'UNASSIGNED' as const,
+                completedAt: null,
+              }
+            : {}),
         },
         include: { patient: true, hospital: true },
       });
 
-      await this.prisma.worklistItem.upsert({
-        where: { studyId: study.id },
-        update: { assignedAt: null },
-        create: { studyId: study.id, assignedAt: null },
-      });
+      if (isNewStudy) {
+        await this.prisma.worklistItem.upsert({
+          where: { studyId: study.id },
+          update: {},
+          create: { studyId: study.id, assignedAt: null },
+        });
+      }
+      // On re-ingest the worklist row is left completely alone: neither the
+      // assignment nor its assignedAt timestamp may be reset.
 
       // 9. Audit: DICOM import succeeded.
       await this.auditEntry(user, 'DICOM_IMPORTED', study.id, {
@@ -509,19 +557,26 @@ export class DicomService {
         skipped: 0,
       };
     } catch (err) {
+      const errorType = err instanceof Error ? err.constructor.name : typeof err;
       // Emit a DICOM_IMPORT_FAILED audit if we already created a study record.
       if (study?.id) {
         await this.auditEntry(user, 'DICOM_IMPORT_FAILED', study.id, {
-          reason: (err as Error).message,
+          reason: `DICOM import failed (${errorType})`,
+          reingest: isReingest,
         }).catch(() => undefined);
-        await this.prisma.study
-          .update({ where: { id: study.id }, data: { status: 'CANCELLED' } })
-          .catch(() => undefined);
+        // Only a study this ingest just created may be withdrawn. Cancelling a
+        // pre-existing study would discard a live workflow (an in-flight report
+        // or a delivered result) because a later upload failed.
+        if (!isReingest) {
+          await this.prisma.study
+            .update({ where: { id: study.id }, data: { status: 'CANCELLED' } })
+            .catch(() => undefined);
+        }
       }
       if (err instanceof BadRequestException || err instanceof ForbiddenException) {
         throw err;
       }
-      this.logger.error(`DICOM ingest failed: ${(err as Error).message}`);
+      this.logger.error(`DICOM ingest failed (${errorType}).`);
       throw err;
     } finally {
       if (archive) {

@@ -4,10 +4,12 @@ import {
   UploadedFiles,
   UseInterceptors,
   BadRequestException,
+  PayloadTooLargeException,
   Req,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import multer from 'multer';
+import { Transform } from 'node:stream';
 import { mkdtemp, rm } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'node:path';
@@ -28,8 +30,82 @@ type UploadRequest = Request & { axisUploadDir?: string };
  * always removed by `ingest()` in finally, including on Multer/validation
  * errors (a request-level safety net sweeps it even if the handler never runs).
  */
+type CountingUploadRequest = UploadRequest & { axisUploadBytes?: number };
+
+/**
+ * Wraps a multer storage engine so the aggregate upload cap is enforced against
+ * the bytes actually received.
+ *
+ * multer's `limits` are per-file and per-count only, and `Content-Length` is
+ * absent on a chunked request, so a Content-Length check alone lets a caller
+ * stream an unbounded body. Every file stream is replaced by a counting
+ * transform that tallies bytes across the whole request; the first byte past
+ * `DICOM_LIMITS.MAX_UPLOAD_BYTES` fails the stream, which multer surfaces as
+ * the error for the request.
+ */
+function aggregateLimitedStorage(inner: multer.StorageEngine): multer.StorageEngine {
+  // Reuse multer's own parameter types so the wrapper stays assignable to
+  // StorageEngine without restating the Express request shape.
+  type HandleFile = Parameters<multer.StorageEngine['_handleFile']>;
+  type RemoveFile = Parameters<multer.StorageEngine['_removeFile']>;
+
+  return {
+    _handleFile(...args: HandleFile) {
+      const [req, file, cb] = args;
+      const request = req as CountingUploadRequest;
+      const original = file.stream;
+
+      const counter = new Transform({
+        transform(chunk: Buffer, _encoding, done) {
+          const received = (request.axisUploadBytes ?? 0) + chunk.length;
+          request.axisUploadBytes = received;
+          if (received > DICOM_LIMITS.MAX_UPLOAD_BYTES) {
+            done(
+              new PayloadTooLargeException(
+                'Upload exceeds the maximum allowed size',
+              ),
+            );
+            return;
+          }
+          done(null, chunk);
+        },
+      });
+
+      original.on('error', (err) => counter.destroy(err as Error));
+      original.pipe(counter);
+
+      // multer reads the file body from `file.stream`, so the guarded stream is
+      // what the storage engine must write to disk.
+      Object.defineProperty(file, 'stream', {
+        configurable: true,
+        enumerable: false,
+        value: counter,
+      });
+
+      inner._handleFile(req, file, (err, info) => {
+        if (err) {
+          // multer will not run the controller's `finally` for an error raised
+          // here, so drop the staging directory immediately rather than relying
+          // only on the request `close` safety net.
+          if (request.axisUploadDir) {
+            void rm(request.axisUploadDir, {
+              recursive: true,
+              force: true,
+            }).catch(() => undefined);
+          }
+          counter.destroy();
+        }
+        cb(err, info);
+      });
+    },
+    _removeFile(...args: RemoveFile) {
+      return inner._removeFile(...(args as Parameters<typeof inner._removeFile>));
+    },
+  };
+}
+
 function uploadDiskStorage(): multer.StorageEngine {
-  return multer.diskStorage({
+  const inner = multer.diskStorage({
     destination: async (req, _file, cb) => {
       try {
         const request = req as UploadRequest;
@@ -58,6 +134,8 @@ function uploadDiskStorage(): multer.StorageEngine {
       cb(null, `${randomBytes(6).toString('hex')}_${base}`);
     },
   });
+
+  return aggregateLimitedStorage(inner);
 }
 
 @Controller('dicom')

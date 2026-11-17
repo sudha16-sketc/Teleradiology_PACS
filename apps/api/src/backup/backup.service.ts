@@ -117,8 +117,8 @@ export class BackupService {
       });
       return { data: await this.prisma.backupRun.findUnique({ where: { id: run.id } }) };
     } catch (err) {
-      const reason =
-        err instanceof Error ? err.message : 'Backup execution failed';
+      const errorType = err instanceof Error ? err.constructor.name : typeof err;
+      const reason = `Backup execution failed (${errorType})`;
       await this.prisma.backupRun.update({
         where: { id: run.id },
         data: { status: BackupStatus.FAILED, failedAt: new Date(), failureReason: reason },

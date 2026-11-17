@@ -1,3 +1,5 @@
+const dicomWebRoot = `${window.location.origin}/api/dicom-web`;
+
 window.config = {
   routerBasename: '/ohif',
 
@@ -20,9 +22,9 @@ window.config = {
 
         // All DICOMweb traffic flows through the Axis API proxy so that the
         // existing session cookie and RBAC guards protect study access.
-        qidoRoot: 'http://localhost:3000/api/dicom-web',
-        wadoRoot: 'http://localhost:3000/api/dicom-web',
-        wadoUriRoot: 'http://localhost:3000/api/dicom-web/wado',
+        qidoRoot: dicomWebRoot,
+        wadoRoot: dicomWebRoot,
+        wadoUriRoot: `${dicomWebRoot}/wado`,
 
         qidoSupportsIncludeField: true,
 

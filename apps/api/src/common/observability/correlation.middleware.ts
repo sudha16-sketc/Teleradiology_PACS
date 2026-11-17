@@ -4,12 +4,20 @@ import { log } from './structured-logger.js';
 import { requestContext } from './request-context.js';
 
 export const CORRELATION_HEADER = 'x-request-id';
+const WEB_REQUEST_ID = /^web-[0-9a-f]{16}$/i;
+const UUID_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function safeRoutePath(request: Request): string {
+  const route = (request as Request & { route?: { path?: unknown } }).route?.path;
+  return typeof route === 'string'
+    ? `${request.baseUrl}${route}`
+    : '<unmatched-route>';
+}
 
 /**
- * Generates (or accepts a valid) request correlation ID and ensures it is
- * returned on the response so that: frontend request -> API log -> audit event
- * can all be correlated by a single value. Runs as Express middleware before
- * any NestJS guard so the ID is also available when a guard throws.
+ * Accepts only opaque IDs in the frontend's generated format or UUID form;
+ * arbitrary header values could contain PHI or credentials and are replaced.
+ * The ID is returned on the response and is available before any Nest guard.
  */
 export function correlationMiddleware(
   req: Request,
@@ -18,9 +26,10 @@ export function correlationMiddleware(
 ): void {
   const incoming = req.headers[CORRELATION_HEADER];
   const incomingValue = Array.isArray(incoming) ? incoming[0] : incoming;
+  const candidate = typeof incomingValue === 'string' ? incomingValue.trim() : '';
   const id =
-    typeof incomingValue === 'string' && incomingValue.trim().length
-      ? incomingValue.trim().slice(0, 128)
+    WEB_REQUEST_ID.test(candidate) || UUID_REQUEST_ID.test(candidate)
+      ? candidate
       : randomUUID();
 
   (req as Request & { correlationId: string }).correlationId = id;
@@ -45,7 +54,7 @@ export function requestLoggingMiddleware(
     log('info', 'request', {
       correlationId: r.correlationId,
       method: req.method,
-      path: req.originalUrl || req.url,
+      path: safeRoutePath(req),
       status: res.statusCode,
       durationMs: Math.round(durMs),
       actorId: r.user?.id,

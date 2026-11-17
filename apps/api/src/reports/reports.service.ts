@@ -16,7 +16,12 @@ import type { AuditAction, AuditResource } from '@axis/types';
 import { createHash } from 'crypto';
 import type { Response } from 'express';
 import type { UserRole, ReportStatus } from '@prisma/client';
-import { StudyStatus } from '@prisma/client';
+import { Prisma, StudyStatus } from '@prisma/client';
+import {
+  extractReportRichFields,
+  isReportRichContent,
+} from '@axis/types';
+import type { ReportRichContent } from '@axis/types';
 
 /**
  * Fields that make up the authoritative clinical report content. Every one of
@@ -31,6 +36,7 @@ export interface ReportContent {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  richContent?: ReportRichContent;
   criticalFinding?: boolean;
 }
 
@@ -39,19 +45,64 @@ export interface ReportContent {
  * every clinical content field. Never trust a client-submitted hash.
  */
 export function contentHash(c: ReportContent = {}): string {
+  const values: unknown[] = [
+    c.clinicalHistory ?? '',
+    c.findings ?? '',
+    c.impression ?? '',
+    c.technique ?? '',
+    c.comparison ?? '',
+    c.recommendations ?? '',
+    c.criticalFinding ? 'critical' : 'normal',
+  ];
+  if (c.richContent !== undefined) values.push(canonicalJson(c.richContent));
+
   return createHash('sha256')
-    .update(
-      JSON.stringify([
-        c.clinicalHistory ?? '',
-        c.findings ?? '',
-        c.impression ?? '',
-        c.technique ?? '',
-        c.comparison ?? '',
-        c.recommendations ?? '',
-        c.criticalFinding ? 'critical' : 'normal',
-      ]),
-    )
+    .update(JSON.stringify(values))
     .digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function prismaRichContent(
+  value: ReportRichContent | Prisma.JsonValue | null | undefined,
+): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+  if (value === null || value === undefined) return Prisma.JsonNull;
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function reportContentFromDto(dto: ReportContent): ReportContent {
+  if (dto.richContent !== undefined) {
+    if (!isReportRichContent(dto.richContent)) {
+      throw new BadRequestException('The rich report content is invalid or too large.');
+    }
+    return {
+      ...extractReportRichFields(dto.richContent),
+      richContent: dto.richContent,
+      criticalFinding: dto.criticalFinding ?? false,
+    };
+  }
+
+  return {
+    clinicalHistory: dto.clinicalHistory ?? '',
+    findings: dto.findings ?? '',
+    impression: dto.impression ?? '',
+    technique: dto.technique ?? '',
+    comparison: dto.comparison ?? '',
+    recommendations: dto.recommendations ?? '',
+    criticalFinding: dto.criticalFinding ?? false,
+  };
 }
 
 // States in which a draft may be created / edited.
@@ -302,7 +353,18 @@ export class ReportsService {
 
     const report = await this.prisma.report.findFirst({
       where: { studyId: study.id },
-      include: { author: true, versions: true, changeRequests: true },
+      include: {
+        author: true,
+        versions: true,
+        changeRequests: true,
+        study: {
+          include: {
+            patient: true,
+            hospital: true,
+            assignedRadiologist: true,
+          },
+        },
+      },
       orderBy: { version: 'desc' },
     });
 
@@ -360,22 +422,18 @@ export class ReportsService {
       );
     }
 
-    const content: ReportContent = {
-      clinicalHistory: dto.clinicalHistory ?? '',
-      findings: dto.findings ?? '',
-      impression: dto.impression ?? '',
-      technique: dto.technique ?? '',
-      comparison: dto.comparison ?? '',
-      recommendations: dto.recommendations ?? '',
-      criticalFinding: dto.criticalFinding ?? false,
-    };
+    const content = reportContentFromDto(dto);
     const hash = contentHash(content);
 
     let report;
     if (existing) {
       report = await this.prisma.report.update({
         where: { id: existing.id },
-        data: { ...content, contentHash: hash },
+        data: {
+          ...content,
+          richContent: prismaRichContent(content.richContent),
+          contentHash: hash,
+        },
         include: { author: true },
       });
     } else {
@@ -386,6 +444,7 @@ export class ReportsService {
           status: 'DRAFT',
           version: 1,
           ...content,
+          richContent: prismaRichContent(content.richContent),
           contentHash: hash,
         },
         include: { author: true },
@@ -503,6 +562,7 @@ export class ReportsService {
           technique: latest.technique,
           comparison: latest.comparison,
           recommendations: latest.recommendations,
+          richContent: prismaRichContent(latest.richContent),
           authorId: latest.authorId,
           contentHash: latest.contentHash,
         },
@@ -580,15 +640,7 @@ export class ReportsService {
       orderBy: { version: 'desc' },
     });
 
-    const content: ReportContent = {
-      clinicalHistory: dto.clinicalHistory ?? '',
-      findings: dto.findings ?? '',
-      impression: dto.impression ?? '',
-      technique: dto.technique ?? '',
-      comparison: dto.comparison ?? '',
-      recommendations: dto.recommendations ?? '',
-      criticalFinding: dto.criticalFinding ?? false,
-    };
+    const content = reportContentFromDto(dto);
     const newVersion = previous ? previous.version + 1 : 1;
     const hash = contentHash(content);
 
@@ -599,6 +651,7 @@ export class ReportsService {
         status: 'DRAFT',
         version: newVersion,
         ...content,
+        richContent: prismaRichContent(content.richContent),
         contentHash: hash,
       },
       include: { author: true },
@@ -620,6 +673,7 @@ export class ReportsService {
             technique: previous.technique,
             comparison: previous.comparison,
             recommendations: previous.recommendations,
+            richContent: prismaRichContent(previous.richContent),
             authorId: previous.authorId,
             contentHash: previous.contentHash,
           },
@@ -658,6 +712,16 @@ export class ReportsService {
     return this.reviews.deliver(studyUid, actor);
   }
 
+  /**
+   * Legacy manager/administrator verification endpoint.
+   *
+   * It may only verify a report that has not yet been approved or delivered, and
+   * it can never move a report back to DRAFT: reverting a released report would
+   * silently un-sign clinical content while its superseded contentHash stays in
+   * force. Reverting a delivered or approved report must go through the
+   * correction/amendment workflow (requestChange), which creates a new version
+   * instead of rewriting the signed one.
+   */
   async validate(
     studyUid: string,
     dto: { status: 'SIGNED' | 'DRAFT'; reason?: string },
@@ -669,6 +733,27 @@ export class ReportsService {
     const study = await this.getStudy(studyUid);
     const report = await this.getLatestReport(study.id);
     if (!report) throw new NotFoundException(`No report found for study ${studyUid}`);
+
+    if (dto.status === 'DRAFT') {
+      throw new ConflictException(
+        'A report cannot be returned to DRAFT through validation. Use the correction workflow so a new report version is created.',
+      );
+    }
+
+    // Once a report has been released to the hospital it is part of the medical
+    // record, so this legacy endpoint can no longer change its state at all.
+    const locked = await this.prisma.study.findFirst({
+      where: {
+        id: study.id,
+        status: { in: ['MANAGER_APPROVED', ...HOSPITAL_VISIBLE_STATES] },
+      },
+      select: { status: true },
+    });
+    if (locked) {
+      throw new ConflictException(
+        `The report for study ${studyUid} has already been released (${locked.status}) and can no longer be validated. Use the correction workflow to issue a corrected report.`,
+      );
+    }
 
     const updated = await this.prisma.report.update({
       where: { id: report.id },
@@ -780,7 +865,10 @@ export class ReportsService {
     if (user.role === 'HOSPITAL' && study.hospitalId !== user.hospitalId) {
       throw new ForbiddenException('You do not have access to studies from this hospital');
     }
-    if (!['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'].includes(study.status)) {
+    // A hospital-facing PDF is the released report: the study must have reached
+    // a hospital-visible state (first DELIVERED_TO_HOSPITAL). MANAGER_APPROVED
+    // is intentionally NOT sufficient — release only happens on delivery.
+    if (!HOSPITAL_VISIBLE_STATES.includes(study.status as any)) {
       throw new NotFoundException('Final report is not yet available for this study');
     }
 

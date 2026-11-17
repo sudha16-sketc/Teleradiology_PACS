@@ -35,6 +35,15 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "startMenuFolder": "Axis",
+        "uninstallerIcon": "icons/icon.ico"
+      },
       "webviewInstallMode": {
         "type": "offlineInstaller",
         "silent": true

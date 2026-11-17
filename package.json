@@ -14,13 +14,15 @@
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
+    "version:check": "node scripts/check-version.mjs",
     "db:generate": "pnpm --filter @axis/api db:generate",
     "db:migrate": "pnpm --filter @axis/api db:migrate",
+    "db:migrate:deploy": "pnpm --filter @axis/api db:migrate:deploy",
     "db:seed": "pnpm --filter @axis/api db:seed",
     "desktop:dev": "pnpm --filter @axis/desktop dev",
-    "desktop:build": "pnpm --filter @axis/desktop build",
-    "desktop:build:win": "pnpm --filter @axis/desktop build:win",
-    "desktop:build:win:debug": "pnpm --filter @axis/desktop build:win:debug",
+    "desktop:build": "pnpm version:check && pnpm --filter @axis/desktop build",
+    "desktop:build:win": "pnpm version:check && pnpm --filter @axis/desktop build:win",
+    "desktop:build:win:debug": "pnpm version:check && pnpm --filter @axis/desktop build:win:debug",
     "desktop:icon": "pnpm --filter @axis/desktop icon"
   }
 }

@@ -1,111 +1,76 @@
 services:
-
   postgres:
     image: postgres:16-alpine
     container_name: axis-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: axis
-      POSTGRES_PASSWORD: axis_dev
-      POSTGRES_DB: axis_pacs
+      POSTGRES_USER: ${POSTGRES_USER:-axis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${AXIS_PACS_DB:-axis_pacs}
+      POSTGRES_TEST_DB: ${AXIS_PACS_TEST_DB:-axis_pacs_test}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - axis_internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U axis -d axis_pacs"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 3s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    container_name: axis-redis
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: axis-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: axis
-      RABBITMQ_DEFAULT_PASS: axis_dev
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
   orthanc:
     image: jodogne/orthanc-plugins:1.12.6
     container_name: axis-orthanc
+    restart: unless-stopped
     ports:
-      - "8042:8042"
+      - "127.0.0.1:8042:8042"
       - "4242:4242"
     volumes:
       - ./infra/orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
       - orthanc_data:/var/lib/orthanc/db
+    networks:
+      - axis_internal
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8042/system || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:24.0
-    container_name: axis-keycloak
-    environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_HTTP_RELATIVE_PATH: /auth
-    command: start-dev
-    ports:
-      - "8180:8080"
-    volumes:
-      - keycloak_data:/opt/keycloak/data
-
-  minio:
-    image: minio/minio:latest
-    container_name: axis-minio
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
+      retries: 10
+      start_period: 20s
 
   ohif:
-    # Built from infra/ohif/Dockerfile, which rebases the viewer onto /ohif/.
-    # The upstream ohif/app image bakes its asset URLs in as root-relative, so
-    # /ohif/ would otherwise load the HTML but 404 on every script, style and
-    # lazily loaded chunk and render a blank viewer.
+    # Keep the path-prefix-aware build and existing app configuration intact.
     build:
       context: ./infra/ohif
       dockerfile: Dockerfile
     image: axis-ohif:v3.13.0-ohif-prefix
     container_name: axis-ohif
+    restart: unless-stopped
     cap_add:
       - NET_BIND_SERVICE
     depends_on:
-      - orthanc
+      orthanc:
+        condition: service_healthy
     ports:
-      - "3001:80"
+      - "127.0.0.1:3001:80"
     volumes:
       - ./infra/ohif/app-config.js:/usr/share/nginx/html/ohif/app-config.js:ro
-    restart: unless-stopped
+    networks:
+      - axis_internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ohif/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+networks:
+  axis_internal:
+    driver: bridge
 
 volumes:
   postgres_data:
   orthanc_data:
-  keycloak_data:
-  minio_data:

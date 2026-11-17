@@ -160,7 +160,6 @@ export default function ReadingPage() {
                 studyInstanceUid={studyUid}
                 report={report}
                 assignedRadiologistId={study.assignedRadiologistId}
-                onReportSaved={() => void load({ silent: true })}
               />
               {report && <CriticalFindingBanner report={report} />}
               <CorrectionWorkflow

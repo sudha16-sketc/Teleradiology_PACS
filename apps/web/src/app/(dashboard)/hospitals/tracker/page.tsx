@@ -4,9 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Study, StudyStatus } from "@axis/types";
 import { Search, Filter } from "lucide-react";
 import { clsx } from "clsx";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, failureOf } from "@/lib/api-client";
+import type { ApiFailure } from "@/lib/api-error";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { ErrorState } from "@/components/ui/ErrorState";
+import { ErrorPanel } from "@/components/ErrorPanel";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonTable } from "@/components/ui/Skeleton";
 import { HospitalStudyTimeline } from "@/components/hospital/HospitalStudyTimeline";
@@ -153,11 +154,11 @@ export default function HospitalTrackerPage() {
   const [statusFilter, setStatusFilter] = useState<StudyStatus | "ALL">("ALL");
   const [studies, setStudies] = useState<Study[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
+  const [loadFailure, setLoadFailure] = useState<ApiFailure | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    setHasError(false);
+    setLoadFailure(null);
     try {
       const res = await apiClient.get<{
         data: Study[];
@@ -166,7 +167,7 @@ export default function HospitalTrackerPage() {
       setStudies(res.data ?? []);
     } catch (e) {
       console.error("Failed to load studies", e);
-      setHasError(true);
+      setLoadFailure(failureOf(e));
     } finally {
       setIsLoading(false);
     }
@@ -207,13 +208,15 @@ export default function HospitalTrackerPage() {
     return list;
   }, [studies, search, statusFilter]);
 
-  if (hasError) {
+  if (loadFailure) {
     return (
-      <ErrorState
-        title="Failed to load studies"
-        description="Unable to fetch studies. Please check your connection and try again."
-        onRetry={() => load()}
-      />
+      <div className="p-6">
+        <ErrorPanel
+          failure={loadFailure}
+          title="Failed to load studies"
+          onRetry={() => void load()}
+        />
+      </div>
     );
   }
 

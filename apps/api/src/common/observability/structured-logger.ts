@@ -16,6 +16,9 @@ export function log(
     ts: new Date().toISOString(),
     level,
     msg: message,
+    appVersion:
+      process.env.AXIS_APP_VERSION ?? process.env.npm_package_version ?? 'unknown',
+    env: process.env.AXIS_ENV ?? process.env.NODE_ENV ?? 'development',
   };
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined && v !== null) record[k] = v;

@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^bash -lc 'export PATH=\"/home/sudha/\\.nvm/versions/node/v20\\.20\\.2/bin:\\$PATH\"; node -v; pnpm -v'$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

@@ -1,5 +1,5 @@
 import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
@@ -92,7 +92,37 @@ export class AuthService {
     return { data: sanitizeUser(user) };
   }
 
-  async login(dto: { email: string; password: string }, response: Response) {
+  /**
+   * Records a rejected sign-in for an account that exists. AuditLog.actorId is a
+   * required foreign key to User, so an attempt against an address that has no
+   * account cannot be attributed and is deliberately not written; the response
+   * stays identical in both cases so nothing enumerable is disclosed.
+   */
+  private async recordLoginFailure(
+    user: { id: string; email: string; displayName: string; role: string },
+    reason: 'INVALID_PASSWORD' | 'ACCOUNT_NOT_ACTIVE',
+    request?: Request,
+  ): Promise<void> {
+    await this.audit
+      .create({
+        actorId: user.id,
+        actorName: user.displayName,
+        actorRole: user.role,
+        action: 'LOGIN_FAILURE',
+        resource: 'AUTH',
+        resourceId: user.id,
+        ipAddress: request?.ip,
+        userAgent: request?.get?.('user-agent') ?? undefined,
+        metadata: { email: user.email, reason },
+      })
+      .catch(() => {});
+  }
+
+  async login(
+    dto: { email: string; password: string },
+    response: Response,
+    request?: Request,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase().trim() },
     });
@@ -103,9 +133,13 @@ export class AuthService {
     }
 
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!valid) throw new UnauthorizedException('Invalid email or password');
+    if (!valid) {
+      await this.recordLoginFailure(user, 'INVALID_PASSWORD', request);
+      throw new UnauthorizedException('Invalid email or password');
+    }
 
     if (user.status !== UserStatus.APPROVED || !user.isActive) {
+      await this.recordLoginFailure(user, 'ACCOUNT_NOT_ACTIVE', request);
       // One generic message for PENDING/REJECTED/SUSPENDED so the response does
       // not leak account state or the admin-written rejection reason.
       throw new ForbiddenException(

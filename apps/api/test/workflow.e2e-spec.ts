@@ -5,7 +5,7 @@ import { loginAgent, USERS, prisma } from './helpers.js';
 import type { INestApplication } from '@nestjs/common';
 import { StudyStatus } from '@prisma/client';
 import AdmZip from 'adm-zip';
-import { readFileSync } from 'fs';
+import { loadIngestFixture } from './dicom-fixtures.js';
 
 let app: INestApplication;
 let server: any;
@@ -17,7 +17,6 @@ const rad2 = USERS.RAD2;
 const h_cgh = USERS.H_CGH;
 const h_mmc = USERS.H_MMC;
 
-const REAL_DICOM = '/tmp/opencode/emri_small.dcm';
 const CGH_HOSPITAL_ID = 'hosp-001';
 const MMC_HOSPITAL_ID = 'hosp-002';
 
@@ -62,9 +61,11 @@ async function seedStudy(opts: {
   return { id: study.id, studyInstanceUid, patientId: patient.id };
 }
 
-/** Inserts a real DICOM through the full pipeline -> returns UNASSIGNED study. */
+/** Inserts a DICOM through the full pipeline -> returns UNASSIGNED study. */
 async function ingestReal(agent: any, filename = 'emri.zip'): Promise<request.Response> {
-  const real = readFileSync(REAL_DICOM);
+  // The instance is generated when no real de-identified file is present, so
+  // this suite does not depend on data outside the repository.
+  const { buffer: real } = loadIngestFixture();
   return agent
     .post('/api/dicom/ingest')
     .attach('file', real, { filename, contentType: 'application/octet-stream' });

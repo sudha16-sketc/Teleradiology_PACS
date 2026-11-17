@@ -1,19 +1,25 @@
 import 'reflect-metadata';
 import request from 'supertest';
 import { createTestApp } from './app-bootstrap.js';
-import { loginAgent, USERS, prisma } from './helpers.js';
+import { loginAgent, prisma } from './helpers.js';
+import { seedE2eTenants, type SeededTenant } from './e2e-tenants.js';
 import type { INestApplication } from '@nestjs/common';
 import AdmZip from 'adm-zip';
-import { readFileSync } from 'fs';
+import {
+  FIXTURE_STUDY_UID,
+  FIXTURE_SERIES_UID,
+  FIXTURE_SOP_UID,
+  loadIngestFixture,
+} from './dicom-fixtures.js';
 
 let app: INestApplication;
 let server: any;
 
-const h_cgh = USERS.H_CGH;
-const h_mmc = USERS.H_MMC;
-
-const REAL_DICOM = '/tmp/opencode/emri_small.dcm';
-const CGH_HOSPITAL_ID = 'hosp-001';
+// Tenants are seeded by this suite rather than depending on `prisma/seed.ts`,
+// so the DICOM e2e run works against a database that only migrations created.
+let cgh: SeededTenant;
+let mmc: SeededTenant;
+let CGH_HOSPITAL_ID: string;
 
 // ---------------------------------------------------------------------------
 // ZIP / DICOM fixture builders
@@ -84,6 +90,12 @@ function rawZip(
   return Buffer.concat([...parts, cd, eocd]);
 }
 
+function zipAround(file: Buffer, name = 'study.dcm'): Buffer {
+  const z = new AdmZip();
+  z.addFile(name, file);
+  return z.toBuffer();
+}
+
 /** Explicit-VR little-endian DICOM element. */
 function el(group: number, elem: number, vr: string, value: string): Buffer {
   const v = Buffer.from(value.length % 2 ? value + '\u0000' : value, 'latin1');
@@ -109,10 +121,15 @@ function buildP10(opts: {
   sop?: boolean;
   sopClass?: boolean;
   studyUid?: string;
+  seriesUid?: string;
   sopUid?: string;
+  modality?: string;
+  patientId?: string;
+  patientName?: string;
 } = {}): Buffer {
   const all = { study: true, series: true, sop: true, sopClass: true, ...opts };
   const studyUid = opts.studyUid ?? '1.2.826.0.1.3680043.2.1143.5';
+  const seriesUid = opts.seriesUid ?? '1.2.826.0.1.3680043.2.1143.6';
   const sopUid = opts.sopUid ?? '1.2.826.0.1.3680043.2.1143.9';
   const parts: Buffer[] = [Buffer.alloc(128), Buffer.from('DICM')];
   const meta: Array<[number, number, string, string]> = [
@@ -126,16 +143,12 @@ function buildP10(opts: {
   }
   if (all.sopClass) parts.push(el(0x0008, 0x0016, 'UI', '1.2.840.10008.5.1.4.1.1.4.1'));
   if (all.sop) parts.push(el(0x0008, 0x0018, 'UI', sopUid));
-  parts.push(el(0x0008, 0x0060, 'CS', 'MR'));
+  parts.push(el(0x0010, 0x0010, 'PN', opts.patientName ?? 'E2E^PATIENT'));
+  parts.push(el(0x0010, 0x0020, 'LO', opts.patientId ?? 'E2E-PID-0001'));
+  parts.push(el(0x0008, 0x0060, 'CS', opts.modality ?? 'MR'));
   if (all.study) parts.push(el(0x0020, 0x000d, 'UI', studyUid));
-  if (all.series) parts.push(el(0x0020, 0x000e, 'UI', '1.2.826.0.1.3680043.2.1143.6'));
+  if (all.series) parts.push(el(0x0020, 0x000e, 'UI', seriesUid));
   return Buffer.concat(parts);
-}
-
-function zipAround(file: Buffer, name = 'study.dcm'): Buffer {
-  const z = new AdmZip();
-  z.addFile(name, file);
-  return z.toBuffer();
 }
 
 let createdStudyIds: string[] = [];
@@ -147,6 +160,11 @@ async function ingest(agent: any, buf: Buffer, filename: string): Promise<reques
 }
 
 beforeAll(async () => {
+  const tenants = await seedE2eTenants(prisma);
+  cgh = tenants.cgh;
+  mmc = tenants.mmc;
+  CGH_HOSPITAL_ID = cgh.hospitalId;
+
   const built = await createTestApp();
   app = built.app;
   server = built.server;
@@ -179,7 +197,7 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
   let cghAgent: any;
 
   beforeAll(async () => {
-    cghAgent = await loginAgent(server, h_cgh);
+    cghAgent = await loginAgent(server, cgh.user);
   });
 
   it('DICOM-ZIP-1: rejects a corrupt ZIP archive', async () => {
@@ -291,15 +309,15 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
   let mmcAgent: any;
 
   beforeAll(async () => {
-    cghAgent = await loginAgent(server, h_cgh);
-    mmcAgent = await loginAgent(server, h_mmc);
+    cghAgent = await loginAgent(server, cgh.user);
+    mmcAgent = await loginAgent(server, mmc.user);
   });
 
   it('DICOM-ING-1: uploads a real DICOM, persists hierarchy, keys ownership from auth, audits events', async () => {
-    const real = readFileSync(REAL_DICOM);
-    const studyUid = '1.2.826.0.1.3680043.2.1143.3365540476747857567072393009509418480';
-    const seriesUid = '1.2.826.0.1.3680043.2.1143.3712364435022872412969836992152438492';
-    const sopUid = '1.2.826.0.1.3680043.2.1143.6455556726214900995651753669640998622';
+    const { buffer: real } = loadIngestFixture();
+    const studyUid = FIXTURE_STUDY_UID;
+    const seriesUid = FIXTURE_SERIES_UID;
+    const sopUid = FIXTURE_SOP_UID;
 
     const res = await ingest(cghAgent, zipAround(real, 'emri_small.dcm'), 'emri.zip');
     expect(res.status).toBe(201);
@@ -354,13 +372,13 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
   });
 
   it('DICOM-ING-2: hospital ownership is enforced by auth -- another hospital cannot access it', async () => {
-    const uid = '1.2.826.0.1.3680043.2.1143.3365540476747857567072393009509418480';
+    const uid = FIXTURE_STUDY_UID;
     const res = await mmcAgent.get(`/api/studies/${uid}`).expect(403);
     expect(res.body.message).toContain('access');
   });
 
   it('DICOM-ING-3: a different hospital cannot re-upload a DICOM whose StudyInstanceUID exists (A5 study takeover)', async () => {
-    const real = readFileSync(REAL_DICOM);
+    const { buffer: real } = loadIngestFixture();
     const res = await ingest(mmcAgent, zipAround(real, 'emri_small.dcm'), 'emri-mmc.zip');
     expect(res.status).toBe(403);
     expect(res.body.message).toContain('another hospital');
@@ -371,7 +389,7 @@ describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => 
   let cghAgent: any;
 
   beforeAll(async () => {
-    cghAgent = await loginAgent(server, h_cgh);
+    cghAgent = await loginAgent(server, cgh.user);
   });
 
   it('DICOM-ING-4: a single raw .dcm upload ingests and persists hierarchy like the zipped path', async () => {

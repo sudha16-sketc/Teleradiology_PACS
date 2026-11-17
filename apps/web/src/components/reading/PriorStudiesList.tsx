@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import type { Study } from "@axis/types";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, failureOf } from "@/lib/api-client";
 
 interface PriorStudiesEnvelope {
   data: Study[];
@@ -13,73 +14,99 @@ interface PriorStudiesEnvelope {
 export function PriorStudiesList({ studyUid }: { studyUid: string }) {
   const [isOpen, setIsOpen] = useState(true);
   const [priors, setPriors] = useState<Study[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+
+  const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await apiClient.get<PriorStudiesEnvelope>(
+        `/studies/${encodeURIComponent(studyUid)}/priors`,
+      );
+      if (requestId === requestIdRef.current) {
+        setPriors(response.data ?? []);
+      }
+    } catch (requestError: unknown) {
+      if (requestId === requestIdRef.current) {
+        setError(failureOf(requestError).message);
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [studyUid]);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoaded(false);
-    apiClient
-      .get<PriorStudiesEnvelope>(`/studies/${encodeURIComponent(studyUid)}/priors`)
-      .then((res) => {
-        if (!cancelled) setPriors(res.data ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setPriors([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoaded(true);
-      });
+    void load();
     return () => {
-      cancelled = true;
+      requestIdRef.current += 1;
     };
-  }, [studyUid]);
+  }, [load]);
 
   return (
     <div className="border-b border-border">
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((open) => !open)}
+        aria-expanded={isOpen}
         className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold uppercase tracking-wider text-text-muted transition-colors hover:bg-surface-raised/50"
       >
         {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        Prior Studies
+        Patient Records
         <span className="ml-auto rounded-full bg-surface-raised px-2 py-0.5 text-xs text-text-muted">
-          {loaded ? priors.length : "—"}
+          {loading ? "…" : priors.length}
         </span>
       </button>
-      {isOpen &&
-        (loaded ? (
-          priors.length === 0 ? (
-            <div className="px-4 py-3 text-xs text-text-muted">
-              No prior finalized studies for this patient.
+      {isOpen && (
+        <div>
+          {loading ? (
+            <p className="px-4 py-3 text-xs text-text-muted">
+              Loading authorized prior studies…
+            </p>
+          ) : error ? (
+            <div className="flex items-center justify-between gap-2 px-4 py-3">
+              <p className="text-xs text-error">{error}</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="shrink-0 text-xs font-medium text-accent hover:underline"
+              >
+                Retry
+              </button>
             </div>
+          ) : priors.length === 0 ? (
+            <p className="px-4 py-3 text-xs text-text-muted">
+              No prior finalized studies are visible for this assignment.
+            </p>
           ) : (
-            <div className="flex flex-col">
+            <ul>
               {priors.map((study) => (
-                <div
-                  key={study.studyInstanceUid}
-                  className="flex items-center justify-between border-b border-border px-4 py-2.5 transition-colors hover:bg-surface-raised/50"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    window.location.href = `/reports/${study.studyInstanceUid}`;
-                  }}
-                >
-                  <div className="flex flex-col">
-                    <span className="text-sm text-text-primary">
-                      {study.studyDescription || study.modality}
+                <li key={study.studyInstanceUid}>
+                  <Link
+                    href={`/reading/${encodeURIComponent(study.studyInstanceUid)}`}
+                    className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5 transition-colors hover:bg-surface-raised/50"
+                  >
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate text-sm text-text-primary">
+                        {study.studyDescription || study.modality}
+                      </span>
+                      <span className="text-xs text-text-muted">
+                        {new Date(study.studyDate).toLocaleDateString()} ·{" "}
+                        {study.modality}
+                      </span>
                     </span>
-                    <span className="text-xs text-text-muted">
-                      {new Date(study.studyDate).toLocaleDateString()} ·{" "}
-                      {study.modality}
-                    </span>
-                  </div>
-                  <StatusBadge status={study.status} />
-                </div>
+                    <StatusBadge status={study.status} />
+                  </Link>
+                </li>
               ))}
-            </div>
-          )
-        ) : null)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

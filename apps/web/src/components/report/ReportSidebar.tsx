@@ -1,6 +1,7 @@
 "use client";
 
 import { ExternalLink, User } from "lucide-react";
+import { PriorStudiesList } from "@/components/reading/PriorStudiesList";
 
 interface ReportSidebarProps {
   patientName: string;
@@ -42,6 +43,10 @@ export function ReportSidebar({
             <p className="font-mono text-xs text-text-muted">{patientId}</p>
           </div>
         </div>
+      </div>
+
+      <div className="overflow-hidden rounded-md border border-border bg-surface">
+        <PriorStudiesList studyUid={studyInstanceUid} />
       </div>
 
       <div className="rounded-md border border-border bg-surface p-4">

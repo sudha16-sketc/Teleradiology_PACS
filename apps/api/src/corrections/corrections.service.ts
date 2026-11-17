@@ -10,6 +10,10 @@ import { NotificationsService } from '../notifications/notifications.service.js'
 import { StudyStatus, UserRole, ChangeRequestStatus } from '@prisma/client';
 import { runSerializable } from '../common/db/serializable.js';
 import { contentHash } from '../reports/reports.service.js';
+import {
+  extractReportRichFields,
+  isReportRichContent,
+} from '@axis/types';
 import type { Prisma } from '@prisma/client';
 
 interface Actor {
@@ -497,13 +501,21 @@ export class CorrectionsService {
       });
       const newVersion = (maxVersion._max.version ?? 0) + 1;
 
+      const richContent = isReportRichContent(parent?.richContent)
+        ? parent.richContent
+        : undefined;
       const content = {
-        clinicalHistory: parent?.clinicalHistory ?? '',
-        findings: parent?.findings ?? '',
-        impression: parent?.impression ?? '',
-        technique: parent?.technique ?? '',
-        comparison: parent?.comparison ?? '',
-        recommendations: parent?.recommendations ?? '',
+        ...(richContent
+          ? extractReportRichFields(richContent)
+          : {
+              clinicalHistory: parent?.clinicalHistory ?? '',
+              findings: parent?.findings ?? '',
+              impression: parent?.impression ?? '',
+              technique: parent?.technique ?? '',
+              comparison: parent?.comparison ?? '',
+              recommendations: parent?.recommendations ?? '',
+            }),
+        ...(richContent ? { richContent } : {}),
         criticalFinding: false,
       };
       const hash = contentHash(content);

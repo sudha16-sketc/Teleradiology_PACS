@@ -11,7 +11,8 @@ import { isWeakSecret, MIN_AUTH_SECRET_LENGTH } from '../../auth/auth.constants.
 export function isProduction(): boolean {
   return (
     process.env.NODE_ENV === 'production' ||
-    process.env.AXIS_ENV === 'production'
+    process.env.AXIS_ENV === 'production' ||
+    process.env.AXIS_ENV === 'staging'
   );
 }
 
@@ -22,6 +23,7 @@ const PRODUCTION_REQUIRED: Array<{ key: string; why: string }> = [
   { key: 'AUTH_SECRET', why: 'session/JWT signing secret' },
   { key: 'CORS_ORIGIN', why: 'allow-listed frontend origin(s)' },
   { key: 'ORTHANC_URL', why: 'Orthanc service URL for DICOM storage/proxy' },
+  { key: 'AXIS_APP_VERSION', why: 'canonical release version for API logs' },
 ];
 
 export function assertRequiredEnv(): void {
@@ -53,7 +55,7 @@ export function assertRequiredEnv(): void {
   if (missing.length > 0) {
     logger.error('environment_validation_failed', {
       missing,
-      env: process.env.NODE_ENV ?? 'development',
+        env: process.env.AXIS_ENV ?? process.env.NODE_ENV ?? 'development',
     });
     throw new Error(`Refusing to start: invalid environment: ${missing.join('; ')}`);
   }

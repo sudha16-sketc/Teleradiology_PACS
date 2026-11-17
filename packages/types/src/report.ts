@@ -1,5 +1,6 @@
 import type { User } from './user.js';
 import type { Study } from './study.js';
+import type { ReportRichContent } from './report-rich-content.js';
 
 export type ReportStatus = 'DRAFT' | 'SIGNED' | 'MANAGER_REVIEW' | 'MANAGER_APPROVED' | 'HOSPITAL_REVIEW' | 'CORRECTION_REQUESTED';
 
@@ -17,6 +18,7 @@ export interface Report {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  richContent?: ReportRichContent | null;
   criticalFinding: boolean;
   criticalFindingAcknowledged: boolean;
   criticalFindingAcknowledgedBy?: string;
@@ -39,6 +41,7 @@ export interface ReportVersion {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  richContent?: ReportRichContent | null;
   authorId: string;
   author?: User;
   contentHash: string;

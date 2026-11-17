@@ -1,0 +1,13 @@
+// Windows Authenticode signing overlay template.
+// The release runner imports a password-protected PFX into its user certificate
+// store, then generates an ignored tauri.windows.conf.json from this template.
+// Never commit a PFX, private key, or certificate password.
+{
+  "bundle": {
+    "windows": {
+      "certificateThumbprint": "REPLACE_WITH_CERTIFICATE_THUMBPRINT",
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "REPLACE_WITH_CERTIFICATE_PROVIDER_TIMESTAMP_URL"
+    }
+  }
+}

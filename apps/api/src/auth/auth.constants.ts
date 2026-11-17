@@ -26,6 +26,7 @@ function isStrictEnv(): boolean {
   return (
     process.env.NODE_ENV === 'production' ||
     process.env.AXIS_ENV === 'production' ||
+    process.env.AXIS_ENV === 'staging' ||
     process.env.NODE_ENV === 'test'
   );
 }

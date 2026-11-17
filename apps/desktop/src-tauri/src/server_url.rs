@@ -116,10 +116,11 @@ impl ServerUrl {
             _ => authority,
         };
         let host = host.trim_start_matches('[').trim_end_matches(']');
-        host == "localhost"
-            || host == "::1"
-            || host.starts_with("127.")
-            || host.ends_with(".localhost")
+        let loopback_ip = host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+        loopback_ip || host == "localhost" || host.ends_with(".localhost")
     }
 }
 
@@ -319,6 +320,7 @@ mod tests {
             "http://pacs.example.org",
             "http://10.0.0.5:3000",
             "http://0.0.0.0:3000",
+            "http://127.pacs.example.org",
         ] {
             let err = ServerUrl::parse(input).unwrap_err();
             assert!(err.to_string().contains("HTTPS"), "{input}: {err}");

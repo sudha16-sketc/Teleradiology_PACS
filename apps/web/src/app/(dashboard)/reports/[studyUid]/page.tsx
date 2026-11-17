@@ -15,9 +15,13 @@ export default function ReportEditorPage() {
   const params = useParams();
   const studyUid = typeof params?.studyUid === "string" ? params.studyUid : "";
   const currentUser = useAppStore((s) => s.currentUser);
-  const isRadiologist = currentUser?.role === "RADIOLOGIST";
-
   const [study, setStudy] = useState<Study | null>(null);
+  const isRadiologist = currentUser?.role === "RADIOLOGIST";
+  const isAssigned =
+    isRadiologist &&
+    Boolean(currentUser?.id) &&
+    study?.assignedRadiologistId === currentUser?.id;
+
   const [report, setReport] = useState<Report | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -65,39 +69,17 @@ export default function ReportEditorPage() {
     );
   }
 
-  if (!report) {
-    return (
-      <div className="flex h-full flex-col gap-4">
-        <div className="flex flex-1 items-center justify-center rounded-md border border-border">
-          <EmptyState
-            title="No report yet"
-            description="This study does not have a report yet. Open the reading view to create one."
-          />
-        </div>
-        <aside className="w-72 flex-shrink-0">
-          <ReportSidebar
-            patientName={study.patient?.displayName ?? "—"}
-            patientId={study.patient?.patientId ?? "—"}
-            accessionNumber={study.accessionNumber}
-            modality={study.modality}
-            studyDescription={study.studyDescription}
-            bodyPart={study.bodyPart}
-            hospitalName={study.hospital?.name ?? "—"}
-            assignedRadiologist={study.assignedRadiologist?.displayName ?? "—"}
-            studyInstanceUid={studyUid}
-          />
-        </aside>
-      </div>
-    );
-  }
-
-  if (!isRadiologist) {
+  if (!isAssigned) {
     return (
       <div className="flex h-full gap-4">
         <div className="flex flex-1 items-center justify-center rounded-md border border-border">
           <EmptyState
-            title="Report editing is restricted"
-            description="Only the assigned radiologist can create or edit report content. Review and release are performed from the reading view."
+            title={report ? "Report editing is restricted" : "No report available"}
+            description={
+              report
+                ? "Only the assigned radiologist can edit report content. Review and release are performed from the reading view."
+                : "Only the assigned radiologist can create a report for this study."
+            }
           />
         </div>
         <aside className="w-72 flex-shrink-0 overflow-y-auto">
@@ -121,15 +103,19 @@ export default function ReportEditorPage() {
     <div className="flex h-full gap-4">
       <div className="flex flex-1 overflow-hidden">
         <ReportEditor
+          key={studyUid}
+          study={study}
           studyInstanceUid={studyUid}
-          initialClinicalHistory={report.clinicalHistory}
-          initialFindings={report.findings}
-          initialImpression={report.impression}
-          initialTechnique={report.technique}
-          initialComparison={report.comparison}
-          initialRecommendations={report.recommendations}
-          initialCriticalFinding={report.criticalFinding}
-          status={report.status}
+          initialClinicalHistory={report?.clinicalHistory}
+          initialFindings={report?.findings}
+          initialImpression={report?.impression}
+          initialTechnique={report?.technique}
+          initialComparison={report?.comparison}
+          initialRecommendations={report?.recommendations}
+          initialRichContent={report?.richContent}
+          initialCriticalFinding={report?.criticalFinding}
+          status={report?.status ?? "DRAFT"}
+          hasSavedReport={Boolean(report)}
         />
       </div>
 

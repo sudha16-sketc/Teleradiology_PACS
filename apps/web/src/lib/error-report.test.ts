@@ -16,7 +16,7 @@ afterEach(() => {
 describe("desktop error reports", () => {
   it("keeps useful diagnostics while excluding PHI and credentials", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    setRuntimeInfo({ appVersion: "1.2.3", os: "windows 11" });
+    setRuntimeInfo({ appVersion: "1.2.3", os: "windows 11", environment: "staging" });
     const error = new Error(
       "Patient Jane Doe, MRN 12345678, token=super-secret\nPatient Jane Doe",
     );
@@ -40,12 +40,15 @@ describe("desktop error reports", () => {
     expect(report.referenceId).toBe("support-ref");
     expect(report.appVersion).toBe("1.2.3");
     expect(report.os).toBe("windows 11");
+    expect(report.environment).toBe("staging");
     expect(report.errorType).toBe("Error");
     expect(report.message).toBe("server (HTTP 500)");
     expect(report.correlationId).toBe("req-support-123");
     expect(report.route).toBe("reading");
     expect(report.stack).toBeTruthy();
     expect(technicalDetails(report)).toContain("support-ref");
+    expect(logged).toContain('"environment":"staging"');
+    expect(logged).toContain('"stack":');
     expect(JSON.stringify(report)).not.toMatch(/Jane Doe|12345678|super-secret/);
     expect(logged).not.toMatch(/Jane Doe|12345678|super-secret/);
   });

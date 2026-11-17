@@ -118,6 +118,8 @@ enum AuditAction {
   CRITICAL_FINDING_ACKNOWLEDGED
   USER_CREATED
   USER_UPDATED
+  USER_DELETED
+  LOGIN_FAILURE
   ROUTING_RULE_CHANGED
   DELIVERY_ATTEMPTED
   DELIVERY_FAILED
@@ -291,7 +293,7 @@ model Study {
   orthancStudyId        String?
   orthancPatientId      String?
   patientId             String
-  accessionNumber       String          @unique
+  accessionNumber       String
   studyDate             DateTime
   studyTime             String          @default("")
   modality              Modality
@@ -336,6 +338,10 @@ model Study {
   changeRequests         ChangeRequest[]
   assignments            Assignment[]
 
+  // An accession number is scoped to the ordering hospital. A global unique
+  // index let one tenant's accession collide with another's and surfaced as a
+  // 500, so uniqueness is enforced per hospital instead.
+  @@unique([hospitalId, accessionNumber], map: "Study_hospitalId_accessionNumber_key")
   @@index([orthancStudyId])
   @@index([status])
   @@index([hospitalId])
@@ -404,6 +410,7 @@ model Report {
   technique                    String       @default("")
   comparison                   String       @default("")
   recommendations              String       @default("")
+  richContent                  Json?
   criticalFinding              Boolean      @default(false)
   criticalFindingAcknowledged  Boolean      @default(false)
   criticalFindingAcknowledgedBy String?
@@ -436,6 +443,7 @@ model ReportVersion {
   technique      String       @default("")
   comparison     String       @default("")
   recommendations String       @default("")
+  richContent    Json?
   authorId       String
   contentHash    String
   createdAt      DateTime     @default(now())

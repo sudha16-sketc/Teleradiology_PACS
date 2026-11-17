@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SlaPriority, AuditAction, AuditResource } from '@prisma/client';
 import { AuditService } from '../audit/audit.service.js';
@@ -109,9 +110,20 @@ export class SlaService {
    * Operational overview for the manager/admin dashboard. All counts and
    * averages are derived from real database rows and actual server timestamps —
    * never from client-supplied values.
+   *
+   * Visibility is server-side: ADMIN keeps the global view, a MANAGER is
+   * restricted to their own hospital, and a MANAGER without a hospital degrades
+   * to an empty overview rather than falling through to every tenant.
    */
-  async operationalOverview(): Promise<{ data: OperationalOverview }> {
+  async operationalOverview(
+    user?: { id: string; role: string; hospitalId?: string | null },
+  ): Promise<{ data: OperationalOverview }> {
+    const scope = this.overviewScope(user);
+    if (scope.degraded) {
+      return { data: this.emptyOverview() };
+    }
     const all = await this.prisma.study.findMany({
+      where: scope.where,
       select: {
         id: true,
         studyInstanceUid: true,
@@ -210,6 +222,40 @@ export class SlaService {
         },
       },
     };
+  }
+
+  private overviewScope(user?: {
+    id: string;
+    role: string;
+    hospitalId?: string | null;
+  }): { where: Prisma.StudyWhereInput; degraded: boolean } {
+    if (user && user.role === 'MANAGER') {
+      if (user.hospitalId) {
+        return { where: { hospitalId: user.hospitalId }, degraded: false };
+      }
+      return { where: {}, degraded: true };
+    }
+    return { where: {}, degraded: false };
+  }
+
+  /** Shape-preserving zeroed overview, used when a caller has no visible rows. */
+  private emptyOverview(): OperationalOverview {
+    return {
+      counts: {
+        unassigned: 0,
+        assigned: 0,
+        inReading: 0,
+        reportDraft: 0,
+        awaitingReview: 0,
+        awaitingDelivery: 0,
+        hospitalReview: 0,
+        correctionQueue: 0,
+        completed: 0,
+        total: 0,
+      },
+      tat: { averageReportingMinutes: 0, averageTotalMinutes: 0 },
+      sla: { breachCount: 0, totalTracked: 0, breachPercentage: 0, breaches: [] },
+    } as OperationalOverview;
   }
 
   async getConfig() {

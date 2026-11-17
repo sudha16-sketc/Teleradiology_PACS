@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -172,12 +173,31 @@ export class StudiesService {
 
     this.assertCanView(study, user);
 
+    const where: Record<string, unknown> = {
+      patientId: study.patientId,
+      status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'COMPLETED'] },
+      studyInstanceUid: { not: studyUid },
+    };
+
+    if (user?.role === UserRole.RADIOLOGIST) {
+      where.assignedRadiologistId = user.id;
+    } else if (user?.role === UserRole.HOSPITAL) {
+      if (!user.hospitalId) {
+        throw new ForbiddenException('Your account is not linked to a hospital');
+      }
+      where.hospitalId = user.hospitalId;
+      where.status = {
+        in: [
+          StudyStatus.DELIVERED_TO_HOSPITAL,
+          StudyStatus.HOSPITAL_REVIEW,
+          StudyStatus.HOSPITAL_ACCEPTED,
+          StudyStatus.COMPLETED,
+        ],
+      };
+    }
+
     const priors = await this.prisma.study.findMany({
-      where: {
-        patientId: study.patientId,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'COMPLETED'] },
-        studyInstanceUid: { not: studyUid },
-      },
+      where,
       include: { patient: true, hospital: true },
       orderBy: { studyDate: 'desc' },
     });
@@ -203,6 +223,19 @@ export class StudiesService {
       throw new BadRequestException(`Study ${studyInstanceUid} already exists`);
     }
 
+    // Accession numbers are unique per ordering hospital, not globally. Report a
+    // same-hospital collision as a client error instead of letting the composite
+    // unique index surface it as an unhandled 500.
+    const accessionClash = await this.prisma.study.findFirst({
+      where: { hospitalId, accessionNumber },
+      select: { id: true },
+    });
+    if (accessionClash) {
+      throw new ConflictException(
+        `Accession number ${accessionNumber} already exists for this hospital`,
+      );
+    }
+
     const patient = await this.prisma.patient.findFirst({
       where: { hospitalId, displayName: dto.patientName },
     });
@@ -212,38 +245,56 @@ export class StudiesService {
       patient?.patientId ||
       `P-${new Date().getTime()}`;
 
-    const study = await this.prisma.study.create({
-      data: {
-        studyInstanceUid,
-        accessionNumber,
-        patientId: patient
-          ? patient.id
-          : (
-              await this.prisma.patient.create({
-                data: {
-                  hospitalId,
-                  patientId,
-                  displayName: dto.patientName,
-                  dateOfBirth: dto.patientBirthDate ? new Date(dto.patientBirthDate) : undefined,
-                  gender: dto.gender || 'U',
-                },
-              })
-            ).id,
-        hospitalId,
-        studyDate: dto.studyDate ? new Date(dto.studyDate) : new Date(),
-        modality: dto.modality || 'CT',
-        bodyPart: dto.bodyPart || '',
-        referringPhysician: dto.referringPhysician || '',
-        studyDescription: dto.studyDescription || '',
-        clinicalHistory: dto.clinicalHistory || '',
-        priority: dto.priority || 'ROUTINE',
-        subspecialty: dto.subspecialty || 'GENERAL',
-        status: 'HOSPITAL_SUBMITTED',
-        receivedAt: new Date(),
-        dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
-      },
-      include: { patient: true, hospital: true },
-    });
+    let study;
+    try {
+      study = await this.prisma.study.create({
+        data: {
+          studyInstanceUid,
+          accessionNumber,
+          patientId: patient
+            ? patient.id
+            : (
+                await this.prisma.patient.create({
+                  data: {
+                    hospitalId,
+                    patientId,
+                    displayName: dto.patientName,
+                    dateOfBirth: dto.patientBirthDate ? new Date(dto.patientBirthDate) : undefined,
+                    gender: dto.gender || 'U',
+                  },
+                })
+              ).id,
+          hospitalId,
+          studyDate: dto.studyDate ? new Date(dto.studyDate) : new Date(),
+          modality: dto.modality || 'CT',
+          bodyPart: dto.bodyPart || '',
+          referringPhysician: dto.referringPhysician || '',
+          studyDescription: dto.studyDescription || '',
+          clinicalHistory: dto.clinicalHistory || '',
+          priority: dto.priority || 'ROUTINE',
+          subspecialty: dto.subspecialty || 'GENERAL',
+          status: 'HOSPITAL_SUBMITTED',
+          receivedAt: new Date(),
+          dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
+        },
+        include: { patient: true, hospital: true },
+      });
+    } catch (err) {
+      // The pre-checks above are advisory; two concurrent submissions can still
+      // race onto the same unique key. Translate that race into the same
+      // controlled client error instead of an unhandled 500.
+      if ((err as { code?: string })?.code === 'P2002') {
+        const target = (err as { meta?: { target?: string | string[] } })?.meta?.target;
+        const fields = Array.isArray(target) ? target.join(',') : String(target ?? '');
+        if (fields.includes('accessionNumber')) {
+          throw new ConflictException(
+            `Accession number ${accessionNumber} already exists for this hospital`,
+          );
+        }
+        throw new BadRequestException(`Study ${studyInstanceUid} already exists`);
+      }
+      throw err;
+    }
 
     return { data: study };
   }

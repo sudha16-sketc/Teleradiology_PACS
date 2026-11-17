@@ -63,6 +63,25 @@ function tagKey(group: number, element: number): string {
 }
 
 /**
+ * Explicit-VR element header sizes in the meta group: tag (4) + VR (2), then
+ * either a 16-bit length (short form, 8 bytes total) or 2 reserved bytes plus a
+ * 32-bit length (long form, 12 bytes total). These differ, so the bounds check
+ * must be per-form: reading a long-form length from a buffer that only has the
+ * 8-byte short form's worth of bytes left runs off the end.
+ */
+const META_SHORT_VR_HEADER_BYTES = 8;
+const META_LONG_VR_HEADER_BYTES = 12;
+const META_LONG_VRS = new Set(['OB', 'OW', 'OF', 'SQ', 'UT', 'UN']);
+
+/** Raised when a Part-10 file ends in the middle of its meta header. */
+class TruncatedMetaHeaderError extends Error {
+  constructor() {
+    super('DICOM Part-10 meta header is truncated');
+    this.name = 'TruncatedMetaHeaderError';
+  }
+}
+
+/**
  * Parses the Part-10 DICOM meta header (group 0002), which is always encoded
  * using explicit VR little endian.
  */
@@ -75,14 +94,20 @@ function readMetaHeader(buffer: Buffer): MetaHeader | undefined {
   let off = 132;
   const end = buffer.length;
 
-  while (off + 8 <= end) {
+  while (off < end) {
+    if (off + META_SHORT_VR_HEADER_BYTES > end) {
+      throw new TruncatedMetaHeaderError();
+    }
     const group = buffer.readUInt16LE(off);
     const elem = buffer.readUInt16LE(off + 2);
     const vr = buffer.subarray(off + 4, off + 6).toString('latin1');
     off += 6;
 
     let len: number;
-    if (vr === 'OB' || vr === 'OW' || vr === 'OF' || vr === 'SQ' || vr === 'UT' || vr === 'UN') {
+    if (META_LONG_VRS.has(vr)) {
+      if (off + 6 > end) {
+        throw new TruncatedMetaHeaderError();
+      }
       len = buffer.readUInt32LE(off + 2);
       off += 6;
     } else {
@@ -213,7 +238,17 @@ export function parseDicomBuffer(buffer: Buffer): ParsedDicom {
     }
   }
 
-  const meta = readMetaHeader(buffer);
+  // A file that ends inside the meta header is a truncated transfer, not a
+  // crash: report it as an invalid object so the caller answers 4xx.
+  let meta: MetaHeader | undefined;
+  try {
+    meta = readMetaHeader(buffer);
+  } catch (err) {
+    if (err instanceof TruncatedMetaHeaderError) {
+      return { valid: false, error: err.message };
+    }
+    throw err;
+  }
 
   // Part-10 file with preamble.
   if (meta) {

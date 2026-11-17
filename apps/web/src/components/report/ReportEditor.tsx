@@ -1,14 +1,36 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlignCenter,
+  AlignLeft,
+  AlignRight,
+  Bold,
+  FileText,
+  Italic,
+  List,
+  ListOrdered,
+  Redo2,
+  Strikethrough,
+  Table2,
+  Underline,
+  Undo2,
+} from "lucide-react";
 import { clsx } from "clsx";
-import type { ApiError, ReportStatus } from "@axis/types";
+import type { Editor } from "@tiptap/core";
+import type { ReportRichContent, ReportStatus, Study } from "@axis/types";
+import {
+  buildReportRichContent,
+  extractReportRichFields,
+  isReportRichContent,
+} from "@axis/types";
 import { CriticalFindingToggle } from "./CriticalFindingToggle";
 import { ReportActions } from "./ReportActions";
+import { ReportDocumentCanvas } from "./ReportDocumentCanvas";
 import { apiClient } from "@/lib/api-client";
 
 interface ReportEditorProps {
+  study: Study;
   studyInstanceUid: string;
   initialClinicalHistory?: string;
   initialFindings?: string;
@@ -16,17 +38,23 @@ interface ReportEditorProps {
   initialTechnique?: string;
   initialComparison?: string;
   initialRecommendations?: string;
+  initialRichContent?: ReportRichContent | null;
   initialCriticalFinding?: boolean;
   status?: ReportStatus;
+  hasSavedReport?: boolean;
 }
 
-const TEMPLATES = [
-  { id: "general", name: "General Radiology" },
-  { id: "chest-ct", name: "CT Chest" },
-  { id: "msk", name: "MSK Study" },
+const FONT_FAMILIES = [
+  { value: "", label: "Report font" },
+  { value: "Arial", label: "Arial" },
+  { value: "Calibri", label: "Calibri" },
+  { value: "Georgia", label: "Georgia" },
+  { value: "Times New Roman", label: "Times New Roman" },
+  { value: "Verdana", label: "Verdana" },
 ];
 
 export function ReportEditor({
+  study,
   studyInstanceUid,
   initialClinicalHistory = "",
   initialFindings = "",
@@ -34,263 +62,373 @@ export function ReportEditor({
   initialTechnique = "",
   initialComparison = "",
   initialRecommendations = "",
+  initialRichContent,
   initialCriticalFinding = false,
   status = "DRAFT",
+  hasSavedReport = false,
 }: ReportEditorProps) {
-  const [clinicalHistory, setClinicalHistory] = useState(initialClinicalHistory);
-  const [findings, setFindings] = useState(initialFindings);
-  const [impression, setImpression] = useState(initialImpression);
-  const [technique, setTechnique] = useState(initialTechnique);
-  const [comparison, setComparison] = useState(initialComparison);
-  const [recommendations, setRecommendations] = useState(initialRecommendations);
-  const [criticalFinding, setCriticalFinding] = useState(initialCriticalFinding);
-  const [selectedTemplate, setSelectedTemplate] = useState(TEMPLATES[0].id);
-  const [templateOpen, setTemplateOpen] = useState(false);
+  const initialContent = useMemo(
+    () =>
+      isReportRichContent(initialRichContent)
+        ? initialRichContent
+        : buildReportRichContent({
+            clinicalHistory: initialClinicalHistory,
+            findings: initialFindings,
+            impression: initialImpression,
+            technique: initialTechnique,
+            comparison: initialComparison,
+            recommendations: initialRecommendations,
+          }),
+    [
+      initialClinicalHistory,
+      initialComparison,
+      initialFindings,
+      initialImpression,
+      initialRecommendations,
+      initialRichContent,
+      initialTechnique,
+    ],
+  );
   const [reportStatus, setReportStatus] = useState<ReportStatus>(status);
+  const [criticalFinding, setCriticalFinding] = useState(initialCriticalFinding);
+  const [hasReport, setHasReport] = useState(hasSavedReport);
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [revision, setRevision] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<"idle" | "unsaved" | "saved" | "error">(
+    "idle",
+  );
   const [notice, setNotice] = useState<string | null>(null);
+  const editorRef = useRef<Editor | null>(null);
+  const savingRef = useRef(false);
+  const saveQueuedRef = useRef(false);
+  const revisionRef = useRef(0);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isSigned = reportStatus === "SIGNED";
+  const canEdit = reportStatus === "DRAFT" || reportStatus === "CORRECTION_REQUESTED";
 
-  const contentFields = {
-    clinicalHistory,
-    findings,
-    impression,
-    technique,
-    comparison,
-    recommendations,
-    criticalFinding,
-  };
+  const onEditorReady = useCallback((readyEditor: Editor | null) => {
+    editorRef.current = readyEditor;
+    setEditor(readyEditor);
+  }, []);
 
-  const saveDraft = async () => {
-    setSaving(true);
+  const markChanged = useCallback(() => {
+    setSaveState("unsaved");
     setNotice(null);
-    try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
-      setNotice("Draft saved.");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : (e as ApiError)?.message;
-      setNotice(message ?? "Failed to save draft.");
-    } finally {
-      setSaving(false);
+    revisionRef.current += 1;
+    setRevision((value) => value + 1);
+  }, []);
+
+  const onContentChange = useCallback(() => markChanged(), [markChanged]);
+
+  const persistDraft = useCallback(async () => {
+    if (!canEdit) return false;
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
     }
-  };
+    if (savingRef.current) {
+      saveQueuedRef.current = true;
+      return false;
+    }
 
-  const submitSignoff = async () => {
+    const activeEditor = editorRef.current;
+    const richContent = activeEditor?.getJSON();
+    if (!richContent || !isReportRichContent(richContent)) {
+      setSaveState("error");
+      setNotice("The report editor is not ready. Your changes have not been saved.");
+      return false;
+    }
+
+    const fields = extractReportRichFields(richContent);
+    const payload = { ...fields, criticalFinding, richContent };
+    const savedRevision = revisionRef.current;
+    savingRef.current = true;
     setSaving(true);
+    setSaveState("idle");
     setNotice(null);
+
     try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
-      );
+      if (reportStatus === "CORRECTION_REQUESTED") {
+        await apiClient.post(
+          `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
+          payload,
+        );
+      } else {
+        await apiClient.patch(
+          `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
+          payload,
+        );
+      }
+      setHasReport(true);
       setReportStatus("DRAFT");
-      setNotice("Report submitted for sign-off.");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : (e as ApiError)?.message;
-      setNotice(message ?? "Failed to submit for sign-off.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const signOff = async () => {
-    setSaving(true);
-    setNotice(null);
-    try {
-      await apiClient.patch(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-        contentFields,
+      const currentAtSaveComplete = savedRevision === revisionRef.current;
+      setSaveState(currentAtSaveComplete ? "saved" : "unsaved");
+      setNotice("Draft saved.");
+      return currentAtSaveComplete;
+    } catch (error: unknown) {
+      setSaveState("error");
+      setNotice(
+        error instanceof Error ? error.message : "Failed to save the report.",
       );
+      return false;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+      if (saveQueuedRef.current) {
+        saveQueuedRef.current = false;
+        setRevision((value) => value + 1);
+      }
+    }
+  }, [canEdit, criticalFinding, reportStatus, studyInstanceUid]);
+
+  const persistDraftRef = useRef(persistDraft);
+  useEffect(() => {
+    persistDraftRef.current = persistDraft;
+  }, [persistDraft]);
+
+  useEffect(() => {
+    if (!canEdit || revision === 0) return;
+    autosaveTimerRef.current = setTimeout(() => {
+      autosaveTimerRef.current = null;
+      void persistDraftRef.current();
+    }, 900);
+    return () => {
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [canEdit, revision]);
+
+  const saveDraft = useCallback(() => {
+    void persistDraft();
+  }, [persistDraft]);
+
+  const submitSignoff = useCallback(async () => {
+    if (await persistDraft()) setNotice("Draft is ready for sign-off.");
+  }, [persistDraft]);
+
+  const signOff = useCallback(async () => {
+    if (!(await persistDraft())) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/sign`,
         {},
       );
       setReportStatus("SIGNED");
+      setSaveState("saved");
       setNotice("Report signed off.");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : (e as ApiError)?.message;
-      setNotice(message ?? "Failed to sign off.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const amend = async () => {
-    setSaving(true);
-    setNotice(null);
-    try {
-      await apiClient.post(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
-        contentFields,
+    } catch (error: unknown) {
+      setSaveState("error");
+      setNotice(
+        error instanceof Error ? error.message : "Failed to sign off the report.",
       );
-      setReportStatus("DRAFT");
-      setNotice("Report amended.");
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : (e as ApiError)?.message;
-      setNotice(message ?? "Failed to amend.");
     } finally {
+      savingRef.current = false;
       setSaving(false);
+      if (saveQueuedRef.current) {
+        saveQueuedRef.current = false;
+        setRevision((value) => value + 1);
+      }
     }
-  };
+  }, [persistDraft, studyInstanceUid]);
+
+  const amend = useCallback(async () => {
+    if (reportStatus !== "CORRECTION_REQUESTED") return;
+    if (await persistDraft()) setNotice("Amended report saved as a draft.");
+  }, [persistDraft, reportStatus]);
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden rounded-md border border-border">
-      <div className="flex items-center gap-3 border-b border-border bg-surface-raised px-6 py-3">
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setTemplateOpen(!templateOpen)}
-            disabled={isSigned}
-            className="flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {TEMPLATES.find((t) => t.id === selectedTemplate)?.name ?? "Template"}
-            <ChevronDown size={14} className="text-text-muted" />
-          </button>
-          {templateOpen && (
-            <div className="absolute left-0 top-full z-10 mt-1 w-56 rounded-md border border-border bg-surface shadow-lg">
-              {TEMPLATES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedTemplate(t.id);
-                    setTemplateOpen(false);
-                  }}
-                  className={clsx(
-                    "flex w-full items-center px-3 py-2 text-left text-sm transition-colors hover:bg-surface-raised",
-                    t.id === selectedTemplate
-                      ? "text-accent"
-                      : "text-text-primary",
-                  )}
-                >
-                  {t.name}
-                </button>
-              ))}
-            </div>
-          )}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border">
+      <div className="flex items-center gap-3 border-b border-border bg-surface-raised px-5 py-3">
+        <FileText size={17} className="text-accent" />
+        <div>
+          <p className="text-sm font-semibold text-text-primary">Axis Radiology</p>
+          <p className="text-xs text-text-muted">Clinical report template · A4</p>
         </div>
-        <span className="text-xs text-text-muted">Report Template</span>
         <span className="ml-auto text-xs font-medium uppercase tracking-wider text-text-muted">
           {reportStatus.replace(/_/g, " ")}
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto bg-editor">
-        <div className="mx-auto max-w-3xl px-6 py-6">
-          <div className="font-serif">
-            <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Clinical History
-            </label>
-            <textarea
-              value={clinicalHistory}
-              onChange={(e) => setClinicalHistory(e.target.value)}
-              disabled={isSigned}
-              placeholder="Relevant clinical history..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={3}
-            />
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Technique
-            </label>
-            <textarea
-              value={technique}
-              onChange={(e) => setTechnique(e.target.value)}
-              disabled={isSigned}
-              placeholder="Imaging technique / protocol..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={2}
-            />
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Comparison
-            </label>
-            <textarea
-              value={comparison}
-              onChange={(e) => setComparison(e.target.value)}
-              disabled={isSigned}
-              placeholder="Prior studies for comparison..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={2}
-            />
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Findings <span className="text-error">*</span>
-            </label>
-            <textarea
-              value={findings}
-              onChange={(e) => setFindings(e.target.value)}
-              disabled={isSigned}
-              placeholder="Enter radiological findings..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              style={{ minHeight: 200 }}
-            />
-            <div className="mt-1 text-right text-xs text-editor-ink/50">
-              {findings.length} characters
-            </div>
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Impression <span className="text-error">*</span>
-            </label>
-            <textarea
-              value={impression}
-              onChange={(e) => setImpression(e.target.value)}
-              disabled={isSigned}
-              placeholder="Enter impression / conclusion..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              style={{ minHeight: 200 }}
-            />
-            <div className="mt-1 text-right text-xs text-editor-ink/50">
-              {impression.length} characters
-            </div>
-
-            <label className="mb-2 mt-4 block text-xs font-semibold uppercase tracking-wider text-editor-ink/60">
-              Recommendations
-            </label>
-            <textarea
-              value={recommendations}
-              onChange={(e) => setRecommendations(e.target.value)}
-              disabled={isSigned}
-              placeholder="Follow-up / management recommendations..."
-              className={clsx(textareaClasses, isSigned && disabledClasses)}
-              rows={3}
-            />
-          </div>
-
-          <div className="mt-6">
-            <CriticalFindingToggle
-              active={criticalFinding}
-              onToggle={() => !isSigned && setCriticalFinding(!criticalFinding)}
-              disabled={isSigned}
-            />
-          </div>
-        </div>
+      <div
+        className="flex flex-wrap items-center gap-1 border-b border-border bg-surface px-3 py-2"
+        role="toolbar"
+        aria-label="Report formatting"
+      >
+        {editor && (
+          <>
+            <ToolbarButton
+              label="Bold"
+              active={editor.isActive("bold")}
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().toggleBold().run()}
+            >
+              <Bold size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Italic"
+              active={editor.isActive("italic")}
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().toggleItalic().run()}
+            >
+              <Italic size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Underline"
+              active={editor.isActive("underline")}
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().toggleUnderline().run()}
+            >
+              <Underline size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Strikethrough"
+              active={editor.isActive("strike")}
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().toggleStrike().run()}
+            >
+              <Strikethrough size={16} />
+            </ToolbarButton>
+            <span className="mx-1 h-6 border-l border-border" aria-hidden="true" />
+            <ToolbarButton
+              label="Bulleted list"
+              active={editor.isActive("bulletList")}
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+            >
+              <List size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Numbered list"
+              active={editor.isActive("orderedList")}
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            >
+              <ListOrdered size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Align left"
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().setTextAlign("left").run()}
+            >
+              <AlignLeft size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Center align"
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().setTextAlign("center").run()}
+            >
+              <AlignCenter size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Align right"
+              disabled={!canEdit || saving}
+              onClick={() => editor.chain().focus().setTextAlign("right").run()}
+            >
+              <AlignRight size={16} />
+            </ToolbarButton>
+            <select
+              aria-label="Font family"
+              value={editor.getAttributes("textStyle").fontFamily ?? ""}
+              disabled={!canEdit || saving}
+              onChange={(event) => {
+                const fontFamily = event.target.value;
+                const chain = editor.chain().focus();
+                if (fontFamily) chain.setFontFamily(fontFamily).run();
+                else chain.unsetFontFamily().run();
+              }}
+              className="ml-1 rounded border border-border bg-surface px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+            >
+              {FONT_FAMILIES.map((font) => (
+                <option key={font.value} value={font.value}>
+                  {font.label}
+                </option>
+              ))}
+            </select>
+            <ToolbarButton
+              label="Insert table"
+              disabled={!canEdit || saving}
+              onClick={() =>
+                editor
+                  .chain()
+                  .focus()
+                  .insertTable({ rows: 2, cols: 2, withHeaderRow: true })
+                  .run()
+              }
+            >
+              <Table2 size={16} />
+            </ToolbarButton>
+            <span className="mx-1 h-6 border-l border-border" aria-hidden="true" />
+            <ToolbarButton
+              label="Undo"
+              disabled={!canEdit || saving || !editor.can().undo()}
+              onClick={() => editor.chain().focus().undo().run()}
+            >
+              <Undo2 size={16} />
+            </ToolbarButton>
+            <ToolbarButton
+              label="Redo"
+              disabled={!canEdit || saving || !editor.can().redo()}
+              onClick={() => editor.chain().focus().redo().run()}
+            >
+              <Redo2 size={16} />
+            </ToolbarButton>
+          </>
+        )}
       </div>
 
-      {notice && (
-        <div className="border-t border-border px-6 py-2 text-xs text-text-muted">
-          {notice}
-        </div>
-      )}
+      <div className="min-h-0 flex-1 overflow-auto bg-editor px-4 py-6">
+        <ReportDocumentCanvas
+          content={initialContent}
+          study={study}
+          editable={canEdit && !saving}
+          onChange={onContentChange}
+          onEditorReady={onEditorReady}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3">
+        <CriticalFindingToggle
+          active={criticalFinding}
+          disabled={!canEdit || saving}
+          onToggle={() => {
+            if (!canEdit || saving) return;
+            setCriticalFinding((active) => !active);
+            markChanged();
+          }}
+        />
+        <span
+          className={clsx(
+            "text-xs",
+            saveState === "error" ? "text-error" : "text-text-muted",
+          )}
+          aria-live="polite"
+        >
+          {saving
+            ? "Saving report..."
+            : notice ??
+              (saveState === "unsaved"
+                ? "Unsaved changes"
+                : saveState === "saved"
+                  ? "All changes saved"
+                  : null)}
+        </span>
+      </div>
 
       {saving ? (
-        <div className="flex items-center gap-2 border-t border-border px-6 py-4 text-sm text-text-muted">
-          <Loader2 size={15} className="animate-spin" />
+        <div className="flex items-center gap-2 border-t border-border px-5 py-3 text-sm text-text-muted">
+          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-r-transparent" />
           Saving...
         </div>
       ) : (
         <ReportActions
           status={reportStatus}
-          disabled={isSigned}
-          studyInstanceUid={studyInstanceUid}
+          disabled={!canEdit}
+          studyInstanceUid={hasReport ? studyInstanceUid : undefined}
           onSaveDraft={saveDraft}
           onSubmitSignoff={submitSignoff}
           onSignOff={signOff}
@@ -301,6 +439,35 @@ export function ReportEditor({
   );
 }
 
-const textareaClasses =
-  "w-full resize-y rounded-md border border-border/60 bg-editor p-4 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 transition-colors focus:border-accent focus:bg-editor focus:outline-none";
-const disabledClasses = "cursor-not-allowed bg-surface opacity-70";
+function ToolbarButton({
+  label,
+  active = false,
+  disabled = false,
+  onClick,
+  children,
+}: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-pressed={active}
+      disabled={disabled}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className={clsx(
+        "inline-flex h-8 w-8 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+        active && "bg-accent/10 text-accent",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
+    >
+      {children}
+    </button>
+  );
+}

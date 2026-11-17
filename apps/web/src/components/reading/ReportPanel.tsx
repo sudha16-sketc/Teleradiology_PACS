@@ -1,29 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
+import Link from "next/link";
 import {
+  AlertCircle,
   ChevronDown,
   ChevronRight,
   FileText,
-  Loader2,
-  Check,
-  AlertCircle,
+  Printer,
 } from "lucide-react";
 import { clsx } from "clsx";
 import type { Report, ReportStatus, ReportVersion } from "@axis/types";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, failureOf } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
 import { formatDateTime } from "@/lib/format";
-import { CriticalFindingToggle } from "@/components/report/CriticalFindingToggle";
 
 interface ReportPanelProps {
   studyInstanceUid: string;
   report: Report | null;
   assignedRadiologistId?: string | null;
-  onReportSaved?: () => void;
 }
-
-type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error";
 
 const REPORT_STATUS_STYLES: Record<ReportStatus, string> = {
   DRAFT: "bg-surface text-text-muted",
@@ -43,440 +39,131 @@ const REPORT_STATUS_LABELS: Record<ReportStatus, string> = {
   CORRECTION_REQUESTED: "Correction Requested",
 };
 
-const AUTOSAVE_DELAY_MS = 500;
+const REPORT_SECTIONS = [
+  ["Clinical History", "clinicalHistory"],
+  ["Technique", "technique"],
+  ["Comparison", "comparison"],
+  ["Findings", "findings"],
+  ["Impression", "impression"],
+  ["Recommendations", "recommendations"],
+] as const;
 
 export function ReportPanel({
   studyInstanceUid,
   report,
   assignedRadiologistId,
-  onReportSaved,
 }: ReportPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
-  const currentUser = useAppStore((s) => s.currentUser);
-  const isRadiologist = currentUser?.role === "RADIOLOGIST";
-  const isAssigned =
-    isRadiologist && report
-      ? report.authorId === currentUser?.id
-      : false;
-  // True when the viewing radiologist is the study's assigned radiologist,
-  // regardless of whether a report row exists yet (needed for the create CTA).
-  const canAuthorReport =
-    isRadiologist &&
-    (assignedRadiologistId === currentUser?.id ||
-      (assignedRadiologistId == null && report?.authorId === currentUser?.id));
-  const isEditable = isAssigned && report?.status !== "SIGNED";
-
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-
-  const [clinicalHistory, setClinicalHistory] = useState(
-    report?.clinicalHistory ?? "",
-  );
-  const [findings, setFindings] = useState(report?.findings ?? "");
-  const [impression, setImpression] = useState(report?.impression ?? "");
-  const [technique, setTechnique] = useState(report?.technique ?? "");
-  const [comparison, setComparison] = useState(report?.comparison ?? "");
-  const [recommendations, setRecommendations] = useState(
-    report?.recommendations ?? "",
-  );
-  const [criticalFinding, setCriticalFinding] = useState(
-    report?.criticalFinding ?? false,
-  );
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mountedRef = useRef(true);
-
-  // Sync form state when report prop changes (e.g. after load/refresh).
-  useEffect(() => {
-    if (report) {
-      setClinicalHistory(report.clinicalHistory ?? "");
-      setFindings(report.findings ?? "");
-      setImpression(report.impression ?? "");
-      setTechnique(report.technique ?? "");
-      setComparison(report.comparison ?? "");
-      setRecommendations(report.recommendations ?? "");
-      setCriticalFinding(report.criticalFinding ?? false);
-    }
-  }, [report]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const saveDraft = useCallback(
-    async (fields: {
-      clinicalHistory: string;
-      findings: string;
-      impression: string;
-      technique: string;
-      comparison: string;
-      recommendations: string;
-      criticalFinding: boolean;
-    }) => {
-      if (!mountedRef.current) return;
-      setSaveStatus("saving");
-      setErrorMessage(null);
-      try {
-        await apiClient.patch(
-          `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-          fields,
-        );
-        if (!mountedRef.current) return;
-        const now = new Date();
-        const hh = String(now.getUTCHours()).padStart(2, "0");
-        const mm = String(now.getUTCMinutes()).padStart(2, "0");
-        const ss = String(now.getUTCSeconds()).padStart(2, "0");
-        setSavedAt(`${hh}:${mm}:${ss}`);
-        setSaveStatus("saved");
-        onReportSaved?.();
-      } catch (e) {
-        if (!mountedRef.current) return;
-        setSaveStatus("error");
-        setErrorMessage(
-          (e as { message?: string }).message ?? "Failed to save draft.",
-        );
-      }
-    },
-    [studyInstanceUid, onReportSaved],
-  );
-
-  const scheduleAutoSave = useCallback(
-    (fields: {
-      clinicalHistory: string;
-      findings: string;
-      impression: string;
-      technique: string;
-      comparison: string;
-      recommendations: string;
-      criticalFinding: boolean;
-    }) => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      setSaveStatus("unsaved");
-      setErrorMessage(null);
-      timerRef.current = setTimeout(() => {
-        void saveDraft(fields);
-      }, AUTOSAVE_DELAY_MS);
-    },
-    [saveDraft],
-  );
-
-  // Cleanup timer on unmount.
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  const updateField = useCallback(
-    (
-      field: string,
-      value: string | boolean,
-      current: {
-        clinicalHistory: string;
-        findings: string;
-        impression: string;
-        technique: string;
-        comparison: string;
-        recommendations: string;
-        criticalFinding: boolean;
-      },
-    ) => {
-      const next = { ...current, [field]: value };
-      if (isEditable) scheduleAutoSave(next);
-    },
-    [isEditable, scheduleAutoSave],
-  );
-
-  // Build the latest form state for the autosave callback.
-  const formState = {
-    clinicalHistory,
-    findings,
-    impression,
-    technique,
-    comparison,
-    recommendations,
-    criticalFinding,
-  };
-
-  if (!report) {
-    return (
-      <div className="border-b border-border">
-        <button
-          type="button"
-          onClick={() => setIsOpen(!isOpen)}
-          className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold uppercase tracking-wider text-text-muted transition-colors hover:bg-surface-raised/50"
-        >
-          {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          Report
-        </button>
-        {isOpen && (
-          <div className="flex flex-col items-center gap-3 px-4 py-6">
-            <FileText size={32} strokeWidth={1} className="text-text-muted" />
-            <p className="text-sm text-text-muted">No report yet</p>
-            {canAuthorReport && (
-              <>
-                <button
-                  type="button"
-                  disabled={creating}
-                  onClick={async () => {
-                    if (creating) return;
-                    setCreating(true);
-                    setCreateError(null);
-                    try {
-                      // POST /reports/:studyUid is create-or-update: it creates
-                      // the v1 DRAFT (and advances the study workflow), then the
-                      // parent reloads so this panel renders the editor.
-                      await apiClient.patch(
-                        `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
-                        {
-                          clinicalHistory: "",
-                          findings: "",
-                          impression: "",
-                          technique: "",
-                          comparison: "",
-                          recommendations: "",
-                          criticalFinding: false,
-                        },
-                      );
-                      onReportSaved?.();
-                    } catch (e) {
-                      setCreateError(
-                        (e as { message?: string }).message ??
-                          "Failed to start the report.",
-                      );
-                    } finally {
-                      setCreating(false);
-                    }
-                  }}
-                  className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {creating ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <FileText size={14} />
-                  )}
-                  {creating ? "Creating..." : "Start Report"}
-                </button>
-                {createError && (
-                  <p className="text-xs text-error">{createError}</p>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
+  const currentUser = useAppStore((state) => state.currentUser);
+  const canAuthor =
+    currentUser?.role === "RADIOLOGIST" &&
+    currentUser.id === assignedRadiologistId;
 
   return (
     <div className="border-b border-border">
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((open) => !open)}
+        aria-expanded={isOpen}
         className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold uppercase tracking-wider text-text-muted transition-colors hover:bg-surface-raised/50"
       >
         {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         Report
-        <span
-          className={clsx(
-            "ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium leading-none",
-            REPORT_STATUS_STYLES[report.status],
-          )}
-        >
-          {REPORT_STATUS_LABELS[report.status]}
-        </span>
+        {report && (
+          <span
+            className={clsx(
+              "ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium leading-none",
+              REPORT_STATUS_STYLES[report.status],
+            )}
+          >
+            {REPORT_STATUS_LABELS[report.status]}
+          </span>
+        )}
       </button>
-      {isOpen && (
-        <div className="flex flex-col gap-3 px-4 pb-4">
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <span>v{report.version}</span>
-            {report.author && (
-              <span>
-                by {report.author.displayName ?? report.author.email}
-              </span>
+
+      {isOpen &&
+        (report ? (
+          <div className="flex flex-col gap-3 px-4 pb-4">
+            <div className="flex items-center gap-2 text-xs text-text-muted">
+              <span>v{report.version}</span>
+              {report.author && (
+                <span>
+                  by {report.author.displayName ?? report.author.email}
+                </span>
+              )}
+            </div>
+
+            {report.criticalFinding && (
+              <div className="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2">
+                <AlertCircle size={14} className="text-warning" />
+                <span className="text-xs font-medium text-warning">
+                  Critical Finding Flagged
+                </span>
+              </div>
+            )}
+
+            {REPORT_SECTIONS.map(([label, field]) => (
+              <ReportSection
+                key={field}
+                label={label}
+                value={report[field] ?? ""}
+              />
+            ))}
+
+            {canAuthor && report.status !== "SIGNED" && (
+              <Link
+                href={`/reports/${encodeURIComponent(studyInstanceUid)}`}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-background transition-colors hover:bg-accent/90"
+              >
+                <FileText size={14} />
+                Open full report editor
+              </Link>
+            )}
+
+            <Link
+              href={`/reports/print/${encodeURIComponent(studyInstanceUid)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 text-xs text-accent hover:underline"
+            >
+              <Printer size={13} />
+              Preview / print saved report
+            </Link>
+
+            <ReportVersionHistoryInline studyInstanceUid={studyInstanceUid} />
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-3 px-4 py-6">
+            <FileText size={32} strokeWidth={1} className="text-text-muted" />
+            <p className="text-sm text-text-muted">No report yet</p>
+            {canAuthor && (
+              <Link
+                href={`/reports/${encodeURIComponent(studyInstanceUid)}`}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-accent/90"
+              >
+                <FileText size={14} />
+                Start Report
+              </Link>
             )}
           </div>
-
-          {/* --- Clinical History --- */}
-          <FieldGroup label="Clinical History">
-            <textarea
-              value={clinicalHistory}
-              onChange={(e) =>
-                updateField("clinicalHistory", e.target.value, formState)
-              }
-              disabled={!isEditable}
-              placeholder="Relevant clinical history..."
-              rows={2}
-              className={fieldClasses}
-            />
-          </FieldGroup>
-
-          {/* --- Technique --- */}
-          <FieldGroup label="Technique">
-            <textarea
-              value={technique}
-              onChange={(e) =>
-                updateField("technique", e.target.value, formState)
-              }
-              disabled={!isEditable}
-              placeholder="Imaging technique / protocol..."
-              rows={2}
-              className={fieldClasses}
-            />
-          </FieldGroup>
-
-          {/* --- Comparison --- */}
-          <FieldGroup label="Comparison">
-            <textarea
-              value={comparison}
-              onChange={(e) =>
-                updateField("comparison", e.target.value, formState)
-              }
-              disabled={!isEditable}
-              placeholder="Prior studies for comparison..."
-              rows={1}
-              className={fieldClasses}
-            />
-          </FieldGroup>
-
-          {/* --- Findings --- */}
-          <FieldGroup label="Findings" required>
-            <textarea
-              value={findings}
-              onChange={(e) =>
-                updateField("findings", e.target.value, formState)
-              }
-              disabled={!isEditable}
-              placeholder="Enter radiological findings..."
-              rows={6}
-              className={fieldClasses}
-            />
-          </FieldGroup>
-
-          {/* --- Impression --- */}
-          <FieldGroup label="Impression" required>
-            <textarea
-              value={impression}
-              onChange={(e) =>
-                updateField("impression", e.target.value, formState)
-              }
-              disabled={!isEditable}
-              placeholder="Enter impression / conclusion..."
-              rows={4}
-              className={fieldClasses}
-            />
-          </FieldGroup>
-
-          {/* --- Recommendations --- */}
-          <FieldGroup label="Recommendations">
-            <textarea
-              value={recommendations}
-              onChange={(e) =>
-                updateField("recommendations", e.target.value, formState)
-              }
-              disabled={!isEditable}
-              placeholder="Follow-up / management recommendations..."
-              rows={2}
-              className={fieldClasses}
-            />
-          </FieldGroup>
-
-          {/* --- Critical Finding --- */}
-          {isEditable ? (
-            <div className="mt-2">
-              <CriticalFindingToggle
-                active={criticalFinding}
-                onToggle={() => {
-                  setCriticalFinding(!criticalFinding);
-                  updateField(
-                    "criticalFinding",
-                    !criticalFinding,
-                    formState,
-                  );
-                }}
-              />
-            </div>
-          ) : report.criticalFinding ? (
-            <div className="flex items-center gap-2 rounded-md bg-warning/10 px-3 py-2">
-              <AlertCircle size={14} className="text-warning" />
-              <span className="text-xs font-medium text-warning">
-                Critical Finding Flagged
-              </span>
-            </div>
-          ) : null}
-
-          {/* --- Save status bar --- */}
-          {isEditable && (
-            <div className="flex items-center gap-2 border-t border-border pt-2 text-xs text-text-muted">
-              {saveStatus === "saving" && (
-                <>
-                  <Loader2 size={12} className="animate-spin" />
-                  Saving...
-                </>
-              )}
-              {saveStatus === "saved" && (
-                <>
-                  <Check size={12} className="text-success" />
-                  Saved at {savedAt}
-                </>
-              )}
-              {saveStatus === "unsaved" && "Unsaved changes"}
-              {saveStatus === "error" && (
-                <span className="text-error">{errorMessage}</span>
-              )}
-            </div>
-          )}
-
-          {/* --- Version History --- */}
-          <div className="mt-2">
-            <ReportVersionHistoryInline
-              studyInstanceUid={studyInstanceUid}
-            />
-          </div>
-        </div>
-      )}
+        ))}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function FieldGroup({
-  label,
-  required,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  children: React.ReactNode;
-}) {
+function ReportSection({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+    <section>
+      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-text-muted">
         {label}
-        {required && <span className="ml-0.5 text-error">*</span>}
-      </label>
-      {children}
-    </div>
+      </h3>
+      <p className="whitespace-pre-wrap font-serif text-sm leading-relaxed text-text-primary">
+        {value || "—"}
+      </p>
+    </section>
   );
 }
 
-const fieldClasses =
-  "w-full resize-y rounded-md border border-border/60 bg-editor p-3 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 transition-colors focus:border-accent focus:bg-editor focus:outline-none disabled:cursor-not-allowed disabled:bg-surface disabled:opacity-70";
-
-/**
- * Fetches version history from the API inline (rather than requiring a parent
- * to do it). The existing ReportVersionHistory component takes pre-fetched
- * data; here we do the fetch ourselves.
- */
 function ReportVersionHistoryInline({
   studyInstanceUid,
 }: {
@@ -485,87 +172,84 @@ function ReportVersionHistoryInline({
   const [expanded, setExpanded] = useState(false);
   const [versions, setVersions] = useState<ReportVersion[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    if (loaded) return;
+    if (loading) return;
+    setLoading(true);
+    setLoadError(null);
     try {
-      const res = await apiClient.get<{ data: ReportVersion[] }>(
+      const response = await apiClient.get<{ data: ReportVersion[] }>(
         `/reports/${encodeURIComponent(studyInstanceUid)}/versions`,
       );
-      setVersions(res.data ?? []);
+      setVersions(response.data ?? []);
       setLoaded(true);
-    } catch {
-      // silently ignore — version history is informational
+    } catch (error: unknown) {
+      setLoadError(failureOf(error).message);
+    } finally {
+      setLoading(false);
     }
-  }, [studyInstanceUid, loaded]);
+  }, [loading, studyInstanceUid]);
 
   const toggle = useCallback(() => {
     const next = !expanded;
     setExpanded(next);
-    if (next && !loaded) void load();
-  }, [expanded, loaded, load]);
+    if (next && !loaded && !loading) void load();
+  }, [expanded, loaded, load, loading]);
 
   return (
     <div className="rounded-md border border-border">
       <button
         type="button"
         onClick={toggle}
+        aria-expanded={expanded}
         className="flex w-full items-center gap-2 px-3 py-2 text-xs font-semibold text-text-primary transition-colors hover:bg-surface-raised/50"
       >
-        {expanded ? (
-          <ChevronDown size={12} />
-        ) : (
-          <ChevronRight size={12} />
-        )}
+        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         Version History
       </button>
       {expanded && (
         <div className="border-t border-border">
-          {versions.length === 0 ? (
-            <div className="px-3 py-3 text-xs text-text-muted">
-              No version history available.
+          {loading ? (
+            <p className="px-3 py-3 text-xs text-text-muted">Loading versions…</p>
+          ) : loadError ? (
+            <div className="flex items-center justify-between gap-2 px-3 py-3">
+              <p className="text-xs text-error">{loadError}</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="text-xs font-medium text-accent hover:underline"
+              >
+                Retry
+              </button>
             </div>
+          ) : versions.length === 0 ? (
+            <p className="px-3 py-3 text-xs text-text-muted">
+              {loaded ? "No version history available." : "Open to load versions."}
+            </p>
           ) : (
-            versions.map((v) => (
+            versions.map((version) => (
               <div
-                key={v.id}
+                key={version.id}
                 className="flex items-center justify-between border-b border-border px-3 py-2 last:border-b-0"
               >
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-text-primary">
-                      v{v.version}
-                    </span>
-                    <span
-                      className={clsx(
-                        "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none",
-                        v.status === "SIGNED"
-                          ? "bg-accent/10 text-accent"
-                          : "bg-surface text-text-muted",
-                      )}
-                    >
-                      {v.status}
-                    </span>
-                    {v.version > 1 ? (
-                      <span className="inline-flex items-center rounded-full bg-error/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-error">
-                        Corrected
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center rounded-full bg-surface px-1.5 py-0.5 text-[10px] font-medium leading-none text-text-muted">
-                        Original
-                      </span>
-                    )}
-                  </div>
+                  <span className="text-xs font-medium text-text-primary">
+                    v{version.version} · {version.status}
+                  </span>
                   <span className="text-[10px] text-text-muted">
-                    {v.author?.displayName ?? v.author?.email ?? "Unknown"}
+                    {version.author?.displayName ??
+                      version.author?.email ??
+                      "Unknown"}
                   </span>
                 </div>
                 <div className="flex flex-col items-end gap-0.5">
                   <span className="text-[10px] text-text-muted">
-                    {formatDateTime(v.createdAt)}
+                    {formatDateTime(version.createdAt)}
                   </span>
                   <span className="font-mono text-[9px] text-text-muted">
-                    {v.contentHash?.slice(0, 12)}...
+                    {version.contentHash.slice(0, 12)}...
                   </span>
                 </div>
               </div>

@@ -11,8 +11,9 @@ import {
 } from "lucide-react";
 import { MetricCard } from "@/components/hospital/MetricCard";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { ErrorState } from "@/components/ui/ErrorState";
-import { apiClient } from "@/lib/api-client";
+import { ErrorPanel } from "@/components/ErrorPanel";
+import { apiClient, failureOf } from "@/lib/api-client";
+import type { ApiFailure } from "@/lib/api-error";
 
 interface OverviewData {
   totalStudies: number;
@@ -53,12 +54,20 @@ export default function AnalyticsPage() {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [tatData, setTatData] = useState<TATBucket[]>([]);
   const [hospitalPerf, setHospitalPerf] = useState<HospitalPerf[]>([]);
+  const [loadFailure, setLoadFailure] = useState<ApiFailure | null>(null);
+  const [tatFailure, setTatFailure] = useState<ApiFailure | null>(null);
+  const [hospitalPerfFailure, setHospitalPerfFailure] =
+    useState<ApiFailure | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    setHasError(false);
+    setOverview(null);
+    setTatData([]);
+    setHospitalPerf([]);
+    setLoadFailure(null);
+    setTatFailure(null);
+    setHospitalPerfFailure(null);
     try {
       const [overviewRes, tatRes, perfRes] = await Promise.allSettled([
         apiClient.get<{ data: OverviewData }>("/analytics/overview"),
@@ -66,14 +75,30 @@ export default function AnalyticsPage() {
         apiClient.get<{ data: HospitalPerf[] }>("/analytics/hospital-performance"),
       ]);
 
-      if (overviewRes.status === "fulfilled") setOverview(overviewRes.value.data);
-      if (tatRes.status === "fulfilled") setTatData(tatRes.value.data);
-      if (perfRes.status === "fulfilled") setHospitalPerf(perfRes.value.data);
+      if (overviewRes.status === "fulfilled") {
+        setOverview(overviewRes.value.data);
+      } else {
+        console.error("Failed to load analytics overview", overviewRes.reason);
+        setLoadFailure(failureOf(overviewRes.reason));
+      }
 
-      if (overviewRes.status === "rejected") throw overviewRes.reason;
+      if (tatRes.status === "fulfilled") setTatData(tatRes.value.data);
+      else {
+        console.error("Failed to load analytics TAT", tatRes.reason);
+        setTatFailure(failureOf(tatRes.reason));
+      }
+
+      if (perfRes.status === "fulfilled") setHospitalPerf(perfRes.value.data);
+      else {
+        console.error(
+          "Failed to load hospital performance analytics",
+          perfRes.reason,
+        );
+        setHospitalPerfFailure(failureOf(perfRes.reason));
+      }
     } catch (e) {
       console.error("Failed to load analytics", e);
-      setHasError(true);
+      setLoadFailure(failureOf(e));
     } finally {
       setIsLoading(false);
     }
@@ -83,13 +108,15 @@ export default function AnalyticsPage() {
     void load();
   }, [load]);
 
-  if (hasError) {
+  if (loadFailure) {
     return (
-      <ErrorState
-        title="Failed to load analytics"
-        description="Unable to fetch analytics data. Please try again."
-        onRetry={() => void load()}
-      />
+      <div className="p-6">
+        <ErrorPanel
+          failure={loadFailure}
+          title="Failed to load analytics overview"
+          onRetry={() => void load()}
+        />
+      </div>
     );
   }
 
@@ -144,7 +171,14 @@ export default function AnalyticsPage() {
               TAT Distribution
             </h2>
           </div>
-          {tatData.length === 0 ? (
+          {tatFailure ? (
+            <ErrorPanel
+              failure={tatFailure}
+              title="Could not load turnaround time data"
+              onRetry={() => void load()}
+              className="mt-4"
+            />
+          ) : tatData.length === 0 ? (
             <p className="py-4 text-center text-sm text-text-muted">
               No turnaround time data available yet.
             </p>
@@ -193,7 +227,14 @@ export default function AnalyticsPage() {
             Hospital Performance
           </h2>
         </div>
-        {hospitalPerf.length === 0 ? (
+        {hospitalPerfFailure ? (
+          <ErrorPanel
+            failure={hospitalPerfFailure}
+            title="Could not load hospital performance data"
+            onRetry={() => void load()}
+            className="mt-4"
+          />
+        ) : hospitalPerf.length === 0 ? (
           <EmptyState
             title="No hospital data"
             description="Hospital performance metrics will appear once studies are submitted."

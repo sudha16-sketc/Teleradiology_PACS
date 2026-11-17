@@ -1,8 +1,10 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import { sanitizeUser } from '../common/sanitize-user.js';
 import { UserRole, UserStatus } from '@prisma/client';
+import type { AuthenticatedUser } from '../auth/auth.constants.js';
 
 interface ListUsersParams {
   search?: string;
@@ -14,7 +16,10 @@ interface ListUsersParams {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   async list(params: ListUsersParams = {}) {
     const users = await this.prisma.user.findMany({
@@ -79,17 +84,20 @@ export class UsersService {
     return { data: sanitizeUser(user) };
   }
 
-  async create(dto: {
-    displayName: string;
-    email: string;
-    role: UserRole;
-    password: string;
-    phone?: string;
-    organization?: string;
-    licenseNumber?: string;
-    hospitalId?: string;
-    subspecialty?: string;
-  }) {
+  async create(
+    dto: {
+      displayName: string;
+      email: string;
+      role: UserRole;
+      password: string;
+      phone?: string;
+      organization?: string;
+      licenseNumber?: string;
+      hospitalId?: string;
+      subspecialty?: string;
+    },
+    actor: AuthenticatedUser,
+  ) {
     if (dto.role === UserRole.HOSPITAL && !dto.hospitalId) {
       throw new BadRequestException(
         'A hospital must be selected when creating a hospital account',
@@ -135,6 +143,20 @@ export class UsersService {
       throw err;
     }
 
+    await this.audit.create({
+      actorId: actor.id,
+      actorName: actor.displayName,
+      actorRole: actor.role,
+      action: 'USER_CREATED',
+      resource: 'USER',
+      resourceId: user.id,
+      metadata: {
+        email: user.email,
+        role: user.role,
+        hospitalId: user.hospitalId,
+      },
+    });
+
     return { data: sanitizeUser(user) };
   }
 
@@ -167,6 +189,7 @@ export class UsersService {
       isActive?: boolean;
       status?: UserStatus;
     },
+    actor: AuthenticatedUser,
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
@@ -253,14 +276,58 @@ export class UsersService {
       },
     });
 
+    // Record only the attributes that actually changed so the audit row states
+    // what the administrator modified, not merely what they submitted.
+    const changes: Record<string, { from: unknown; to: unknown }> = {};
+    const track = (field: string, from: unknown, to: unknown) => {
+      if (from !== to) changes[field] = { from: from ?? null, to: to ?? null };
+    };
+    track('displayName', user.displayName, updated.displayName);
+    track('role', user.role, updated.role);
+    track('phone', user.phone, updated.phone);
+    track('organization', user.organization, updated.organization);
+    track('licenseNumber', user.licenseNumber, updated.licenseNumber);
+    track('hospitalId', user.hospitalId, updated.hospitalId);
+    track('subspecialty', user.subspecialty, updated.subspecialty);
+    track('isActive', user.isActive, updated.isActive);
+    track('status', user.status, updated.status);
+
+    if (Object.keys(changes).length > 0) {
+      await this.audit.create({
+        actorId: actor.id,
+        actorName: actor.displayName,
+        actorRole: actor.role,
+        action: 'USER_UPDATED',
+        resource: 'USER',
+        resourceId: updated.id,
+        metadata: { email: updated.email, changes },
+      });
+    }
+
     return { data: sanitizeUser(updated) };
   }
 
-  async remove(id: string) {
+  async remove(id: string, actor: AuthenticatedUser) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
 
     await this.prisma.user.delete({ where: { id } });
+
+    // resourceId is a plain column, so the trail survives the account removal.
+    await this.audit.create({
+      actorId: actor.id,
+      actorName: actor.displayName,
+      actorRole: actor.role,
+      action: 'USER_DELETED',
+      resource: 'USER',
+      resourceId: user.id,
+      metadata: {
+        email: user.email,
+        role: user.role,
+        hospitalId: user.hospitalId,
+      },
+    });
+
     return { data: { success: true } };
   }
 }

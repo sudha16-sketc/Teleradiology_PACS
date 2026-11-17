@@ -24,6 +24,8 @@ analytics, and HIPAA-aligned audit logging.
 - [Orthanc & DICOMweb](#orthanc--dicomweb)
 - [OHIF Viewer Integration](#ohif-viewer-integration)
 - [Desktop Client (Windows)](#desktop-client-windows)
+- [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md)
+- [Production Checklist](docs/PRODUCTION_CHECKLIST.md)
 - [Synthetic Data Policy](#synthetic-data-policy)
 - [Authentication](#authentication)
 - [API Endpoints](#api-endpoints)
@@ -35,54 +37,22 @@ analytics, and HIPAA-aligned audit logging.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Frontend (Next.js)                          │
-│  React 18 · Tailwind CSS · Zustand · TanStack React Query           │
-│  Worklist · Reading Room · Reports · Analytics · Admin               │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │  REST (JSON)
-┌──────────────────────────────▼──────────────────────────────────────┐
-│                         Backend (NestJS)                             │
-│  Prisma ORM · Validation Pipes · Audit Interceptor                  │
-│  Studies · Worklist · Reports · Users · Hospitals · Analytics · AI   │
-└──┬──────────┬──────────┬──────────┬──────────┬──────────┬──────────┘
-   │          │          │          │          │          │
-   ▼          ▼          ▼          ▼          ▼          ▼
-┌──────┐ ┌────────┐ ┌────────┐ ┌─────────┐ ┌────────┐ ┌──────┐
-│Postgr│ │Orthanc │ │ Redis  │ │RabbitMQ │ │Keycloak│ │MinIO │
-│SQL 16│ │DICOMweb│ │ Cache  │ │Messaging│ │  OIDC  │ │  S3  │
-│      │ │ WADO/  │ │        │ │         │ │        │ │      │
-│      │ │ STOW/  │ │        │ │         │ │        │ │      │
-│      │ │ QIDO   │ │        │ │         │ │        │ │      │
-└──────┘ └────────┘ └────────┘ └─────────┘ └────────┘ └──────┘
-```
-
 ```mermaid
 graph LR
-    FE["Next.js Frontend<br/>Port 3000"]
-    API["NestJS API<br/>Port 4000"]
-    PG["PostgreSQL 16<br/>Port 5432"]
-    ORTH["Orthanc PACS<br/>Port 8042"]
-    REDIS["Redis 7<br/>Port 6379"]
-    RMQ["RabbitMQ 3<br/>Port 5672 / 15672"]
-    KC["Keycloak 24<br/>Port 8180"]
-    MINIO["MinIO<br/>Port 9000 / 9001"]
-    OHIF["OHIF Viewer<br/>Port 3001"]
-
-    FE -->|"REST API"| API
-    FE -->|"DICOMweb (WADO-RS)"| ORTH
-    FE -->|"OIDC Auth"| KC
-    FE -->|"OHIF Viewer"| OHIF
-    API -->|"Prisma ORM"| PG
-    API -->|"DICOMweb Proxy"| ORTH
-    API -->|"Session / Cache"| REDIS
-    API -->|"Event Bus"| RMQ
-    API -->|"OIDC Token Verif."| KC
-    API -->|"Object Storage"| MINIO
-    OHIF -->|"DICOMweb"| ORTH
+  Browser["Web browser"] -->|"HTTPS"| Web["Next.js deployment"]
+  Desktop["Tauri Windows app"] -->|"HTTPS, same-origin session"| Web
+  Web -->|"/api proxy"| API["NestJS API"]
+  Web -->|"/ohif proxy"| OHIF["OHIF viewer"]
+  OHIF -->|"same-origin /api/dicom-web"| Web
+  API --> PG[("PostgreSQL")]
+  API --> Orthanc["Orthanc / DICOMweb"]
+  Modality["Authorized modality network"] -->|"private DICOM C-STORE"| Orthanc
 ```
 
+
+Web and desktop use the same authenticated Next.js origin. The browser never
+connects directly to PostgreSQL or Orthanc; OHIF DICOMweb requests pass through
+the NestJS authorization proxy. See the [production topology](docs/PRODUCTION_DEPLOYMENT.md).
 ---
 
 ## Technology Stack
@@ -98,10 +68,8 @@ graph LR
 | **PACS**       | Orthanc (jodogne/orthanc-plugins), DICOMweb        |
 | **Viewer**      | OHIF Viewer (standalone)                           |
 | **Desktop**     | Tauri 2 (Rust), WebView2, NSIS installer           |
-| **Cache**      | Redis 7 (Alpine)                                   |
-| **Messaging**  | RabbitMQ 3 (Management, Alpine)                    |
-| **Auth**       | Keycloak 24 (OpenID Connect / OIDC)                |
-| **Object S3**  | MinIO                                              |
+| **Auth**       | NestJS guards with an httpOnly session cookie      |
+| **Local infrastructure** | PostgreSQL, Orthanc, OHIF; see [infra runbook](infra/README.md) |
 | **Monorepo**   | pnpm 9+ workspaces                                 |
 | **Infra**      | Docker Compose                                     |
 
@@ -129,7 +97,7 @@ axis-pacs/
 │   │   │   │   ├── admin/            # RoutingRuleBuilder, AdminTabs, RoleBadge
 │   │   │   │   ├── hospital/         # HospitalStudyTimeline, StudyPipeline
 │   │   │   │   ├── layout/           # AppShell, NavigationRail, TopBar
-│   │   │   │   ├── reading/          # OHIF placeholder, ReportPanel, SignOff
+│   │   │   │   ├── reading/          # OHIF viewer, report panel, sign-off
 │   │   │   │   ├── report/           # ReportEditor, VersionHistory, CriticalFinding
 │   │   │   │   └── ui/               # AcuityPulse, Badge, FilterBar, Skeleton
 │   │   │   └── lib/
@@ -204,7 +172,7 @@ axis-pacs/
 | Node.js  | 20+             | `node --version`  |
 | pnpm     | 9+              | `pnpm --version`  |
 | Docker   | 24+             | `docker --version`|
-| Docker Compose | v2+       | `docker compose version` |
+| Docker Compose | v2.17+    | `docker compose version` |
 
 ### 1. Clone and Install
 
@@ -220,17 +188,18 @@ pnpm install
 cp .env.example .env
 ```
 
-Review and edit `.env` as needed. The defaults work with the Docker Compose
-services out of the box.
+Replace the PostgreSQL password placeholder and keep it in sync with
+`DATABASE_URL`. `.env.example` contains no deployable secrets.
 
 ### 3. Start Infrastructure
 
 ```bash
-docker compose up -d
+docker compose config --quiet
+docker compose up -d --wait postgres orthanc ohif
 ```
 
-This starts PostgreSQL, Redis, RabbitMQ, Orthanc, Keycloak, and MinIO.
-Verify all services are healthy:
+This starts only the application dependencies and preserves their named data
+volumes. Verify service health:
 
 ```bash
 docker compose ps
@@ -242,8 +211,8 @@ docker compose ps
 # Generate the Prisma client
 pnpm db:generate
 
-# Run migrations to create the schema
-pnpm db:migrate
+# Apply checked-in migrations without creating new migrations
+pnpm db:migrate:deploy
 
 # Seed the database with synthetic data
 pnpm db:seed
@@ -280,77 +249,41 @@ The frontend is available at **http://localhost:3000** and the API at
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and adjust as needed.
+`.env.example` is development-only. Staging and production settings belong in
+per-environment deployment configuration and secret stores. See the
+[environment matrix](docs/PRODUCTION_DEPLOYMENT.md#environment-matrix).
 
-| Variable                   | Default                                              | Description                             |
-| -------------------------- | ---------------------------------------------------- | --------------------------------------- |
-| `NEXT_PUBLIC_APP_NAME`     | `Axis`                                               | Application display name                |
-| `NEXT_PUBLIC_APP_URL`      | `http://localhost:3000`                               | Frontend base URL                       |
-| `NODE_ENV`                 | `development`                                        | Environment mode                        |
-| `NEXT_PUBLIC_API_URL`      | `http://localhost:4000/api`                           | API base URL (browser)                  |
-| `API_PORT`                 | `4000`                                               | NestJS listen port                      |
-| `DATABASE_URL`             | `postgresql://axis:axis_dev@localhost:5432/axis_pacs` | PostgreSQL connection string            |
-| `NEXT_PUBLICORTHANC_URL`   | `http://localhost:8042`                               | Orthanc URL (browser, public)           |
-| `ORTHANC_URL`              | `http://localhost:8042`                               | Orthanc URL (server-side)               |
-| `DICOMweb_URL`             | `http://localhost:8042/dicom-web`                     | DICOMweb base URL                       |
-| `ORTHANC_USERNAME`         | `orthanc`                                            | Orthanc HTTP auth username              |
-| `ORTHANC_PASSWORD`         | `orthanc`                                            | Orthanc HTTP auth password              |
-| `NEXT_PUBLIC_OHIF_URL`     | `http://localhost:3001`                               | OHIF Viewer URL (browser)               |
-| `OHIF_URL`                 | `http://localhost:3001`                               | OHIF Viewer URL (server-side)           |
-| `KEYCLOAK_URL`             | `http://localhost:8180`                               | Keycloak base URL                       |
-| `KEYCLOAK_REALM`           | `axis`                                               | Keycloak realm name                     |
-| `KEYCLOAK_CLIENT_ID`       | `axis-web`                                           | Keycloak client ID                      |
-| `KEYCLOAK_CLIENT_SECRET`   | `change-me-in-production`                            | Keycloak client secret                  |
-| `OIDC_ISSUER`              | `http://localhost:8180/realms/axis`                  | OIDC issuer URL                         |
-| `OIDC_CLIENT_ID`           | `axis-web`                                           | OIDC client ID                          |
-| `OIDC_CLIENT_SECRET`       | `change-me-in-production`                            | OIDC client secret                      |
-| `REDIS_URL`                | `redis://localhost:6379`                              | Redis connection URL                    |
-| `RABBITMQ_URL`             | `amqp://axis:axis_dev@localhost:5672`                 | RabbitMQ AMQP URL                       |
-| `MINIO_ENDPOINT`           | `localhost`                                           | MinIO endpoint hostname                 |
-| `MINIO_PORT`               | `9000`                                               | MinIO API port                          |
-| `MINIO_ACCESS_KEY`         | `minioadmin`                                         | MinIO root user                         |
-| `MINIO_SECRET_KEY`         | `minioadmin`                                         | MinIO root password                     |
-| `MINIO_BUCKET`             | `axis-dicom`                                         | Default MinIO bucket name               |
-| `AUTH_SECRET`              | `change-me-generate-a-real-secret`                   | Application auth secret                 |
-| `SESSION_EXPIRY`           | `3600`                                               | Session TTL in seconds                  |
-| `AXIS_DESKTOP_SERVER_URL`  | _(unset)_                                            | Desktop deployment origin (see below)   |
-| `NEXT_PUBLIC_DESKTOP_API_URL` | _(unset)_                                        | Escape hatch only — leave empty         |
+| Variable | Development | Production handling |
+| --- | --- | --- |
+| `AXIS_ENV` / `NODE_ENV` | `development` | `staging` or `production`, with `NODE_ENV=production`. |
+| `NEXT_PUBLIC_APP_URL` | `http://localhost:3000` | Public HTTPS web origin. |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:4000/api` | Next server rewrite target; no credentials; configured per build. |
+| `OHIF_URL` | `http://localhost:3001` | Private OHIF upstream for the Next rewrite. |
+| `PORT` / `API_PORT` | `4000` | NestJS listener port. |
+| `DATABASE_URL` | Local development DSN | Private secret-managed PostgreSQL connection. |
+| `AUTH_SECRET` | Empty; generated per process | Unique random secret from a secret manager; never exposed to the frontend. |
+| `AXIS_APP_VERSION` | pnpm package version | Root release SemVer; required for staging/production API logs. |
+| `CORS_ORIGIN` | `http://localhost:3000` | Exact public origin allow-list. |
+| `ORTHANC_URL` | `http://localhost:8042` | Private API-to-Orthanc service URL. |
+| `ORTHANC_USERNAME` / `ORTHANC_PASSWORD` | Development credentials | Secret-managed API credentials. |
+| `TRUST_PROXY` | Unset | Actual proxy hop count when deployed behind ingress. |
+| `AXIS_DESKTOP_SERVER_URL` | Loopback | Optional installed-client HTTPS origin; `desktop.json` is preferred. |
+| `NEXT_PUBLIC_DESKTOP_API_URL` | Empty | Keep empty so both clients use same-origin `/api`. |
+
+Version and environment browser values are generated from the root version and
+`AXIS_ENV`. The current runtime derives DICOMweb from `ORTHANC_URL`; the
+template's legacy `DICOMWEB_URL` and `NEXT_PUBLIC_OHIF_URL` are not part of the
+active PACS request path.
 
 ---
 
 ## Docker Services
 
-All services are defined in `docker-compose.yml` and can be started with
-`docker compose up -d`.
-
-| Service      | Image                                    | Ports                      | Purpose                                  |
-| ------------ | ---------------------------------------- | -------------------------- | ---------------------------------------- |
-| **postgres** | `postgres:16-alpine`                     | `5432`                     | Primary relational database              |
-| **redis**    | `redis:7-alpine`                         | `6379`                     | Session cache, rate limiting, pub/sub    |
-| **rabbitmq** | `rabbitmq:3-management-alpine`           | `5672`, `15672` (console)  | Async event messaging / job queues       |
-| **orthanc**  | `jodogne/orthanc-plugins:latest`         | `8042` (HTTP), `4242` (DICOM) | DICOM archive & DICOMweb server      |
-| **keycloak** | `quay.io/keycloak/keycloak:24.0`        | `8180`                     | OpenID Connect identity provider         |
-| **minio**    | `minio/minio:latest`                     | `9000` (API), `9001` (console) | S3-compatible object storage         |
-
-### Service URLs (Development)
-
-| Service       | URL                                    |
-| ------------- | -------------------------------------- |
-| Frontend      | http://localhost:3000                   |
-| API           | http://localhost:4000/api               |
-| Orthanc       | http://localhost:8042                   |
-| Keycloak      | http://localhost:8180/auth              |
-| MinIO Console | http://localhost:9001                   |
-| RabbitMQ Mgmt | http://localhost:15672                  |
-
-### Volumes
-
-Persistent data is stored in named Docker volumes:
-
-- `postgres_data` — PostgreSQL data files
-- `orthanc_data` — Orthanc DICOM database
-- `keycloak_data` — Keycloak realm/user data
-- `minio_data` — MinIO object storage
+The local stack runs PostgreSQL, Orthanc, and OHIF. Ports for PostgreSQL,
+Orthanc HTTP, and OHIF bind to loopback; DICOM C-STORE remains on port 4242.
+PostgreSQL and Orthanc use persistent named volumes. See the
+[infrastructure runbook](infra/README.md) for environment variables, health
+checks, troubleshooting, start/stop commands, and omitted-service rationale.
 
 ---
 
@@ -521,7 +454,7 @@ First valid source wins:
 | # | Source                                     | Scope                      |
 | - | ------------------------------------------ | -------------------------- |
 | 1 | `AXIS_DESKTOP_SERVER_URL` env var           | read at launch             |
-| 2 | `desktop.json` in the app config dir        | per-machine — **use this** |
+| 2 | `desktop.json` in the per-user app config dir | per-user — **use this** |
 | 3 | `AXIS_DESKTOP_SERVER_URL` at compile time  | baked into the binary      |
 | 4 | `http://localhost:3000`                    | debug builds only          |
 
@@ -543,12 +476,12 @@ strings, fragments and embedded credentials are rejected.
 
 ### Native surface
 
-`capabilities/default.json` grants an **empty** permission list and declares no
-`remote.urls`, so the deployment the user signs in to has **zero** access to
-Tauri APIs — no filesystem, no shell, no clipboard, no commands. The navigation
-allow-list restricts the window to the deployment origin; off-origin links open
-in the system browser. A second launch focuses the existing window instead of
-opening a second one.
+`capabilities/default.json` grants no native access to the bundled splash. The
+remote deployment capability is limited to the `main` window and the navigation
+allow-list pins it to the configured origin. Only explicit picker, notification,
+updater, OS, print, window, and scoped file-read operations are available. The
+Rust-created secondary viewer receives no remote Tauri capability. Off-origin
+links open in the system browser; a second launch focuses the existing window.
 
 No clinical data is written to the machine: there is no SQLite, no local cache
 and no PHI on disk outside the OS-encrypted WebView2 cookie store.
@@ -590,28 +523,10 @@ real patient data. Axis follows these conventions:
 
 ## Authentication
 
-Axis uses [Keycloak](https://www.keycloak.org/) as its OpenID Connect (OIDC)
-identity provider.
-
-### Configuration
-
-| Setting          | Value                                    |
-| ---------------- | ---------------------------------------- |
-| Keycloak URL     | `http://localhost:8180/auth`             |
-| Realm            | `axis`                                   |
-| Client ID        | `axis-web`                               |
-| Redirect URI     | `http://localhost:3000`                  |
-| Scopes           | `openid`, `profile`, `email`             |
-
-### Initial Keycloak Setup
-
-1. Access the Keycloak Admin Console at `http://localhost:8180/auth/admin`
-   - Username: `admin`
-   - Password: `admin`
-2. Create the `axis` realm
-3. Register the `axis-web` client with OIDC protocol
-4. Configure redirect URIs for `http://localhost:3000/*`
-5. Create initial users and assign roles matching the database schema
+The active authentication implementation is the NestJS session system. It
+issues an `axis_session` httpOnly cookie and enforces database-backed users and
+roles through API guards. Keycloak is not wired into the runtime and is not
+started by Compose; an OIDC migration requires a separately verified plan.
 
 ### User Roles
 
@@ -696,43 +611,12 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 
 ## Production Considerations
 
-### Security
-
-- [ ] Replace all default credentials and secrets in `.env`
-- [ ] Enable Orthanc authentication (`AuthenticationEnabled: true`)
-- [ ] Configure Keycloak with TLS and production realm settings
-- [ ] Set `AUTH_SECRET` to a cryptographically random value (min 32 chars)
-- [ ] Enable HTTPS behind a reverse proxy (nginx, Caddy, Traefik)
-- [ ] Restrict CORS origins to your production domain
-- [ ] Implement rate limiting on API endpoints
-- [ ] Enable PostgreSQL SSL connections
-- [ ] Rotate MinIO access keys
-
-### Infrastructure
-
-- [ ] Use a managed PostgreSQL service (RDS, Cloud SQL, Azure Database)
-- [ ] Deploy Redis with persistence and authentication enabled
-- [ ] Use a managed RabbitMQ service or deploy with clustering
-- [ ] Configure Orthanc with TLS and proper DICOM TLS for receiving
-- [ ] Set up MinIO with erasure coding for production durability
-- [ ] Configure Docker Compose health checks for orchestrator integration
-- [ ] Set up log aggregation (ELK, Datadog, CloudWatch)
-
-### Performance
-
-- [ ] Enable Next.js ISR/caching for static-heavy pages
-- [ ] Configure connection pooling for PostgreSQL (PgBouncer)
-- [ ] Add Redis caching for frequently accessed study metadata
-- [ ] Use CDN for Orthanc WADO-RS image delivery
-- [ ] Optimize Orthanc database settings for expected study volume
-
-### Compliance
-
-- [ ] Ensure audit logging captures all PHI access events
-- [ ] Configure report delivery encryption in transit
-- [ ] Implement automatic session timeout enforcement
-- [ ] Set up data retention policies for audit logs
-- [ ] Document BAA requirements for cloud infrastructure providers
+Follow the [production deployment guide](docs/PRODUCTION_DEPLOYMENT.md) and
+[release checklist](docs/PRODUCTION_CHECKLIST.md). In brief: keep API/data
+services private, use HTTPS at the single public PACS origin, use separate
+staging and production secrets/configuration, rehearse PostgreSQL and Orthanc
+restores, and do not distribute an unsigned installer or enable updates without
+a signed HTTPS feed.
 
 ---
 
@@ -740,17 +624,17 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 
 | Area               | Status                                                                 |
 | ------------------ | ---------------------------------------------------------------------- |
-| **OHIF Viewer**    | Placeholder component only (`OHIFViewerPlaceholder`). Full iframe/embed integration is pending. |
+| **OHIF Viewer**    | Integrated through the same-origin `/ohif` proxy; DICOMweb still passes through the authorized NestJS proxy. |
 | **Mock Data**      | All data is seeded synthetic data prefixed with `AX-SYN`. No real clinical data is included. |
-| **Authentication** | Keycloak is provisioned but full OIDC middleware (guards, token verification, session management) is not yet wired into the NestJS API or Next.js frontend. |
-| **Authorization**  | Role-based access control is defined in the schema but route guards are not yet implemented. |
+| **Authentication** | The active runtime uses the NestJS httpOnly session cookie. Keycloak is not integrated or started by Compose. |
+| **Authorization**  | API guards enforce role, hospital, and radiologist assignment scope. Production acceptance must still verify each role against the deployed data. |
 | **AI Integration** | AI job model and endpoints exist as placeholders. No actual ML inference pipelines are connected. |
 | **Report Delivery**| DeliveryAttempt model exists. Actual delivery mechanisms (HL7, FHIR, email, fax) are not implemented. |
 | **Routing Rules**  | RoutingRule model and UI (RoutingRuleBuilder) exist. The rule engine that evaluates conditions and triggers actions is not yet built. |
 | **Real-time Updates** | WebSocket/SSE support for live worklist updates is not implemented. |
-| **Testing**        | Test infrastructure (Vitest) is configured but comprehensive test coverage is not yet in place. |
-| **Desktop client** | Windows x64 foundation only. The frontend is not bundled (the window loads a deployment — see [Desktop Client](#desktop-client-windows)), so the client needs network access and cannot start a session with the API unreachable. No code signing, no auto-update, and the installer has not been built end-to-end yet. |
-| **CI/CD**          | No GitHub Actions or pipeline configuration exists yet. |
+| **Testing**        | Web/API/Rust tests exist; release acceptance and the full web/API gates must run in the production build environment. |
+| **Desktop client** | Windows x64 NSIS packaging is configured. The frontend is remote by design and requires a reachable HTTPS deployment; signing and update feeds remain operator-configured. |
+| **CI/CD**          | No CI workflow exists. Use the documented version check and manual release process until a provider is selected. |
 
 ---
 
@@ -761,7 +645,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 #### Completed
 
 - [x] pnpm monorepo setup (`apps/web`, `apps/api`, `apps/desktop`, `packages/types`)
-- [x] Docker Compose infrastructure (PostgreSQL, Redis, RabbitMQ, Orthanc, Keycloak, MinIO)
+- [x] Docker Compose infrastructure (PostgreSQL, Orthanc, OHIF)
 - [x] Orthanc DICOMweb configuration (QIDO-RS, WADO-RS, STOW-RS)
 - [x] Prisma schema with 14 models, enums, and indexes
 - [x] Database seed script with synthetic data (`AX-SYN` prefixed)
@@ -771,7 +655,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 - [x] Next.js 14 App Router frontend with Tailwind CSS
 - [x] Dashboard layout: NavigationRail, TopBar, AppShell
 - [x] Worklist page with filters (status, priority, modality, hospital)
-- [x] Reading room with OHIF placeholder, report panel, sign-off controls
+- [x] Reading room with OHIF viewer, report panel, and sign-off controls
 - [x] Report editor with version history, critical finding toggle
 - [x] Hospital management with study timeline and pipeline visualization
 - [x] Analytics dashboard (overview metrics, TAT, hospital performance)
@@ -779,24 +663,21 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 - [x] Admin settings pages (routing rules, AI, users, audit config)
 - [x] Shared TypeScript types package (`@axis/types`)
 - [x] Zustand global state + TanStack React Query data fetching
-- [x] Tauri 2 desktop foundation (`apps/desktop`): Windows x64 NSIS target, single-instance lock, deployment URL resolution, navigation allow-list, zero native capabilities for remote content
+- [x] Tauri 2 desktop foundation (`apps/desktop`): Windows x64 NSIS target, single-instance lock, deployment URL resolution, main-window-scoped native capabilities, and same-origin viewer window
+- [x] Server-side role, hospital, and radiologist authorization with cookie-based sessions
 - [x] Platform abstraction (`apps/web/src/lib/platform.ts`) with unit tests, so web and desktop share one frontend with no duplicated URL logic
 
 #### In Progress
 
-- [ ] Keycloak OIDC integration (guards, token verification)
-- [ ] OHIF viewer full embedding
 - [ ] Real-time worklist updates (WebSocket/SSE)
+- [ ] Production Authenticode certificate and signed update feed provisioning
 
 #### Planned
 
-- [ ] Route-level authorization guards
 - [ ] AI inference pipeline integration
 - [ ] Report delivery mechanisms (HL7/FHIR)
 - [ ] Automated routing rule engine
-- [ ] CI/CD pipeline (GitHub Actions)
 - [ ] Comprehensive test suite
-- [ ] Production deployment guides
 
 ---
 

@@ -125,7 +125,7 @@ Run the schema migration (requires the test DB too, for e2e):
 cd apps/api
 pnpm db:generate
 pnpm db:migrate
-DATABASE_URL="postgresql://axis:axis_dev@localhost:5432/axis_pacs_test" npx prisma migrate deploy
+DATABASE_URL="postgresql://axis:${POSTGRES_PASSWORD}@localhost:5432/axis_pacs_test" npx prisma migrate deploy
 ```
 
 ---

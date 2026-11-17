@@ -5,9 +5,10 @@ import {
   Body,
   Param,
   Query,
+  Req,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service.js';
 import {
@@ -38,8 +39,9 @@ export class AuthController {
   login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) response: Response,
+    @Req() request: Request,
   ) {
-    return this.authService.login(dto, response);
+    return this.authService.login(dto, response, request);
   }
 
   @Public()

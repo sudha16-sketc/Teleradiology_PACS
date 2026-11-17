@@ -147,6 +147,18 @@ describe('Phase 7 -- audit server-side filters', () => {
       expect(row.actorId).toBe(adminUser.id);
     }
   });
+
+  it('P7-AUDIT-4: replaces a non-opaque incoming request ID', async () => {
+    const response = await adminAgent
+      .get('/api/audit')
+      .set('x-request-id', 'PatientJaneDoe-123456')
+      .expect(200);
+
+    expect(response.headers['x-request-id']).not.toBe('PatientJaneDoe-123456');
+    expect(response.headers['x-request-id']).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+  });
 });
 
 describe('Phase 7 -- SLA configuration & overview', () => {

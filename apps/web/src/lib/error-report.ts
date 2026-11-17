@@ -24,6 +24,7 @@
  */
 
 import type { ApiFailure, ApiFailureKind } from "@/lib/api-error";
+import { APP_ENVIRONMENT, APP_VERSION } from "@/lib/version";
 
 /** Longest retained stack, in characters. A full WebView2 stack can be huge. */
 const MAX_STACK_CHARS = 4000;
@@ -41,6 +42,8 @@ export interface ErrorReport {
   appVersion: string;
   /** `web` or `desktop`. */
   client: "web" | "desktop";
+  /** Deployment environment label; never a secret. */
+  environment: string;
   /** OS name and version, e.g. `windows 10.0.19045`. Empty on the web client. */
   os: string;
   /** Coarse failure classification, not a raw message. */
@@ -147,9 +150,15 @@ export function newReferenceId(now: Date = new Date()): string {
 export interface RuntimeInfo {
   appVersion?: string;
   os?: string;
+  environment?: string;
 }
 
-let runtimeInfo: RuntimeInfo = {};
+const DEFAULT_RUNTIME_INFO: RuntimeInfo = {
+  appVersion: APP_VERSION,
+  environment: APP_ENVIRONMENT,
+};
+
+let runtimeInfo: RuntimeInfo = { ...DEFAULT_RUNTIME_INFO };
 const reports: ErrorReport[] = [];
 
 /** Supplied once at startup by the desktop bridge. */
@@ -159,7 +168,7 @@ export function setRuntimeInfo(info: RuntimeInfo): void {
 
 /** Test seam. */
 export function resetErrorReportingForTests(): void {
-  runtimeInfo = {};
+  runtimeInfo = { ...DEFAULT_RUNTIME_INFO };
   reports.length = 0;
 }
 
@@ -223,6 +232,7 @@ export function captureError(input: CaptureInput): ErrorReport {
     timestamp: new Date().toISOString(),
     appVersion: runtimeInfo.appVersion ?? "unknown",
     client: runtimeInfo.os ? "desktop" : "web",
+    environment: runtimeInfo.environment ?? "unknown",
     os: runtimeInfo.os ?? "",
     kind: failure?.kind ?? "unknown",
     errorType: oneLine(errorType, 80),
@@ -248,6 +258,7 @@ export function captureError(input: CaptureInput): ErrorReport {
         timestamp: report.timestamp,
         appVersion: report.appVersion,
         client: report.client,
+        environment: report.environment,
         os: report.os,
         kind: report.kind,
         errorType: report.errorType,
@@ -255,6 +266,7 @@ export function captureError(input: CaptureInput): ErrorReport {
         correlationId: report.correlationId,
         route: report.route,
         context: report.context,
+        stack: report.stack,
       })}`,
     );
   }
@@ -277,6 +289,7 @@ export function technicalDetails(
     `Reference: ${report.referenceId}`,
     `Time: ${report.timestamp}`,
     `Client: ${report.client}${report.appVersion !== "unknown" ? ` ${report.appVersion}` : ""}`,
+    `Environment: ${report.environment}`,
     ...(report.os ? [`OS: ${report.os}`] : []),
     `Type: ${report.errorType} (${report.kind})`,
     `Message: ${report.message}`,

@@ -9,6 +9,7 @@ import {
   currentUpdateState,
   installAvailableUpdate,
   resetUpdateStateForTests,
+  subscribeToUpdates,
 } from "./update";
 
 afterEach(() => {
@@ -34,6 +35,29 @@ describe("desktop updater foundation", () => {
     updater.check.mockResolvedValueOnce(null);
     await checkForUpdates();
     expect(currentUpdateState().status).toBe("upToDate");
+  });
+
+  it("reports cumulative download progress before installation", async () => {
+    const observed: ReturnType<typeof currentUpdateState>[] = [];
+    const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
+      onEvent?.({ event: "Started", data: { contentLength: 100 } });
+      onEvent?.({ event: "Progress", data: { chunkLength: 40 } });
+      onEvent?.({ event: "Progress", data: { chunkLength: 60 } });
+    });
+    updater.check.mockResolvedValue({ version: "0.2.0", download, install: vi.fn() });
+
+    const stop = subscribeToUpdates((state) => {
+      observed.push(state);
+    });
+
+    await checkForUpdates();
+    await installAvailableUpdate();
+    stop();
+
+    expect(observed.filter((state) => state.status === "downloading").map((state) => state.progress))
+      .toContain(40);
+    expect(observed.filter((state) => state.status === "downloading").map((state) => state.progress))
+      .toContain(100);
   });
 
   it("surfaces update failures without exposing the underlying error", async () => {

@@ -104,15 +104,29 @@ async function bootstrap() {
   // PrismaService.onModuleDestroy close the database pool cleanly.
   app.enableShutdownHooks();
 
-  const port = Number(process.env.PORT) || 4000;
+  const port = Number(process.env.PORT || process.env.API_PORT) || 4000;
   await app.listen(port);
-  logger.info('axis_api_started', { port, env: process.env.NODE_ENV ?? 'development' });
+  logger.info('axis_api_started', {
+    port,
+    env: process.env.AXIS_ENV ?? process.env.NODE_ENV ?? 'development',
+  });
 }
 
 bootstrap().catch((err) => {
+  const errorType = err instanceof Error ? err.constructor.name : typeof err;
+  const stack =
+    err instanceof Error && err.stack
+      ? err.stack
+          .split(/\r?\n/)
+          .filter((line) => /^\s*at\s/.test(line) || /^[^\s]+@/.test(line))
+          .slice(0, 40)
+          .join('\n')
+          .slice(0, 4000)
+      : undefined;
   logger.error('axis_api_bootstrap_failed', {
-    message: (err as Error)?.message,
-    stack: (err as Error)?.stack,
+    env: process.env.AXIS_ENV ?? process.env.NODE_ENV ?? 'development',
+    errorType,
+    stack,
   });
   process.exit(1);
 });

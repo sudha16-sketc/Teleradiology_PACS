@@ -11,15 +11,16 @@
 //   tauri build --target x86_64-pc-windows-msvc --bundles nsis \
 //     --config src-tauri/tauri.updater.conf.json
 //
-// Both values below are operator-owned and must come from the build system,
-// never from this repository:
+// The placeholder values below are operator-owned. Tauri does not substitute
+// custom AXIS_* environment variables into this file; CI must generate a
+// temporary tauri.updater.conf.json overlay with the real public key and
+// endpoint before invoking `tauri build --config ...`.
 //
-//   pubkey     the minisign PUBLIC key half of the code-signing key pair used
-//              to sign release artifacts and the update manifest. The private
-//              key must live in the CI secret store and must never reach a
-//              build machine or this repository. A release is only accepted if
-//              its manifest verifies against this key, so an attacker who can
-//              tamper with the update server still cannot ship a binary.
+//   pubkey     the minisign PUBLIC key used to verify Tauri updater artifacts.
+//              This is separate from Windows Authenticode signing. The
+//              minisign private key must live in the CI secret store and must
+//              never reach this repository or a developer workstation. Tauri
+//              verifies each downloaded update against this public key.
 //
 //   endpoints  the HTTPS URL of the update manifest, including the literal
 //              {{current_version}} placeholder that Tauri substitutes. It MUST
@@ -27,14 +28,16 @@
 //              serve an unsigned manifest, and the minisign check is the only
 //              thing standing between that and arbitrary code execution.
 //
-// Both are also read from the environment at build time so CI can inject them
-// without writing this file to disk:
-//
-//   AXIS_UPDATER_PUBKEY      -> plugins.updater.pubkey
-//   AXIS_UPDATER_ENDPOINTS   -> plugins.updater.endpoints
+// Tauri reads the separate private artifact-signing key from
+// TAURI_SIGNING_PRIVATE_KEY (and the optional password from
+// TAURI_SIGNING_PRIVATE_KEY_PASSWORD) at build time. Those values must be CI
+// secrets and never appear in this overlay.
 //
 // See docs/DESKTOP.md ("Automatic updates") for the full release checklist.
 {
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
   "plugins": {
     "updater": {
       "active": true,

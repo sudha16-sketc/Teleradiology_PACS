@@ -70,6 +70,19 @@ export type {
   ReportVersion,
 } from './report.js';
 
+export {
+  buildReportRichContent,
+  extractReportRichFields,
+  isReportRichContent,
+  REPORT_RICH_SECTIONS,
+} from './report-rich-content.js';
+export type {
+  ReportRichContent,
+  ReportRichFields,
+  ReportRichSectionKey,
+  ReportRichValue,
+} from './report-rich-content.js';
+
 export type {
   RoutingAction,
   RoutingCondition,

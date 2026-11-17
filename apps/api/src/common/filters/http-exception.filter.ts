@@ -8,8 +8,21 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import type { ApiError } from '@axis/types';
-import { getCorrelationId } from '../observability/correlation.middleware.js';
+import {
+  getCorrelationId,
+  safeRoutePath,
+} from '../observability/correlation.middleware.js';
 import { log } from '../observability/structured-logger.js';
+
+function safeStackFrames(exception: unknown): string | undefined {
+  if (!(exception instanceof Error) || !exception.stack) return undefined;
+  const frames = exception.stack
+    .split(/\r?\n/)
+    .filter((line) => /^\s*at\s/.test(line) || /^[^\s]+@/.test(line))
+    .slice(0, 40)
+    .join('\n');
+  return frames ? frames.slice(0, 4000) : undefined;
+}
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -41,10 +54,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
       log('error', 'unhandled_exception', {
         correlationId,
         method: request?.method,
-        path: request?.url,
+        path: safeRoutePath(request),
         actorId: (request as { user?: { id?: string } })?.user?.id,
-        error: (exception as Error)?.message,
-        stack: (exception as Error)?.stack,
+        errorType:
+          exception instanceof Error
+            ? exception.constructor.name
+            : typeof exception,
+        stack: safeStackFrames(exception),
       });
     }
 
@@ -53,7 +69,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message,
       error,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path: safeRoutePath(request),
     };
     if (correlationId) errorResponse.correlationId = correlationId;
 
@@ -61,9 +77,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
     log(status >= 500 ? 'error' : 'warn', 'http_error', {
       correlationId,
       method: request?.method,
-      path: request?.url,
+      path: safeRoutePath(request),
       status,
-      message,
+      errorType:
+        exception instanceof Error
+          ? exception.constructor.name
+          : typeof exception,
       actorId: (request as { user?: { id?: string } })?.user?.id,
     });
 
