@@ -320,7 +320,8 @@ Copy `.env.example` to `.env` and adjust as needed.
 Configure these non-secret environment variables in the Vercel project for each
 deployment environment:
 
-- `NEXT_PUBLIC_API_URL`: the deployed API base URL, including `/api`.
+- `NEXT_PUBLIC_API_URL`: the deployed API origin or API base URL ending in
+  `/api`; an origin-only value is normalized to `/api` by the rewrite.
 - `OHIF_URL`: the deployed OHIF service origin.
 
 Both are read while Next.js builds the rewrites. Vercel builds fail if either is

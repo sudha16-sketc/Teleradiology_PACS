@@ -90,11 +90,32 @@ function resolveUpstream(name, fallback) {
   return { url: parsed.toString().replace(/\/+$/, ""), source: name };
 }
 
+function normalizeApiUpstreamUrl(url) {
+  const parsed = new URL(url);
+  const path = parsed.pathname.replace(/\/+$/, "");
+
+  if (!path || path === "/") {
+    parsed.pathname = "/api";
+  } else if (path !== "/api") {
+    throw new Error(
+      "[axis/web] NEXT_PUBLIC_API_URL must be an API origin or end in /api.",
+    );
+  } else {
+    parsed.pathname = path;
+  }
+
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ["@axis/types"],
   async rewrites() {
-    const apiUrl = resolveUpstream("NEXT_PUBLIC_API_URL", DEV_API_FALLBACK);
+    // Browser calls remain same-origin at /api so the session cookie stays
+    // first-party. Accept either an API origin or an explicit /api base here.
+    const apiUrl = normalizeApiUpstreamUrl(
+      resolveUpstream("NEXT_PUBLIC_API_URL", DEV_API_FALLBACK).url,
+    );
     const ohifUrl = resolveUpstream("OHIF_URL", DEV_OHIF_FALLBACK);
     return [
       {
@@ -120,7 +141,7 @@ const nextConfig = {
       },
       {
         source: "/api/:path*",
-        destination: `${apiUrl.url}/:path*`,
+        destination: `${apiUrl}/:path*`,
       },
     ];
   },
