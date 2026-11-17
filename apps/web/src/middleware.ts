@@ -16,7 +16,7 @@ import { NextResponse, type NextRequest } from "next/server";
  *     authoritative gate once a protected page actually renders.
  */
 const SESSION_COOKIE = "axis_session";
-const PUBLIC_PATHS = ["/login", "/register"];
+const PUBLIC_PATHS = ["/login", "/register", "/documentation"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
