@@ -1,3 +1,15 @@
+// In production the viewer is delivered through the Axis frontend's /ohif
+// rewrite, so the browser origin is also the first-party /api origin carrying
+// the Axis session cookie. Preserve the local API target when browsing the
+// container directly; authenticated DICOM access still requires the /ohif
+// frontend rewrite.
+const apiOrigin =
+  window.location.hostname === 'localhost' &&
+  window.location.port === '3001'
+    ? 'http://localhost:3000'
+    : window.location.origin;
+const dicomWebRoot = `${apiOrigin}/api/dicom-web`;
+
 window.config = {
   routerBasename: '/ohif',
 
@@ -18,11 +30,10 @@ window.config = {
         friendlyName: 'Axis Orthanc',
         name: 'Orthanc',
 
-        // All DICOMweb traffic flows through the Axis API proxy so that the
-        // existing session cookie and RBAC guards protect study access.
-        qidoRoot: 'http://localhost:3000/api/dicom-web',
-        wadoRoot: 'http://localhost:3000/api/dicom-web',
-        wadoUriRoot: 'http://localhost:3000/api/dicom-web/wado',
+        // All DICOMweb traffic flows through the same-origin Axis API proxy so
+        // the existing session cookie and RBAC guards protect study access.
+        qidoRoot: dicomWebRoot,
+        wadoRoot: dicomWebRoot,
 
         qidoSupportsIncludeField: true,
 

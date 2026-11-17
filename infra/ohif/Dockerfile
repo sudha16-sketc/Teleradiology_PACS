@@ -596,3 +596,7 @@ RUN set -eux; \
     grep -q "$needle_public" "$app/index.html"; \
     grep -q "$needle_icon" "$app/manifest.json"; \
     chown -R nginx:nginx "$html"
+
+# Compose bind-mounts this file for local development; standalone deployments
+# (such as Render) need the same application configuration baked into the image.
+COPY app-config.js /usr/share/nginx/html/ohif/app-config.js

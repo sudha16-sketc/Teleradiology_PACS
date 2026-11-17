@@ -468,40 +468,28 @@ curl -X POST http://localhost:8042/dicom-web/stow-rs/studies \
 
 ## OHIF Viewer Integration
 
-Axis integrates with the [OHIF Viewer](https://ohif.org/) for interactive
-DICOM image viewing within the reading room.
+Axis builds OHIF v3.13.0 from `infra/ohif/Dockerfile`. The image rebases the
+viewer assets to `/ohif/`; its `app-config.js` sends QIDO-RS and WADO-RS through
+the Axis API's `/api/dicom-web` proxy. That proxy enforces the signed-in user's
+permissions and forwards to Orthanc using the API's `ORTHANC_URL`.
 
-### Setup
+For production, deploy the Dockerfile as its own Render Web Service and set the
+Vercel web app's `OHIF_URL` to that service's HTTPS origin. The existing
+same-origin Vercel rewrites serve the viewer at `/ohif` and DICOMweb at `/api`,
+so the browser keeps the first-party Axis session cookie. Do not configure the
+viewer to call Orthanc directly or use a localhost URL in production.
 
-The OHIF Viewer runs as a standalone application (default port `3001`).
-Configure its DICOMweb source to point at the Orthanc instance:
+The Render service's own `/ohif/` URL serves the viewer assets, but direct
+access to that service does not provide authenticated DICOM access: the API
+session cookie is scoped to the Axis frontend origin and uses `SameSite=Lax`.
+Open studies through the Axis frontend so its `/ohif` and `/api` rewrites remain
+same-origin. The active viewer configuration uses WADO-RS; no WADO-URI route is
+provided by the Axis DICOMweb proxy.
 
-```bash
-# In your OHIF config (.env or config.json):
-DICOM_WEB_ROOT=http://localhost:8042/dicom-web
-```
-
-### Embedding in the Reading Room
-
-The reading room page (`/reading/[studyUid]`) includes an
-`OHIFViewerPlaceholder` component that will be replaced with a full
-`<iframe>` or modal embed once the OHIF instance is configured. The viewer
-receives the study UID and loads images via DICOMweb WADO-RS.
-
-### Launching OHIF Locally
-
-```bash
-# Using Docker (recommended)
-docker run -d -p 3001:80 \
-  -e DICOM_WEB_ROOT=http://host.docker.internal:8042/dicom-web \
-  ohif/viewer:latest
-
-# Or build from source
-git clone https://github.com/OHIF/Viewers.git
-cd Viewers
-pnpm install
-pnpm run dev
-```
+For local development, Docker Compose exposes OHIF on port `3001`. Use the
+frontend's `http://localhost:3000/ohif` route for authenticated DICOM access;
+the direct `:3001` URL is only a static viewer preview because the session is
+first-party to the frontend origin.
 
 ---
 
