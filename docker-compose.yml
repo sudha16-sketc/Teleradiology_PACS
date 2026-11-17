@@ -85,7 +85,14 @@ services:
       - minio_data:/data
 
   ohif:
-    image: ohif/app:v3.13.0
+    # Built from infra/ohif/Dockerfile, which rebases the viewer onto /ohif/.
+    # The upstream ohif/app image bakes its asset URLs in as root-relative, so
+    # /ohif/ would otherwise load the HTML but 404 on every script, style and
+    # lazily loaded chunk and render a blank viewer.
+    build:
+      context: ./infra/ohif
+      dockerfile: Dockerfile
+    image: axis-ohif:v3.13.0-ohif-prefix
     container_name: axis-ohif
     cap_add:
       - NET_BIND_SERVICE
@@ -94,7 +101,7 @@ services:
     ports:
       - "3001:80"
     volumes:
-      - ./infra/ohif/app-config.js:/usr/share/nginx/html/app-config.js:ro
+      - ./infra/ohif/app-config.js:/usr/share/nginx/html/ohif/app-config.js:ro
     restart: unless-stopped
 
 volumes:

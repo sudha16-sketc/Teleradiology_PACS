@@ -23,6 +23,7 @@ analytics, and HIPAA-aligned audit logging.
 - [Database Schema](#database-schema)
 - [Orthanc & DICOMweb](#orthanc--dicomweb)
 - [OHIF Viewer Integration](#ohif-viewer-integration)
+- [Desktop Client (Windows)](#desktop-client-windows)
 - [Synthetic Data Policy](#synthetic-data-policy)
 - [Authentication](#authentication)
 - [API Endpoints](#api-endpoints)
@@ -95,7 +96,8 @@ graph LR
 | **ORM**        | Prisma 5.15                                        |
 | **Database**   | PostgreSQL 16 (Alpine)                             |
 | **PACS**       | Orthanc (jodogne/orthanc-plugins), DICOMweb        |
-| **Viewer**     | OHIF Viewer (standalone)                           |
+| **Viewer**      | OHIF Viewer (standalone)                           |
+| **Desktop**     | Tauri 2 (Rust), WebView2, NSIS installer           |
 | **Cache**      | Redis 7 (Alpine)                                   |
 | **Messaging**  | RabbitMQ 3 (Management, Alpine)                    |
 | **Auth**       | Keycloak 24 (OpenID Connect / OIDC)                |
@@ -138,31 +140,46 @@ axis-pacs/
 │   │   ├── next.config.mjs
 │   │   └── package.json
 │   │
-│   └── api/                          # NestJS backend
-│       ├── src/
-│       │   ├── main.ts               # Bootstrap, global prefix /api
-│       │   ├── app.module.ts         # Root module
-│       │   ├── prisma/               # PrismaModule, PrismaService
-│       │   ├── studies/              # CRUD, status transitions, series
-│       │   ├── worklist/             # Filtered list, assignment
-│       │   ├── reports/              # Create, sign-off, amend, versioning
-│       │   ├── users/                # User CRUD, role management
-│       │   ├── hospitals/            # Hospital & site listing
-│       │   ├── audit/                # Audit log queries
-│       │   ├── analytics/            # Overview, TAT, hospital performance
-│       │   ├── ai/                   # AI job tracking (placeholder)
-│       │   └── common/
-│       │       ├── filters/          # HttpExceptionFilter
-│       │       └── interceptors/     # AuditInterceptor
-│       ├── prisma/
-│       │   ├── schema.prisma         # Full database schema
-│       │   └── seed.ts               # Synthetic seed data
+│   ├── api/                          # NestJS backend
+│   │   ├── src/
+│   │   │   ├── main.ts               # Bootstrap, global prefix /api
+│   │   │   ├── app.module.ts         # Root module
+│   │   │   ├── prisma/               # PrismaModule, PrismaService
+│   │   │   ├── studies/              # CRUD, status transitions, series
+│   │   │   ├── worklist/             # Filtered list, assignment
+│   │   │   ├── reports/              # Create, sign-off, amend, versioning
+│   │   │   ├── users/                # User CRUD, role management
+│   │   │   ├── hospitals/            # Hospital & site listing
+│   │   │   ├── audit/                # Audit log queries
+│   │   │   ├── analytics/            # Overview, TAT, hospital performance
+│   │   │   ├── ai/                   # AI job tracking (placeholder)
+│   │   │   └── common/
+│   │   │       ├── filters/          # HttpExceptionFilter
+│   │   │       └── interceptors/     # AuditInterceptor
+│   │   ├── prisma/
+│   │   │   ├── schema.prisma         # Full database schema
+│   │   │   └── seed.ts               # Synthetic seed data
+│   │   └── package.json
+│
+│   └── desktop/                      # Tauri 2 Windows client
+│       ├── src-tauri/
+│       │   ├── src/
+│       │   │   ├── main.rs           # Windows entry point
+│       │   │   ├── lib.rs            # Window, navigation policy, plugins
+│       │   │   └── server_url.rs     # Deployment URL resolution (unit tested)
+│       │   ├── splash/index.html     # Shown while connecting / unconfigured
+│       │   ├── capabilities/         # Grants no native access to remote content
+│       │   ├── icons/                # Windows icon set
+│       │   └── tauri.conf.json
 │       └── package.json
 │
 ├── packages/
 │   └── types/                        # Shared TypeScript type definitions
 │       ├── src/                      # Study, Report, User, Worklist, etc.
 │       └── package.json
+│
+├── docs/
+│   └── DESKTOP.md                    # Desktop architecture, config, build
 │
 ├── infra/
 │   └── orthanc/
@@ -253,6 +270,11 @@ The frontend is available at **http://localhost:3000** and the API at
 | `pnpm db:generate` | Generate Prisma client                          |
 | `pnpm db:migrate`  | Run Prisma migrations (dev)                     |
 | `pnpm db:seed`     | Seed database with synthetic data               |
+| `pnpm desktop:dev` | Run the Tauri desktop shell (starts web dev too) |
+| `pnpm desktop:build` | Build the desktop bundle for the host platform |
+| `pnpm desktop:build:win` | Windows x64 release NSIS installer          |
+| `pnpm desktop:build:win:debug` | Windows x64 debug NSIS installer       |
+| `pnpm desktop:icon` | Regenerate the Tauri icon set from `source.svg`|
 
 ---
 
@@ -291,6 +313,8 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `MINIO_BUCKET`             | `axis-dicom`                                         | Default MinIO bucket name               |
 | `AUTH_SECRET`              | `change-me-generate-a-real-secret`                   | Application auth secret                 |
 | `SESSION_EXPIRY`           | `3600`                                               | Session TTL in seconds                  |
+| `AXIS_DESKTOP_SERVER_URL`  | _(unset)_                                            | Desktop deployment origin (see below)   |
+| `NEXT_PUBLIC_DESKTOP_API_URL` | _(unset)_                                        | Escape hatch only — leave empty         |
 
 ---
 
@@ -446,6 +470,88 @@ cd Viewers
 pnpm install
 pnpm run dev
 ```
+
+---
+
+## Desktop Client (Windows)
+
+`apps/desktop` is a [Tauri 2](https://tauri.app) application that opens a native
+WebView2 window against a running Axis deployment. It is a window around the
+existing product — no second backend, no second auth, no offline store. Every
+workflow, authorization decision and clinical data path stays in the NestJS API.
+
+Full documentation: **[docs/DESKTOP.md](docs/DESKTOP.md)**.
+
+### Quick start
+
+```bash
+pnpm install
+pnpm desktop:dev            # starts the web dev server + the desktop window
+pnpm desktop:build:win      # Windows x64 release NSIS installer
+```
+
+Requires Rust >= 1.77.2 and the MSVC build tools on Windows.
+
+### The window loads a remote deployment, and that is deliberate
+
+The frontend is **not** bundled into the executable. Session state is an httpOnly
+`axis_session` cookie issued with `sameSite=lax`, and the API carries no CSRF
+token. A UI bundled into a Tauri app is served from `http://tauri.localhost`,
+which is cross-site with any real API host — browsers refuse to attach a
+`SameSite=Lax` cookie to such a request, so **login would silently fail**. Making
+a bundled build work would require reissuing the cookie as
+`SameSite=None; Secure` or enabling a CORS + CSRF surface, both of which weaken
+the browser client too.
+
+Loading the deployment keeps the client same-origin with the API, so the existing
+cookie, `SameSite=Lax`, RBAC, hospital/radiologist isolation and audit logging
+apply unchanged. A static export is not an alternative either: three dynamic
+routes (`hospitals/reports/[studyUid]`, `reading/[studyUid]`,
+`reports/[studyUid]`) have no `generateStaticParams` and are server-rendered on
+demand.
+
+The trade-off is that the client needs a reachable deployment — which is also how
+clinical viewers are normally shipped, since one installer then stays correct when
+the UI is updated.
+
+### Pointing it at a deployment
+
+First valid source wins:
+
+| # | Source                                     | Scope                      |
+| - | ------------------------------------------ | -------------------------- |
+| 1 | `AXIS_DESKTOP_SERVER_URL` env var           | read at launch             |
+| 2 | `desktop.json` in the app config dir        | per-machine — **use this** |
+| 3 | `AXIS_DESKTOP_SERVER_URL` at compile time  | baked into the binary      |
+| 4 | `http://localhost:3000`                    | debug builds only          |
+
+A release build with none of these set shows a bundled splash explaining how to
+configure itself — it never guesses.
+
+On Windows the config file is:
+
+```text
+%APPDATA%\com.axis.teleradiology.pacs\desktop.json
+```
+
+```json
+{ "serverUrl": "https://pacs.example.org" }
+```
+
+The value must be a bare origin (optionally with a port). Path prefixes, query
+strings, fragments and embedded credentials are rejected.
+
+### Native surface
+
+`capabilities/default.json` grants an **empty** permission list and declares no
+`remote.urls`, so the deployment the user signs in to has **zero** access to
+Tauri APIs — no filesystem, no shell, no clipboard, no commands. The navigation
+allow-list restricts the window to the deployment origin; off-origin links open
+in the system browser. A second launch focuses the existing window instead of
+opening a second one.
+
+No clinical data is written to the machine: there is no SQLite, no local cache
+and no PHI on disk outside the OS-encrypted WebView2 cookie store.
 
 ---
 
@@ -643,6 +749,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 | **Routing Rules**  | RoutingRule model and UI (RoutingRuleBuilder) exist. The rule engine that evaluates conditions and triggers actions is not yet built. |
 | **Real-time Updates** | WebSocket/SSE support for live worklist updates is not implemented. |
 | **Testing**        | Test infrastructure (Vitest) is configured but comprehensive test coverage is not yet in place. |
+| **Desktop client** | Windows x64 foundation only. The frontend is not bundled (the window loads a deployment — see [Desktop Client](#desktop-client-windows)), so the client needs network access and cannot start a session with the API unreachable. No code signing, no auto-update, and the installer has not been built end-to-end yet. |
 | **CI/CD**          | No GitHub Actions or pipeline configuration exists yet. |
 
 ---
@@ -653,7 +760,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 
 #### Completed
 
-- [x] pnpm monorepo setup (`apps/web`, `apps/api`, `packages/types`)
+- [x] pnpm monorepo setup (`apps/web`, `apps/api`, `apps/desktop`, `packages/types`)
 - [x] Docker Compose infrastructure (PostgreSQL, Redis, RabbitMQ, Orthanc, Keycloak, MinIO)
 - [x] Orthanc DICOMweb configuration (QIDO-RS, WADO-RS, STOW-RS)
 - [x] Prisma schema with 14 models, enums, and indexes
@@ -672,6 +779,8 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 - [x] Admin settings pages (routing rules, AI, users, audit config)
 - [x] Shared TypeScript types package (`@axis/types`)
 - [x] Zustand global state + TanStack React Query data fetching
+- [x] Tauri 2 desktop foundation (`apps/desktop`): Windows x64 NSIS target, single-instance lock, deployment URL resolution, navigation allow-list, zero native capabilities for remote content
+- [x] Platform abstraction (`apps/web/src/lib/platform.ts`) with unit tests, so web and desktop share one frontend with no duplicated URL logic
 
 #### In Progress
 

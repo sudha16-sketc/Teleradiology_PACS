@@ -6,14 +6,17 @@ function envInt(name: string, fallback: number): number {
 }
 
 export const DICOM_LIMITS = {
-  // Maximum size of the uploaded archive (bytes).
-  MAX_UPLOAD_BYTES: envInt('AXIS_DICOM_MAX_UPLOAD_BYTES', 200 * 1024 * 1024),
+  // Maximum total size of an upload request (bytes). Defended by
+  // `upload-size.middleware`. Defaults to a little over the 1 GiB single-file
+  // cap so the multipart framing overhead of a 1 GiB file does not trip it.
+  MAX_UPLOAD_BYTES: envInt('AXIS_DICOM_MAX_UPLOAD_BYTES', 1150 * 1024 * 1024),
   // Maximum number of entries allowed in a ZIP archive.
   MAX_ENTRY_COUNT: envInt('AXIS_DICOM_MAX_ENTRY_COUNT', 4000),
   // Maximum total (uncompressed) extracted size across all DICOM entries (bytes).
-  MAX_EXTRACTED_BYTES: envInt('AXIS_DICOM_MAX_EXTRACTED_BYTES', 200 * 1024 * 1024),
-  // Maximum size of a single DICOM instance (bytes).
-  MAX_FILE_BYTES: envInt('AXIS_DICOM_MAX_FILE_BYTES', 200 * 1024 * 1024),
+  MAX_EXTRACTED_BYTES: envInt('AXIS_DICOM_MAX_EXTRACTED_BYTES', 1024 * 1024 * 1024),
+  // Maximum size of a single DICOM instance (bytes). 1 GiB so large modality
+  // studies (e.g. CT/MRI volumes) can be uploaded as a single file.
+  MAX_FILE_BYTES: envInt('AXIS_DICOM_MAX_FILE_BYTES', 1024 * 1024 * 1024),
   // Maximum number of DICOM instances per upload.
   MAX_INSTANCES: envInt('AXIS_DICOM_MAX_INSTANCES', 4000),
 } as const;

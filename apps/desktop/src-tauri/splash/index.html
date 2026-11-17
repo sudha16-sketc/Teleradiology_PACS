@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Axis</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0b0f14;
+        --fg: #e6edf3;
+        --muted: #8b98a5;
+        --accent: #2f81f7;
+        --danger: #f85149;
+        --surface: #12181f;
+        --border: #232c36;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.6 "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+      main { max-width: 34rem; width: 100%; }
+      .mark {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 28px;
+      }
+      .mark b { font-size: 18px; letter-spacing: -0.01em; }
+      h1 { font-size: 17px; margin: 0 0 10px; }
+      p { color: var(--muted); margin: 0 0 12px; }
+      code, pre {
+        font-family: Consolas, "SF Mono", ui-monospace, monospace;
+        font-size: 12.5px;
+      }
+      code {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+      }
+      pre {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 12px 14px;
+        overflow-x: auto;
+        color: var(--fg);
+      }
+      .dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--accent);
+        animation: pulse 1.1s ease-in-out infinite;
+        flex: none;
+      }
+      @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+      .err { color: var(--danger); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark">
+        <span class="dot" id="dot"></span>
+        <b>Axis</b>
+      </div>
+
+      <!--
+        Shown while the Rust side resolves the Axis deployment and navigates
+        the window to it. Normally visible for a fraction of a second.
+      -->
+      <section id="starting">
+        <h1>Starting Axis</h1>
+        <p id="target">Connecting&hellip;</p>
+      </section>
+
+      <!--
+        Shown only when no deployment URL could be resolved. Reached when
+        AXIS_DESKTOP_SERVER_URL is unset and no desktop.json exists in the
+        per-user config directory; see docs/DESKTOP.md.
+      -->
+      <section id="unconfigured" hidden>
+        <h1 class="err">This desktop client is not connected to an Axis deployment</h1>
+        <p>
+          Axis Desktop loads the PACS from a running Axis deployment, so it needs
+          to be told where that deployment is. Nothing is guessed, and in
+          particular it will never fall back to a localhost address.
+        </p>
+        <p>Set the deployment URL in one of these ways, then relaunch:</p>
+        <pre>1. Environment variable (per launch, wins over everything):
+     AXIS_DESKTOP_SERVER_URL=https://pacs.example.org
+
+2. Per-user config file:
+     %APPDATA%\com.axis.teleradiology.pacs\desktop.json
+
+     { "serverUrl": "https://pacs.example.org" }</pre>
+        <p>
+          The deployment must be running the Axis web client and the NestJS API.
+        </p>
+      </section>
+    </main>
+
+    <script>
+      // Injected by src-tauri/src/lib.rs before this document runs. Absent when
+      // the splash is opened directly in a browser, which is harmless.
+      (function () {
+        var info = (window.__AXIS_DESKTOP__ || {});
+        var starting = document.getElementById("starting");
+        var unconfigured = document.getElementById("unconfigured");
+        var target = document.getElementById("target");
+
+        if (info.serverUrl) {
+          target.textContent = "Connecting to " + info.serverUrl + "…";
+        } else {
+          starting.hidden = true;
+          unconfigured.hidden = false;
+          document.getElementById("dot").style.animation = "none";
+          document.getElementById("dot").style.background = "var(--danger)";
+        }
+      })();
+    </script>
+  </body>
+</html>

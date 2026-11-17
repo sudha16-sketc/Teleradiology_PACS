@@ -6,8 +6,10 @@ import {
   Param,
   Body,
   Res,
+  Query,
 } from '@nestjs/common';
 import { ReportsService } from './reports.service.js';
+import { ListReportsQueryDto } from './dto/reports.dto.js';
 import {
   IsOptional,
   IsString,
@@ -49,6 +51,10 @@ class ReportContentDto {
   recommendations?: string;
 
   @IsOptional()
+  @IsString()
+  contentHtml?: string;
+
+  @IsOptional()
   @IsBoolean()
   criticalFinding?: boolean;
 }
@@ -85,14 +91,14 @@ export class ReportsController {
 
   @Get()
   @Roles('RADIOLOGIST', 'MANAGER', 'ADMIN', 'HOSPITAL')
-  list(@CurrentUser() user: RequestUser) {
-    return this.reportsService.list(user);
+  list(@Query() dto: ListReportsQueryDto, @CurrentUser() user: RequestUser) {
+    return this.reportsService.list(user, dto);
   }
 
   @Get('hospital')
   @Roles('HOSPITAL', 'MANAGER', 'ADMIN')
-  hospitalReports(@CurrentUser() user: RequestUser) {
-    return this.reportsService.hospitalReports(user);
+  hospitalReports(@Query() dto: ListReportsQueryDto, @CurrentUser() user: RequestUser) {
+    return this.reportsService.hospitalReports(user, dto);
   }
 
   @Get('change-requests')

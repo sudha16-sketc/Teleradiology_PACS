@@ -41,9 +41,12 @@ export function CorrectionWorkflow({
     setLoading(true);
     try {
       const res = await apiClient.get<CorrectionsEnvelope>("/corrections");
-      const mine = (res.data ?? []).filter(
-        (c) => c.study?.studyInstanceUid === studyInstanceUid,
-      );
+      const mine = (res.data ?? [])
+        .filter((c) => c.study?.studyInstanceUid === studyInstanceUid)
+        .sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
       setCorrections(mine);
     } catch {
       setCorrections([]);

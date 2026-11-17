@@ -12,7 +12,7 @@ import {
 import { clsx } from "clsx";
 import { apiClient } from "@/lib/api-client";
 import { formatDateTime } from "@/lib/format";
-import type { RegistrationRequest, UserRole, ApiError } from "@axis/types";
+import type { RegistrationRequest, UserRole, ApiError, Hospital } from "@axis/types";
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
   { value: "ADMIN", label: "Administrator" },
@@ -25,14 +25,20 @@ interface RequestEnvelope {
   data: RegistrationRequest[];
 }
 
+interface HospitalsEnvelope {
+  data: Hospital[];
+}
+
 export default function RegistrationRequestsPage() {
   const [requests, setRequests] = useState<RegistrationRequest[]>([]);
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"PENDING" | "ALL">("PENDING");
 
   const [approving, setApproving] = useState<RegistrationRequest | null>(null);
   const [finalRole, setFinalRole] = useState<UserRole>("RADIOLOGIST");
+  const [finalHospitalId, setFinalHospitalId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -59,13 +65,33 @@ export default function RegistrationRequestsPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    apiClient
+      .get<HospitalsEnvelope>("/hospitals")
+      .then((res) => setHospitals(res.data))
+      .catch(() => setHospitals([]));
+  }, []);
+
+  const activeHospitals = hospitals.filter((h) => h.isActive);
+
+  function openApprove(req: RegistrationRequest) {
+    setApproving(req);
+    setFinalRole(req.status === "PENDING" ? "RADIOLOGIST" : req.role);
+    setFinalHospitalId(req.hospitalId ?? "");
+    setActionError(null);
+  }
+
+  const needsHospital = finalRole === "HOSPITAL";
+  const hospitalMissing = needsHospital && !finalHospitalId;
+
   async function handleApprove() {
-    if (!approving) return;
+    if (!approving || hospitalMissing) return;
     setSubmitting(true);
     setActionError(null);
     try {
       await apiClient.post(`/auth/registration-requests/${approving.id}/approve`, {
         role: finalRole,
+        hospitalId: needsHospital ? finalHospitalId : undefined,
       });
       setApproving(null);
       await load();
@@ -221,7 +247,7 @@ export default function RegistrationRequestsPage() {
                       <div className="flex items-center gap-3">
                         <button
                           type="button"
-                          onClick={() => setApproving(req)}
+                          onClick={() => openApprove(req)}
                           className="flex items-center gap-1 text-xs font-medium text-success hover:text-success/80"
                         >
                           <Check size={14} /> Approve
@@ -235,16 +261,13 @@ export default function RegistrationRequestsPage() {
                         </button>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setApproving(req);
-                          setFinalRole(req.role);
-                        }}
-                        className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent/80"
-                      >
-                        <Info size={14} /> View
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => openApprove(req)}
+                          className="flex items-center gap-1 text-xs font-medium text-accent hover:text-accent/80"
+                        >
+                          <Info size={14} /> View
+                        </button>
                     )}
                   </td>
                 </tr>
@@ -339,6 +362,31 @@ export default function RegistrationRequestsPage() {
               </select>
             </label>
 
+            {needsHospital && (
+              <label className="mt-4 block">
+                <span className="mb-1 block text-xs font-medium text-text-muted">
+                  Hospital <span className="text-error">*</span>
+                </span>
+                <select
+                  value={finalHospitalId}
+                  onChange={(e) => setFinalHospitalId(e.target.value)}
+                  disabled={submitting}
+                  className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent"
+                >
+                  <option value="">Select a hospital…</option>
+                  {activeHospitals.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.name} ({h.code})
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs text-text-muted">
+                  A hospital account cannot load any study, report or correction
+                  until it is linked to a hospital.
+                </span>
+              </label>
+            )}
+
             {actionError && (
               <div className="mt-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
                 {actionError}
@@ -357,7 +405,7 @@ export default function RegistrationRequestsPage() {
               <button
                 type="button"
                 onClick={handleApprove}
-                disabled={submitting}
+                disabled={submitting || hospitalMissing || activeHospitals.length === 0}
                 className="flex items-center gap-1.5 rounded-md bg-success px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-success/90 disabled:opacity-60"
               >
                 {submitting ? (

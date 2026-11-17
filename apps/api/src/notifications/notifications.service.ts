@@ -108,6 +108,40 @@ export class NotificationsService {
     await this.create({ ...input, recipientUserId: radiologistId });
   }
 
+  /**
+   * Project the routable DICOM StudyInstanceUID for each notification.
+   *
+   * `Notification.studyId` is a bare column holding the internal Study primary
+   * key, and the client links a notification straight to the reading room,
+   * which is keyed by StudyInstanceUID. Rather than adding a Prisma relation
+   * (a schema change plus migration), the UIDs are resolved with one extra
+   * batched query.
+   *
+   * This is not a data disclosure: the recipient already participates in the
+   * workflow, and the reading room re-authorizes the study on load.
+   */
+  private async withStudyUids<T extends { studyId?: string | null }>(
+    items: T[],
+  ): Promise<(T & { study: { studyInstanceUid: string } | null })[]> {
+    const studyIds = [
+      ...new Set(items.map((i) => i.studyId).filter((v): v is string => !!v)),
+    ];
+    if (studyIds.length === 0) {
+      return items.map((item) => ({ ...item, study: null }));
+    }
+    const studies = await this.prisma.study.findMany({
+      where: { id: { in: studyIds } },
+      select: { id: true, studyInstanceUid: true },
+    });
+    const uidByStudyId = new Map(
+      studies.map((s) => [s.id, s.studyInstanceUid] as const),
+    );
+    return items.map((item) => {
+      const uid = item.studyId ? uidByStudyId.get(item.studyId) : undefined;
+      return { ...item, study: uid ? { studyInstanceUid: uid } : null };
+    });
+  }
+
   async list(user: Actor, opts: { limit?: number } = {}) {
     const limit = opts.limit ?? 50;
     const items = await this.prisma.notification.findMany({
@@ -118,7 +152,7 @@ export class NotificationsService {
     const unread = await this.prisma.notification.count({
       where: { recipientUserId: user.id, readAt: null },
     });
-    return { data: items, unread };
+    return { data: await this.withStudyUids(items), unread };
   }
 
   async markRead(id: string, user: Actor) {
@@ -129,12 +163,13 @@ export class NotificationsService {
     if (notification.recipientUserId !== user.id) {
       throw new ForbiddenException('You can only read your own notifications');
     }
-    if (notification.readAt) return { data: notification };
+    if (notification.readAt) return { data: await this.withStudyUids([notification]).then(([n]) => n) };
     const updated = await this.prisma.notification.update({
       where: { id },
       data: { readAt: new Date() },
     });
-    return { data: updated };
+    const [data] = await this.withStudyUids([updated]);
+    return { data };
   }
 
   async markAllRead(user: Actor) {

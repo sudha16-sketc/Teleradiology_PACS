@@ -36,6 +36,20 @@ describe('Phase 3 -- role-based navigation (permissions.ts)', () => {
     expect(roleHasAccess('RADIOLOGIST', '/hospitals')).toBe(false);
   });
 
+  it('UI-ROLE-1d: report templates are available to admin, manager, and radiologist', () => {
+    expect(roleHasAccess('ADMIN', '/settings/templates')).toBe(true);
+    expect(roleHasAccess('MANAGER', '/settings/templates')).toBe(true);
+    expect(roleHasAccess('RADIOLOGIST', '/settings/templates')).toBe(true);
+    expect(roleHasAccess('HOSPITAL', '/settings/templates')).toBe(false);
+
+    // Granting the templates page must not open unrelated settings pages.
+    expect(roleHasAccess('MANAGER', '/settings')).toBe(false);
+    expect(roleHasAccess('MANAGER', '/settings/users')).toBe(false);
+    expect(roleHasAccess('RADIOLOGIST', '/settings')).toBe(false);
+    expect(roleHasAccess('RADIOLOGIST', '/settings/users')).toBe(false);
+    expect(roleHasAccess('HOSPITAL', '/settings')).toBe(false);
+  });
+
   it('UI-ROLE-1b: orphan /queue routes are NOT globally accessible', () => {
     // Only ADMIN/MANAGER may reach the operational queue.
     for (const role of ALL_ROLES) {
@@ -50,6 +64,7 @@ describe('Phase 3 -- role-based navigation (permissions.ts)', () => {
     const adminHrefs = adminNav.map((n) => n.href);
     expect(adminHrefs).toContain('/audit');
     expect(adminHrefs).toContain('/settings');
+    expect(adminHrefs).toContain('/settings/templates');
     expect(adminHrefs).toContain('/admin/registration-requests');
 
     const managerNav = navigationForRole('MANAGER');
@@ -57,6 +72,7 @@ describe('Phase 3 -- role-based navigation (permissions.ts)', () => {
     // Manager sees operational queue + analytics, not admin-only items.
     expect(managerHrefs).toContain('/worklist');
     expect(managerHrefs).toContain('/analytics');
+    expect(managerHrefs).toContain('/settings/templates');
     expect(managerHrefs).not.toContain('/audit');
     expect(managerHrefs).not.toContain('/settings');
     expect(managerHrefs).not.toContain('/admin/registration-requests');
@@ -65,8 +81,10 @@ describe('Phase 3 -- role-based navigation (permissions.ts)', () => {
     const radHrefs = radNav.map((n) => n.href);
     expect(radHrefs).toContain('/worklist');
     expect(radHrefs).toContain('/reading');
+    expect(radHrefs).toContain('/settings/templates');
     expect(radHrefs).not.toContain('/analytics');
     expect(radHrefs).not.toContain('/audit');
+    expect(radHrefs).not.toContain('/settings');
     expect(radHrefs).not.toContain('/hospitals/submit');
 
     const hospitalNav = navigationForRole('HOSPITAL');
@@ -77,5 +95,6 @@ describe('Phase 3 -- role-based navigation (permissions.ts)', () => {
     expect(hospitalHrefs).not.toContain('/worklist');
     expect(hospitalHrefs).not.toContain('/reading');
     expect(hospitalHrefs).not.toContain('/analytics');
+    expect(hospitalHrefs).not.toContain('/settings/templates');
   });
 });

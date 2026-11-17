@@ -2,6 +2,14 @@ process.env.DATABASE_URL =
   process.env.TEST_DATABASE_URL ?? 'postgresql://axis:axis_dev@localhost:5432/axis_pacs_test';
 process.env.NODE_ENV = 'test';
 
+// The API now refuses to sign sessions with a missing/weak AUTH_SECRET in any
+// environment. This deterministic value is for the CI/local test database only
+// and can be overridden via TEST_AUTH_SECRET. Production must use its own
+// generated secret (see .env.example).
+process.env.AUTH_SECRET =
+  process.env.TEST_AUTH_SECRET ??
+  'axis-e2e-test-only-secret-0123456789abcdef0123456789abcdef';
+
 // Deterministic, small DICOM limits for e2e so the size guards can be
 // exercised without allocating 200MB fixtures. 1MiB is still large enough for
 // the real de-identified volume used in the happy-path ingest test.

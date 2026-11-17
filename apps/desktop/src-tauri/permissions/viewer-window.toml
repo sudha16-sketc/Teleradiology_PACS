@@ -1,0 +1,10 @@
+# The remote PACS window may request one native viewer window. Rust derives its
+# URL from the already-pinned deployment origin and applies the same navigation
+# policy; the secondary viewer receives no remote Tauri capability.
+
+"$schema" = "../gen/schemas/acl-manifests.json"
+
+[[permission]]
+identifier = "allow-open-viewer-window"
+description = "Opens or focuses the same-origin imaging viewer for an authorized study."
+commands.allow = ["open_viewer_window"]

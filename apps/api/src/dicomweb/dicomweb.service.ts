@@ -2,10 +2,70 @@ import {
   Injectable,
   ForbiddenException,
   NotFoundException,
+  BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { Request, Response } from 'express';
+
+/**
+ * Explicit allow-list for DICOMweb operations that are NOT scoped to a study.
+ * Study-scoped routes (containing /studies/<uid>) are authorized per-role;
+ * everything else must match this list AND be requested by a global role
+ * (ADMIN/MANAGER). Currently the only permitted unscoped operation is
+ * QIDO-RS study-level listing (GET /studies).
+ */
+const GLOBAL_OPERATION_PATHS = /^\/studies\/?$/;
+
+// QIDO-RS identity keys. A study/series identity filter in the query string is
+// equivalent to a study-scoped path for authorization purposes: the result set
+// Orthanc returns is confined to the referenced instance, so the caller must
+// pass exactly the same checks as /studies/<uid>/... (A6).
+const STUDY_UID_QUERY_KEYS = ['StudyInstanceUID'];
+const SERIES_UID_QUERY_KEYS = ['SeriesInstanceUID'];
+
+// Only read operations may derive study scope from a query filter. A filter on a
+// mutating request (STOW/DELETE/...) would otherwise hand a radiologist an
+// upstream write they were previously denied, since the unscoped allow-list is
+// GET-only.
+const SCOPE_FROM_QUERY_METHODS = new Set(['GET', 'HEAD']);
+
+// Request headers the proxy is willing to forward upstream. Everything else
+// (incl. client-supplied Authorization, cookies, X-Forwarded-*, origin,
+// referer, ...) is never forwarded to Orthanc (D6).
+const FORWARD_REQUEST_HEADERS = [
+  'accept',
+  'accept-encoding',
+  'accept-language',
+  'content-type',
+  'content-length',
+  'content-encoding',
+  'range',
+  'if-range',
+  'if-match',
+  'if-none-match',
+  'if-modified-since',
+  'if-unmodified-since',
+];
+
+// Response headers worth copying back to the client. Set-Cookie from Orthanc
+// is never echoed, and hop-by-hop headers are always stripped (D6).
+const FORWARD_RESPONSE_HEADERS = [
+  'content-type',
+  'content-length',
+  'content-encoding',
+  'transfer-syntax',
+  'content-disposition',
+  'accept-ranges',
+  'content-range',
+  'range',
+  'last-modified',
+  'etag',
+  'cache-control',
+  'expires',
+  'vary',
+];
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -17,6 +77,15 @@ const HOP_BY_HOP_HEADERS = new Set([
   'transfer-encoding',
   'upgrade',
 ]);
+
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export type DicomWebUser = { id: string; role: UserRole };
 
 @Injectable()
 export class DicomWebService {
@@ -54,14 +123,111 @@ export class DicomWebService {
     return original;
   }
 
-  private extractStudyInstanceUid(path: string): string | undefined {
-    const match = path.match(/\/studies\/([^/?#]+)/);
+  /**
+   * Normalizes and validates the DICOMweb sub-path. Traversal ("..") is
+   * rejected BEFORE the path is appended to the upstream base URL: URL
+   * normalizers collapse "..", so without this guard a request like
+   * /dicom-web/../../patients would escape the /dicom-web root and reach the
+   * raw Orthanc REST API (A1).
+   */
+  private assertSafePath(path: string): { pathname: string; query: string } {
+    if (!path.startsWith('/')) {
+      throw new BadRequestException('Malformed DICOMweb path');
+    }
+    const pathname = path.split('?')[0];
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+      throw new BadRequestException('Malformed DICOMweb path encoding');
+    }
+    if (decoded.split('/').some((segment) => segment === '..')) {
+      throw new BadRequestException(
+        'DICOMweb path may not contain traversal segments',
+      );
+    }
+    const query = path.includes('?') ? path.slice(path.indexOf('?')) : '';
+    return { pathname, query };
+  }
+
+  private extractStudyInstanceUid(pathname: string): string | undefined {
+    const match = pathname.match(/\/studies\/([^/?#]+)/);
     if (!match) return undefined;
     try {
       return decodeURIComponent(match[1]);
     } catch {
       return match[1];
     }
+  }
+
+  /**
+   * Collects every value supplied for the given QIDO-RS identity keys.
+   *
+   * Keys are matched case-insensitively because Orthanc matches them that way:
+   * matching only the exact spelling would let a differently-cased parameter
+   * reach Orthanc as a genuine filter while skipping the check here (A6).
+   * Multi-valued attributes arrive either as repeated parameters or as one
+   * backslash/comma separated value, so all forms are collected.
+   *
+   * A wildcard is reported separately: "*"/"?" match every value, so such a
+   * query is NOT confined to one instance and must stay unscoped rather than
+   * being mistaken for a specific study.
+   */
+  private collectIdentityFilter(
+    query: string,
+    keys: readonly string[],
+  ): { uids: string[]; wildcard: boolean } {
+    const wanted = new Set(keys.map((key) => key.toLowerCase()));
+    const params = new URLSearchParams(query.replace(/^\?/, ''));
+    const uids: string[] = [];
+    let wildcard = false;
+    for (const [key, value] of params.entries()) {
+      if (!wanted.has(key.toLowerCase())) continue;
+      for (const raw of value.split(/[\\,]/)) {
+        const candidate = raw.trim();
+        if (candidate === '') continue;
+        if (candidate.includes('*') || candidate.includes('?')) {
+          wildcard = true;
+          continue;
+        }
+        uids.push(candidate);
+      }
+    }
+    return { uids, wildcard };
+  }
+
+  /**
+   * Maps SeriesInstanceUID filters onto the studies that own them so series
+   * queries are subject to the same hospital/radiologist checks. A series that
+   * is not indexed is REJECTED (404) exactly like an unindexed study, so an
+   * unknown identifier can never bypass authorization.
+   */
+  private async resolveSeriesStudyUids(seriesUids: string[]): Promise<string[]> {
+    const unique = [...new Set(seriesUids)];
+    if (unique.length === 0) return [];
+    const rows = await this.prisma.series.findMany({
+      where: { seriesInstanceUid: { in: unique } },
+      select: {
+        seriesInstanceUid: true,
+        study: { select: { studyInstanceUid: true } },
+      },
+    });
+    const owning = new Map(
+      rows.map((row) => [row.seriesInstanceUid, row.study.studyInstanceUid]),
+    );
+    const missing = unique.filter((uid) => !owning.has(uid));
+    if (missing.length > 0) {
+      throw new NotFoundException(
+        `Series ${missing[0]} is not indexed and cannot be accessed through DICOMweb`,
+      );
+    }
+    return unique.map((uid) => owning.get(uid) as string);
+  }
+
+  private isAllowedUnscopedOperation(method: string, pathname: string): boolean {
+    // GET only: QIDO-RS study-level listing.
+    if (method !== 'GET') return false;
+    return GLOBAL_OPERATION_PATHS.test(pathname);
   }
 
   /**
@@ -79,22 +245,82 @@ export class DicomWebService {
    * study can never be used to bypass authorization.
    */
   async authorizeStudyAccess(
-    user: { id: string; role: UserRole },
-    path: string,
+    user: DicomWebUser,
+    pathname: string,
+    method: string,
+    query = '',
   ): Promise<void> {
-    const studyUid = this.extractStudyInstanceUid(path);
-    // Paths that do not reference a study (e.g. /patients, /series) are not
-    // study-scoped and pass through; study-scoped access is enforced on routes
-    // that carry a study UID.
-    if (!studyUid) return;
+    // Scope is derived from the path first, then from QIDO-RS identity
+    // filters. Only read operations may take scope from the query (see
+    // SCOPE_FROM_QUERY_METHODS).
+    const scopedUids = new Set<string>();
+    const pathStudyUid = this.extractStudyInstanceUid(pathname);
+    if (pathStudyUid) scopedUids.add(pathStudyUid);
 
-    const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
-      select: { hospitalId: true, assignedRadiologistId: true },
+    if (SCOPE_FROM_QUERY_METHODS.has(method)) {
+      const studyFilter = this.collectIdentityFilter(query, STUDY_UID_QUERY_KEYS);
+      const seriesFilter = this.collectIdentityFilter(query, SERIES_UID_QUERY_KEYS);
+
+      // A wildcard identity filter matches every value, so the result set is
+      // not confined to any single study. Such a query keeps only the scope
+      // proven by the path and otherwise falls through to the unscoped rules,
+      // rather than gaining study scope from the wildcard.
+      if (!studyFilter.wildcard && !seriesFilter.wildcard) {
+        const seriesStudyUids = await this.resolveSeriesStudyUids(seriesFilter.uids);
+        for (const uid of [...studyFilter.uids, ...seriesStudyUids]) {
+          scopedUids.add(uid);
+        }
+      }
+    }
+
+    // Paths that do not reference a study are NOT silently open. Only a tiny
+    // allow-list of unscoped operations (e.g. QIDO study list) is reachable,
+    // and only by global roles.
+    if (scopedUids.size === 0) {
+      if (user.role !== UserRole.ADMIN && user.role !== UserRole.MANAGER) {
+        throw new ForbiddenException(
+          'You do not have access to unscoped DICOMweb operations',
+        );
+      }
+      if (!this.isAllowedUnscopedOperation(method, pathname)) {
+        throw new ForbiddenException(
+          'This DICOMweb operation is not in the allowed list',
+        );
+      }
+      return;
+    }
+
+    // EVERY referenced study must pass. Authorizing only the first value of a
+    // repeated parameter would let a caller pair an accessible study with a
+    // forbidden one and still have Orthanc return both.
+    await this.assertStudiesAccessible(user, [...scopedUids]);
+  }
+
+  /**
+   * Enforces the per-study Phase 3 rules for one or more studies, keeping the
+   * original rejection semantics: an unindexed study is 404 for every role
+   * (checked before the global-role shortcut), an inaccessible but indexed
+   * study is 403.
+   */
+  private async assertStudiesAccessible(
+    user: DicomWebUser,
+    studyUids: string[],
+  ): Promise<void> {
+    const unique = [...new Set(studyUids)];
+    const rows = await this.prisma.study.findMany({
+      where: { studyInstanceUid: { in: unique } },
+      select: {
+        studyInstanceUid: true,
+        hospitalId: true,
+        assignedRadiologistId: true,
+      },
     });
-    if (!study) {
+    const byUid = new Map(rows.map((row) => [row.studyInstanceUid, row]));
+
+    const missing = unique.filter((uid) => !byUid.has(uid));
+    if (missing.length > 0) {
       throw new NotFoundException(
-        `Study ${studyUid} is not indexed and cannot be accessed through DICOMweb`,
+        `Study ${missing[0]} is not indexed and cannot be accessed through DICOMweb`,
       );
     }
 
@@ -104,10 +330,13 @@ export class DicomWebService {
     }
 
     if (user.role === UserRole.RADIOLOGIST) {
-      if (study.assignedRadiologistId === user.id) return;
-      throw new ForbiddenException(
-        'You do not have access to studies not assigned to you',
-      );
+      for (const uid of unique) {
+        if (byUid.get(uid)?.assignedRadiologistId === user.id) continue;
+        throw new ForbiddenException(
+          'You do not have access to studies not assigned to you',
+        );
+      }
+      return;
     }
 
     // HOSPITAL (and any other non-admin/manager/non-radiologist role): scope to
@@ -121,7 +350,8 @@ export class DicomWebService {
         'Your account is not linked to a hospital and cannot access study DICOM data',
       );
     }
-    if (study.hospitalId !== axisUser.hospitalId) {
+    for (const uid of unique) {
+      if (byUid.get(uid)?.hospitalId === axisUser.hospitalId) continue;
       throw new ForbiddenException(
         'You do not have access to studies from this hospital',
       );
@@ -129,43 +359,78 @@ export class DicomWebService {
   }
 
   async proxy(request: Request, method: string, response: Response) {
-    const path = this.extractDicomwebPath(request);
+    const rawPath = this.extractDicomwebPath(request);
+    const { pathname, query } = this.assertSafePath(rawPath);
+    const path = `${pathname}${query}`;
     const target = `${this.dicomwebBase()}${path}`;
 
-    const authenticated = request as Request & { user?: { id: string; role: UserRole } };
-    if (authenticated.user) {
-      await this.authorizeStudyAccess(authenticated.user, path);
+    const authenticated = request as Request & { user?: DicomWebUser };
+    if (!authenticated.user) {
+      throw new UnauthorizedException('Authentication required for DICOMweb');
     }
+    // Study-scoped or unscoped access is authorized before any proxying.
+    // The query string is part of the authorization input: QIDO-RS identity
+    // filters can scope a request just as well as a /studies/<uid> path.
+    await this.authorizeStudyAccess(
+      authenticated.user,
+      pathname,
+      method,
+      query,
+    );
 
     const headers: Record<string, string> = {};
-    for (const [key, value] of Object.entries(request.headers)) {
-      const lower = key.toLowerCase();
-      if (HOP_BY_HOP_HEADERS.has(lower)) continue;
-      if (lower === 'host') continue;
-      if (lower === 'cookie') continue;
+    for (const key of FORWARD_REQUEST_HEADERS) {
+      const value = request.headers[key];
       if (Array.isArray(value)) {
         headers[key] = value.join(', ');
       } else if (value !== undefined) {
         headers[key] = value;
       }
     }
-
     const orthancAuth = this.upstreamAuthHeader();
     if (orthancAuth) headers.authorization = orthancAuth;
 
     const hasBody = method !== 'GET' && method !== 'HEAD';
 
-    const upstream = await fetch(target, {
-      method,
-      headers,
-      body: hasBody ? (request as unknown as ReadableStream<Uint8Array>) : undefined,
-      duplex: hasBody ? 'half' : undefined,
-    } as RequestInit);
+    const timeoutMs = envInt('AXIS_ORTHANC_TIMEOUT_MS', 30000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let upstream: Awaited<ReturnType<typeof fetch>>;
+    try {
+      upstream = await fetch(target, {
+        method,
+        headers,
+        body: hasBody
+          ? (request as unknown as ReadableStream<Uint8Array>)
+          : undefined,
+        duplex: hasBody ? 'half' : undefined,
+        signal: controller.signal,
+      } as RequestInit);
+    } catch (err) {
+      clearTimeout(timer);
+      const timedOut = (err as Error)?.name === 'AbortError';
+      this.sendError(response, timedOut ? 504 : 503, request.url, timedOut);
+      return;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // On non-success responses, do NOT stream Orthanc's error body verbatim:
+    // it can contain internal endpoint/path details (C27). Send a sanitized,
+    // stable JSON payload instead.
+    if (upstream.status >= 400) {
+      if (upstream.body) await upstream.body.cancel().catch(() => undefined);
+      response.removeHeader('content-length');
+      response.removeHeader('transfer-encoding');
+      this.sendError(response, upstream.status, request.url, false);
+      return;
+    }
 
     response.status(upstream.status);
-    for (const [key, value] of upstream.headers.entries()) {
-      if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) continue;
-      response.setHeader(key, value);
+    for (const key of FORWARD_RESPONSE_HEADERS) {
+      const value = upstream.headers.get(key);
+      if (value !== null) response.setHeader(key, value);
     }
 
     if (upstream.body) {
@@ -177,5 +442,22 @@ export class DicomWebService {
     } else {
       response.end();
     }
+  }
+
+  private sendError(
+    response: Response,
+    status: number,
+    requestUrl: string,
+    timedOut: boolean,
+  ) {
+    response.status(status).json({
+      statusCode: status,
+      message: timedOut
+        ? 'The imaging backend timed out'
+        : 'The imaging backend could not fulfil the DICOMweb request',
+      error: status >= 500 ? 'Imaging Backend Error' : 'Imaging Backend Error',
+      timestamp: new Date().toISOString(),
+      path: requestUrl,
+    });
   }
 }

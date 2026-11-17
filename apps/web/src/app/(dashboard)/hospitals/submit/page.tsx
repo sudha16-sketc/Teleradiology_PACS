@@ -10,8 +10,25 @@ import {
   X,
   AlertTriangle,
   ArrowLeft,
+  FolderOpen,
+  FileUp,
 } from "lucide-react";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, failureOf } from "@/lib/api-client";
+import { isDesktop } from "@/lib/platform";
+import {
+  collectDicomFolder,
+  pickDicomFiles,
+  pickDicomFolder,
+  readPickedFileAsFile,
+  releasePickedPaths,
+  type PickedFile,
+} from "@/lib/desktop-bridge";
+import {
+  validateSelection,
+  humanBytes,
+  type SelectedFile,
+} from "@/lib/dicom-selection";
+import { ErrorPanel } from "@/components/ErrorPanel";
 
 interface IngestEnvelope {
   data: {
@@ -46,260 +63,287 @@ const PRIORITY_LABEL: Record<string, string> = {
   ROUTINE: "Routine",
 };
 
-/**
- * Accepted file extensions.
- *
- * Note:
- * Production DICOM validation should happen on the backend as well,
- * because some DICOM files do not have a .dcm extension.
- */
-const ACCEPT_EXT = /\.(zip|dcm|dicom)$/i;
-
 export default function SubmitStudyPage() {
   const router = useRouter();
 
-  const [files, setFiles] = useState<File[]>([]);
+  // Desktop selections carry a native path and are read on demand; browser
+  // selections are already `File` objects from the input or a drop.
+  const [files, setFiles] = useState<SelectedFile[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [stage, setStage] = useState<UploadStage>("idle");
   const [result, setResult] =
     useState<IngestEnvelope["data"] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [uploadFailure, setUploadFailure] = useState<ReturnType<
+    typeof failureOf
+  > | null>(null);
+  const [picking, setPicking] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  const isUploading =
-    stage === "uploading" || stage === "sending";
+  const isUploading = stage === "uploading" || stage === "sending";
+  const desktop = isDesktop();
 
-  /**
-   * Accept files from picker / drag-and-drop.
-   */
-  const acceptFiles = useCallback((incoming: File[]) => {
-    if (!incoming.length) {
-      return;
-    }
-
-    setError(null);
+  const clearMessages = useCallback(() => {
+    setSelectionError(null);
+    setUploadFailure(null);
     setResult(null);
     setStage("idle");
+  }, []);
 
-    const accepted = incoming.filter((file) =>
-      ACCEPT_EXT.test(file.name)
-    );
+  /**
+   * Apply a candidate selection, replacing whatever was chosen before.
+   *
+   * Validation lives in `dicom-selection.ts` so the browser and the native
+   * picker are held to the same budgets and can both be unit tested.
+   */
+  const applySelection = useCallback(
+    (incoming: readonly SelectedFile[]) => {
+      clearMessages();
 
-    if (!accepted.length) {
-      setFiles([]);
-      setError(
-        "No DICOM files found. Select .dcm/.dicom files or a .zip archive."
-      );
-      return;
-    }
-
-    const seen = new Set<string>();
-    const deduped: File[] = [];
-
-    for (const file of accepted) {
-      const key = `${file.name}:${file.size}`;
-
-      if (seen.has(key)) {
-        continue;
-      }
-
-      seen.add(key);
-
-      // 200 MB per file
-      if (file.size > 200 * 1024 * 1024) {
+      const outcome = validateSelection(incoming);
+      if (!outcome.ok) {
         setFiles([]);
-        setError(
-          `File "${file.name}" exceeds the 200 MB limit.`
-        );
+        setSelectionError(outcome.message);
         return;
       }
 
-      deduped.push(file);
-    }
+      setFiles(outcome.files);
+    },
+    [clearMessages],
+  );
 
-    setFiles(deduped);
+  /**
+   * Drop the shell's filesystem grants for whatever is currently selected.
+   *
+   * Called when a selection is replaced and after an upload finishes, so the
+   * shell does not retain read access to files from earlier attempts.
+   */
+  const releaseSelection = useCallback((previous: readonly SelectedFile[]) => {
+    const paths = previous
+      .map((file) => file.path)
+      .filter((path): path is string => typeof path === "string");
+    if (paths.length) void releasePickedPaths(paths);
   }, []);
+
+  /**
+   * Native file picker.
+   *
+   * The dialog is opened by Rust, which is what lets the shell scope reads to
+   * exactly the chosen files. Cancelling leaves the page untouched.
+   */
+  const handleNativeFiles = useCallback(async () => {
+    setPicking(true);
+    try {
+      const picked = await pickDicomFiles();
+      if (!picked.ok) {
+        setSelectionError("The file picker could not be opened.");
+        return;
+      }
+      // `null` is a cancellation, not a failure.
+      if (picked.value === null) return;
+      applySelection(picked.value);
+    } finally {
+      setPicking(false);
+    }
+  }, [applySelection]);
+
+  /**
+   * Native folder picker, followed by the Rust-side recursive walk.
+   */
+  const handleNativeFolder = useCallback(async () => {
+    setPicking(true);
+    try {
+      const folder = await pickDicomFolder();
+      if (!folder.ok) {
+        setSelectionError("The folder picker could not be opened.");
+        return;
+      }
+      if (folder.value === null) return;
+
+      const walked = await collectDicomFolder(folder.value.path);
+      if (!walked.ok) {
+        setFiles([]);
+        // The message is authored in Rust and already explains the limit.
+        setSelectionError(walked.reason);
+        return;
+      }
+      applySelection(walked.value);
+    } finally {
+      setPicking(false);
+    }
+  }, [applySelection]);
 
   /**
    * Recursively collect files from a dragged folder.
    *
-   * Chrome / Edge expose directory entries through
-   * webkitGetAsEntry().
+   * Chromium exposes directory entries through `webkitGetAsEntry()`.
    */
   const collectDroppedFiles = useCallback(
-    async (
-      items: DataTransferItemList
-    ): Promise<File[]> => {
-      const files: File[] = [];
+    async (items: DataTransferItemList): Promise<SelectedFile[]> => {
+      const collected: SelectedFile[] = [];
 
-      const readEntry = async (
-        entry: FileSystemEntry
-      ): Promise<void> => {
+      const readEntry = async (entry: FileSystemEntry): Promise<void> => {
         if (entry.isFile) {
           const fileEntry = entry as FileSystemFileEntry;
-
           await new Promise<void>((resolve) => {
             fileEntry.file(
               (file) => {
-                files.push(file);
+                collected.push({ name: file.name, size: file.size, file });
                 resolve();
               },
-              () => {
-                resolve();
-              }
+              () => resolve(),
             );
           });
-
           return;
         }
 
-        if (entry.isDirectory) {
-          const directoryEntry =
-            entry as FileSystemDirectoryEntry;
+        if (!entry.isDirectory) return;
 
-          const reader = directoryEntry.createReader();
+        const reader = (entry as FileSystemDirectoryEntry).createReader();
 
-          await new Promise<void>((resolve) => {
-            const readEntries = () => {
-              reader.readEntries(
-                async (entries) => {
-                  if (!entries.length) {
-                    resolve();
-                    return;
-                  }
-
-                  for (const child of entries) {
-                    await readEntry(child);
-                  }
-
-                  readEntries();
-                },
-                () => {
+        await new Promise<void>((resolve) => {
+          // `readEntries` yields at most ~100 entries per call and signals the
+          // end of the directory with an empty batch, so it has to be drained.
+          const readEntries = () => {
+            reader.readEntries(
+              async (entries) => {
+                if (!entries.length) {
                   resolve();
+                  return;
                 }
-              );
-            };
-
-            readEntries();
-          });
-        }
+                for (const child of entries) {
+                  await readEntry(child);
+                }
+                readEntries();
+              },
+              () => resolve(),
+            );
+          };
+          readEntries();
+        });
       };
 
-      const promises: Promise<void>[] = [];
+      const pending: Promise<void>[] = [];
 
-      for (let i = 0; i < items.length; i++) {
+      for (let i = 0; i < items.length; i += 1) {
         const item = items[i];
-
-        if (item.kind !== "file") {
-          continue;
-        }
+        if (item.kind !== "file") continue;
 
         const entry = item.webkitGetAsEntry?.();
-
         if (entry) {
-          promises.push(readEntry(entry));
+          pending.push(readEntry(entry));
         } else {
           const file = item.getAsFile();
-
           if (file) {
-            files.push(file);
+            collected.push({ name: file.name, size: file.size, file });
           }
         }
       }
 
-      await Promise.all(promises);
-
-      return files;
+      await Promise.all(pending);
+      return collected;
     },
-    []
+    [],
   );
 
   /**
    * Upload the selected DICOM files.
+   *
+   * Desktop selections are read from their native paths here rather than up
+   * front, so a 20,000-file folder is only materialised in memory once, for as
+   * long as the upload takes, instead of being held for the life of the page.
    */
   const handleUpload = async () => {
-    if (!files.length || isUploading) {
-      return;
-    }
+    if (!files.length || isUploading) return;
 
+    clearMessages();
     setStage("sending");
-    setError(null);
-    setResult(null);
 
     try {
       const formData = new FormData();
 
       for (const file of files) {
-        formData.append("file", file, file.name);
+        if (file.file) {
+          // Browser selection: the `File` is already in hand.
+          formData.append("file", file.file, file.name);
+          continue;
+        }
+        if (file.path === undefined) continue;
+        // Desktop selection: read the bytes through the shell's scoped grant.
+        const read = await readPickedFileAsFile(file as PickedFile);
+        if (!read.ok) {
+          throw new Error(read.reason);
+        }
+        formData.append("file", read.value, file.name);
       }
 
-      const response =
-        await apiClient.post<IngestEnvelope>(
-          "/dicom/ingest",
-          formData
-        );
+      const response = await apiClient.post<IngestEnvelope>(
+        "/dicom/ingest",
+        // A study upload is a whole study and legitimately takes minutes, so it
+        // gets a much larger budget than the default request deadline rather
+        // than being exempt from it.
+        formData,
+        { timeoutMs: 30 * 60 * 1000 },
+      );
 
       setResult(response.data);
       setStage("ready");
+      // Success: the study is in, so the shell's read access to the source files
+      // is no longer needed and is withdrawn immediately.
+      releaseSelection(files);
     } catch (e: unknown) {
-      const message =
-        e instanceof Error
-          ? e.message
-          : "Upload failed. Please check the files and try again.";
-
-      setError(message);
+      setUploadFailure(failureOf(e));
       setStage("error");
+      // Deliberately NOT releasing here.
+      //
+      // The retry button re-runs this handler against the same selection, and a
+      // desktop read goes through the shell's filesystem scope. Releasing on
+      // failure would make every retry fail immediately with a permission error
+      // and leave the user with no way forward except reselecting — turning a
+      // transient network fault into lost work. The grants are released on
+      // success, on replacing the selection, and on reset, which are the only
+      // points where the paths genuinely stop being needed.
     }
   };
 
-  /**
-   * Clear everything and start again.
-   */
-  const reset = () => {
+  /** Clear everything and start again. */
+  const reset = useCallback(() => {
+    releaseSelection(files);
     setFiles([]);
     setDragActive(false);
     setStage("idle");
-    setResult(null);
-    setError(null);
+    clearMessages();
 
-    if (inputRef.current) {
-      inputRef.current.value = "";
-    }
+    if (inputRef.current) inputRef.current.value = "";
+    if (folderInputRef.current) folderInputRef.current.value = "";
+  }, [clearMessages, files, releaseSelection]);
 
-    if (folderInputRef.current) {
-      folderInputRef.current.value = "";
-    }
-  };
+  /** Replace the current selection, releasing the previous one's grants. */
+  const replaceSelection = useCallback(
+    (incoming: readonly SelectedFile[]) => {
+      releaseSelection(files);
+      applySelection(incoming);
+    },
+    [applySelection, files, releaseSelection],
+  );
 
-  /**
-   * Normal file picker.
-   */
-  const handleFilePicker = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const selectedFiles = Array.from(
-      event.target.files ?? []
-    );
+  const handleBrowserFiles = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const picked = Array.from(event.target.files ?? []);
+      replaceSelection(
+        picked.map((file) => ({
+          name: file.name,
+          size: file.size,
+          file,
+        })),
+      );
+    },
+    [replaceSelection],
+  );
 
-    acceptFiles(selectedFiles);
-  };
-
-  /**
-   * Folder picker.
-   *
-   * Chrome / Edge support webkitdirectory.
-   */
-  const handleFolderPicker = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const selectedFiles = Array.from(
-      event.target.files ?? []
-    );
-
-    acceptFiles(selectedFiles);
-  };
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
 
   return (
     <div className="min-h-screen bg-background">
@@ -345,27 +389,35 @@ export default function SubmitStudyPage() {
               </p>
             </div>
 
-            {/* Hidden normal file input */}
-            <input
-              ref={inputRef}
-              type="file"
-              multiple
-              accept=".dcm,.dicom,.zip,application/zip"
-              onChange={handleFilePicker}
-              className="hidden"
-            />
+            {/*
+              Browser pickers. Hidden on the desktop client, where the native
+              dialogs are the only way to choose a file: these inputs would
+              offer a second, unscoped path to the same data, and a file chosen
+              through one has no shell read grant.
+            */}
+            {!desktop && (
+              <>
+                <input
+                  ref={inputRef}
+                  type="file"
+                  multiple
+                  accept=".dcm,.dicom,.zip,application/zip"
+                  onChange={handleBrowserFiles}
+                  className="hidden"
+                />
 
-            {/* Hidden folder input */}
-            <input
-              ref={folderInputRef}
-              type="file"
-              multiple
-              // @ts-expect-error webkitdirectory is supported by Chromium browsers
-              webkitdirectory=""
-              directory=""
-              onChange={handleFolderPicker}
-              className="hidden"
-            />
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  multiple
+                  // @ts-expect-error webkitdirectory is Chromium-only
+                  webkitdirectory=""
+                  directory=""
+                  onChange={handleBrowserFiles}
+                  className="hidden"
+                />
+              </>
+            )}
 
             {/* Dropzone */}
             <div
@@ -404,11 +456,14 @@ export default function SubmitStudyPage() {
                 void collectDroppedFiles(
                   event.dataTransfer.items
                 ).then((droppedFiles) => {
-                  acceptFiles(droppedFiles);
+                  replaceSelection(droppedFiles);
                 });
               }}
               onClick={() => {
-                if (!isUploading) {
+                if (isUploading) return;
+                if (desktop) {
+                  void handleNativeFiles();
+                } else {
                   inputRef.current?.click();
                 }
               }}
@@ -457,38 +512,58 @@ export default function SubmitStudyPage() {
               </p>
 
               <div
-                className="mt-6"
+                className="mt-6 flex flex-wrap justify-center gap-3"
                 onClick={(event) => {
                   event.stopPropagation();
                 }}
               >
-                <button
-                  type="button"
-                  disabled={isUploading}
-                  onClick={() => {
-                    folderInputRef.current?.click();
-                  }}
-                  className="
-                    inline-flex
-                    items-center
-                    gap-2
-                    rounded-md
-                    border
-                    border-border
-                    bg-surface
-                    px-4
-                    py-2
-                    text-sm
-                    font-medium
-                    transition
-                    hover:bg-muted
-                    disabled:cursor-not-allowed
-                    disabled:opacity-50
-                  "
-                >
-                  <FileArchive className="h-4 w-4" />
-                  Choose DICOM Folder
-                </button>
+                {desktop ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isUploading || picking}
+                      onClick={() => {
+                        void handleNativeFiles();
+                      }}
+                      className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {picking ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <FileUp className="h-4 w-4" />
+                      )}
+                      Choose Files
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isUploading || picking}
+                      onClick={() => {
+                        void handleNativeFolder();
+                      }}
+                      className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {picking ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <FolderOpen className="h-4 w-4" />
+                      )}
+                      Choose DICOM Folder
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={isUploading}
+                    onClick={() => {
+                      folderInputRef.current?.click();
+                    }}
+                    className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <FileArchive className="h-4 w-4" />
+                    Choose DICOM Folder
+                  </button>
+                )}
               </div>
             </div>
 
@@ -504,6 +579,7 @@ export default function SubmitStudyPage() {
                     <p className="text-xs text-muted-foreground">
                       {files.length} file
                       {files.length === 1 ? "" : "s"} selected
+                      {` · ${humanBytes(totalBytes)}`}
                     </p>
                   </div>
 
@@ -547,21 +623,28 @@ export default function SubmitStudyPage() {
               </div>
             )}
 
-            {/* Error */}
-            {error && (
+            {selectionError && (
               <div className="mt-6 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
 
                 <div>
-                  <p className="text-sm font-medium">
-                    Upload Error
-                  </p>
-
+                  <p className="text-sm font-medium">Selection problem</p>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    {error}
+                    {selectionError}
                   </p>
                 </div>
               </div>
+            )}
+
+            {uploadFailure && (
+              <ErrorPanel
+                className="mt-6"
+                title="Upload failed"
+                failure={uploadFailure}
+                onRetry={() => {
+                  void handleUpload();
+                }}
+              />
             )}
 
             {/* Upload button */}

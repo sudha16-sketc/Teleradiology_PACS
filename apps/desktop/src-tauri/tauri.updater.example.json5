@@ -1,0 +1,47 @@
+// Release-build overlay for the Tauri updater.
+//
+// NOT referenced by tauri.conf.json, and not committed with real values. The
+// committed configuration keeps `plugins.updater.active = false`, so a build
+// that nobody has opted in cannot reach an update endpoint at all: the
+// frontend treats "not configured" as "updates unavailable" and the user is
+// never prompted.
+//
+// A release pipeline layers this file in:
+//
+//   tauri build --target x86_64-pc-windows-msvc --bundles nsis \
+//     --config src-tauri/tauri.updater.conf.json
+//
+// Both values below are operator-owned and must come from the build system,
+// never from this repository:
+//
+//   pubkey     the minisign PUBLIC key half of the code-signing key pair used
+//              to sign release artifacts and the update manifest. The private
+//              key must live in the CI secret store and must never reach a
+//              build machine or this repository. A release is only accepted if
+//              its manifest verifies against this key, so an attacker who can
+//              tamper with the update server still cannot ship a binary.
+//
+//   endpoints  the HTTPS URL of the update manifest, including the literal
+//              {{current_version}} placeholder that Tauri substitutes. It MUST
+//              be https:// — an http:// endpoint would let a network attacker
+//              serve an unsigned manifest, and the minisign check is the only
+//              thing standing between that and arbitrary code execution.
+//
+// Both are also read from the environment at build time so CI can inject them
+// without writing this file to disk:
+//
+//   AXIS_UPDATER_PUBKEY      -> plugins.updater.pubkey
+//   AXIS_UPDATER_ENDPOINTS   -> plugins.updater.endpoints
+//
+// See docs/DESKTOP.md ("Automatic updates") for the full release checklist.
+{
+  "plugins": {
+    "updater": {
+      "active": true,
+      "pubkey": "REPLACE_WITH_MINISIGN_PUBLIC_KEY",
+      "endpoints": [
+        "https://REPLACE_WITH_UPDATE_HOST/axis/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  }
+}

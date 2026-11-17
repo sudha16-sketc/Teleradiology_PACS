@@ -4,12 +4,14 @@ import {
   ForbiddenException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ReviewsService, HOSPITAL_VISIBLE_STATES } from '../reviews/reviews.service.js';
 import { StudiesService, ALLOWED_TRANSITIONS, TRANSITION_ACTORS } from '../studies/studies.service.js';
 import { CorrectionsService } from '../corrections/corrections.service.js';
+import { htmlToPlainText, sanitizeReportHtml } from '../common/html.js';
 import type { AuditAction, AuditResource } from '@axis/types';
 import { createHash } from 'crypto';
 import type { Response } from 'express';
@@ -29,28 +31,32 @@ export interface ReportContent {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  contentHtml?: string;
   criticalFinding?: boolean;
 }
 
 /**
  * Deterministic full 64-char SHA-256 content hash computed server-side over
  * every clinical content field. Never trust a client-submitted hash.
+ *
+ * The rich HTML body is appended only when present so legacy structured report
+ * hashes remain byte-for-byte stable.
  */
 export function contentHash(c: ReportContent = {}): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        c.clinicalHistory ?? '',
-        c.findings ?? '',
-        c.impression ?? '',
-        c.technique ?? '',
-        c.comparison ?? '',
-        c.recommendations ?? '',
-        c.criticalFinding ? 'critical' : 'normal',
-      ]),
-    )
-    .digest('hex');
+  const parts: string[] = [
+    c.clinicalHistory ?? '',
+    c.findings ?? '',
+    c.impression ?? '',
+    c.technique ?? '',
+    c.comparison ?? '',
+    c.recommendations ?? '',
+    c.criticalFinding ? 'critical' : 'normal',
+  ];
+  if (c.contentHtml) parts.push(c.contentHtml);
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }
+
+
 
 // States in which a draft may be created / edited.
 const DRAFTABLE_STATES: StudyStatus[] = [
@@ -68,12 +74,15 @@ interface Actor {
 
 @Injectable()
 export class ReportsService {
+  private readonly logger = new Logger(ReportsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly studies: StudiesService,
     private readonly reviews: ReviewsService,
     private readonly corrections: CorrectionsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async auditLog(
@@ -199,54 +208,93 @@ export class ReportsService {
     }
   }
 
-  async list(user: Actor) {
+  async list(user: Actor, query: { page?: string; pageSize?: string } = {}) {
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
     const where: Record<string, unknown> = {};
-    if (user.role === 'HOSPITAL' && user.hospitalId) {
+    if (user.role === 'HOSPITAL') {
+      // A HOSPITAL account with no linked hospital must never fall through to
+      // an unscoped query (which would expose every hospital's reports).
+      if (!user.hospitalId) {
+        throw new ForbiddenException('Your account is not linked to a hospital');
+      }
       where.study = {
         hospitalId: user.hospitalId,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'] },
+        status: { in: [...HOSPITAL_VISIBLE_STATES] },
       };
     } else if (user.role === 'RADIOLOGIST') {
       where.study = { assignedRadiologistId: user.id };
     }
 
-    const reports = await this.prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: { patient: true, hospital: true },
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: { patient: true, hospital: true },
+          },
+          author: true,
         },
-        author: true,
+        orderBy: { updatedAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+    return {
+      data: reports,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
       },
-      orderBy: { updatedAt: 'desc' },
-    });
-    return { data: reports };
+    };
   }
 
-  async hospitalReports(user: Actor) {
+  async hospitalReports(user: Actor, query: { page?: string; pageSize?: string } = {}) {
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
     if (user.role === 'HOSPITAL' && !user.hospitalId) {
       throw new ForbiddenException('Your account is not linked to a hospital');
     }
 
     const where: Record<string, unknown> = {
-      status: { in: ['SIGNED', 'MANAGER_APPROVED', 'MANAGER_REVIEW'] },
+      status: { in: ['SIGNED', 'MANAGER_APPROVED'] },
       study: {
         hospitalId: user.hospitalId!,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'] },
+        status: { in: HOSPITAL_VISIBLE_STATES },
       },
     };
 
-    const reports = await this.prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: { patient: true, hospital: true },
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: { patient: true, hospital: true },
+          },
+          author: true,
         },
-        author: true,
+        orderBy: { updatedAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+    return {
+      data: reports,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
       },
-      orderBy: { updatedAt: 'desc' },
-    });
-    return { data: reports };
+    };
   }
 
   async getByStudy(studyUid: string, user?: Actor) {
@@ -297,25 +345,6 @@ export class ReportsService {
     const study = await this.getStudy(studyUid);
     this.assertAssignedRadiologist(study, actor);
 
-    const existing = await this.prisma.report.findFirst({
-      where: { studyId: study.id },
-      orderBy: { version: 'desc' },
-    });
-
-    // Immutability: once a report is signed (or otherwise final), no metadata or
-    // content mutations are permitted. Corrections are a later-phase workflow.
-    if (existing && existing.status !== 'DRAFT') {
-      throw new ConflictException(
-        `The report is ${existing.status} and can no longer be edited. Corrections require the correction workflow.`,
-      );
-    }
-
-    if (!DRAFTABLE_STATES.includes(study.status)) {
-      throw new BadRequestException(
-        `A report draft can only be saved while the study is in ${DRAFTABLE_STATES.join(', ')} (currently ${study.status}).`,
-      );
-    }
-
     const content: ReportContent = {
       clinicalHistory: dto.clinicalHistory ?? '',
       findings: dto.findings ?? '',
@@ -325,17 +354,65 @@ export class ReportsService {
       recommendations: dto.recommendations ?? '',
       criticalFinding: dto.criticalFinding ?? false,
     };
+    if (dto.contentHtml !== undefined) {
+      content.contentHtml = sanitizeReportHtml(dto.contentHtml);
+    }
     const hash = contentHash(content);
 
-    let report;
-    if (existing) {
-      report = await this.prisma.report.update({
-        where: { id: existing.id },
-        data: { ...content, contentHash: hash },
-        include: { author: true },
+    // Serialize draft creation per study. Without this lock, two concurrent
+    // first-save requests can both observe "no report" and create duplicate v1
+    // drafts. The unique (studyId, version) constraint is the final backstop.
+    const saved = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Study" WHERE id = ${study.id} FOR UPDATE`;
+
+      const existing = await tx.report.findFirst({
+        where: { studyId: study.id },
+        orderBy: { version: 'desc' },
       });
-    } else {
-      report = await this.prisma.report.create({
+
+      // Immutability: once a report is signed (or otherwise final), no metadata
+      // or content mutations are permitted.
+      if (existing && existing.status !== 'DRAFT') {
+        throw new ConflictException(
+          `The report is ${existing.status} and can no longer be edited. Corrections require the correction workflow.`,
+        );
+      }
+
+      if (!DRAFTABLE_STATES.includes(study.status)) {
+        throw new BadRequestException(
+          `A report draft can only be saved while the study is in ${DRAFTABLE_STATES.join(', ')} (currently ${study.status}).`,
+        );
+      }
+
+      if (existing) {
+        // Preserve any field the caller did not send. Rich-editor saves only
+        // send contentHtml + criticalFinding; structured/legacy saves only send
+        // the individual fields. Neither path may blank the other.
+        const effectiveContent: ReportContent = {
+          clinicalHistory: dto.clinicalHistory ?? existing.clinicalHistory,
+          findings: dto.findings ?? existing.findings,
+          impression: dto.impression ?? existing.impression,
+          technique: dto.technique ?? existing.technique,
+          comparison: dto.comparison ?? existing.comparison,
+          recommendations: dto.recommendations ?? existing.recommendations,
+          criticalFinding: dto.criticalFinding ?? existing.criticalFinding,
+          contentHtml:
+            dto.contentHtml !== undefined
+              ? content.contentHtml
+              : existing.contentHtml ?? undefined,
+        };
+        const report = await tx.report.update({
+          where: { id: existing.id },
+          data: {
+            ...effectiveContent,
+            contentHash: contentHash(effectiveContent),
+          },
+          include: { author: true },
+        });
+        return { report, created: false };
+      }
+
+      const report = await tx.report.create({
         data: {
           studyId: study.id,
           authorId: actor.id,
@@ -346,21 +423,41 @@ export class ReportsService {
         },
         include: { author: true },
       });
-      // First draft created -> advance the study workflow to REPORT_DRAFT.
-      if (study.status !== StudyStatus.REPORT_DRAFT) {
-        await this.ensureDraftState(study, actor);
-      }
+      return { report, created: true };
+    });
+
+    // A draft save is the recovery path for a study left in IN_READING (for
+    // example by an interrupted amendment), so advance the workflow for both
+    // newly created and existing drafts.
+    if (study.status !== StudyStatus.REPORT_DRAFT) {
+      await this.ensureDraftState(study, actor);
     }
+
+    // A draft can be created/edited while the study is ASSIGNED, IN_READING or
+    // REPORT_DRAFT. The workflow state must be normalised to REPORT_DRAFT on
+    // EVERY save (not just the first draft creation): if the study was moved
+    // back out of REPORT_DRAFT (reassignment, correction, etc.) while a draft
+    // already existed, leaving it in ASSIGNED/IN_READING would keep sign-off
+    // permanently disabled. ensureDraftState is idempotent and early-returns
+    // when the study is already REPORT_DRAFT.
+    await this.ensureDraftState(
+      { studyInstanceUid: study.studyInstanceUid, status: study.status },
+      actor,
+    );
 
     await this.auditLog(
       actor,
-      existing ? 'REPORT_EDITED' : 'REPORT_CREATED',
+      saved.created ? 'REPORT_CREATED' : 'REPORT_EDITED',
       'REPORT',
-      report.id,
-      { studyUid, studyStatus: existing ? undefined : study.status, version: report.version },
+      saved.report.id,
+      {
+        studyUid,
+        studyStatus: saved.created ? study.status : undefined,
+        version: saved.report.version,
+      },
     );
 
-    return { data: report };
+    return { data: saved.report };
   }
 
   /**
@@ -399,8 +496,14 @@ export class ReportsService {
     if (report.status !== 'DRAFT') {
       throw new BadRequestException(`Only a draft report can be signed (current status: ${report.status})`);
     }
-    if (!report.findings.trim() || !report.impression.trim()) {
-      throw new BadRequestException('The report must have findings and impression before it can be signed');
+    const hasRichContent = htmlToPlainText(report.contentHtml).length > 0;
+    if (
+      !hasRichContent &&
+      (!report.findings.trim() || !report.impression.trim())
+    ) {
+      throw new BadRequestException(
+        'The report must have findings and impression (or rich report content) before it can be signed',
+      );
     }
 
     // Honor the authoritative workflow transition rules: REPORT_DRAFT -> RADIOLOGIST_SIGNED (actor: RADIOLOGIST).
@@ -451,6 +554,7 @@ export class ReportsService {
           technique: latest.technique,
           comparison: latest.comparison,
           recommendations: latest.recommendations,
+          contentHtml: latest.contentHtml,
           authorId: latest.authorId,
           contentHash: latest.contentHash,
         },
@@ -523,41 +627,36 @@ export class ReportsService {
     const study = await this.getStudy(studyUid);
     this.assertAssignedRadiologist(study, actor);
 
-    const previous = await this.prisma.report.findFirst({
-      where: { studyId: study.id },
-      orderBy: { version: 'desc' },
-    });
+    if (study.status !== StudyStatus.RADIOLOGIST_SIGNED) {
+      throw new BadRequestException(
+        `An amendment can only be initiated while the study is in RADIOLOGIST_SIGNED (currently ${study.status}).`,
+      );
+    }
 
-    const content: ReportContent = {
-      clinicalHistory: dto.clinicalHistory ?? '',
-      findings: dto.findings ?? '',
-      impression: dto.impression ?? '',
-      technique: dto.technique ?? '',
-      comparison: dto.comparison ?? '',
-      recommendations: dto.recommendations ?? '',
-      criticalFinding: dto.criticalFinding ?? false,
-    };
-    const newVersion = previous ? previous.version + 1 : 1;
-    const hash = contentHash(content);
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Study" WHERE id = ${study.id} FOR UPDATE`;
 
-    const created = await this.prisma.report.create({
-      data: {
-        studyId: study.id,
-        authorId: actor.id,
-        status: 'DRAFT',
-        version: newVersion,
-        ...content,
-        contentHash: hash,
-      },
-      include: { author: true },
-    });
+      const previous = await tx.report.findFirst({
+        where: { studyId: study.id },
+        orderBy: { version: 'desc' },
+      });
 
-    if (previous && previous.status === 'SIGNED') {
-      const existingVersion = await this.prisma.reportVersion.findFirst({
+      if (!previous) {
+        throw new NotFoundException(`No report found for study ${studyUid}`);
+      }
+
+      if (previous.status !== 'SIGNED') {
+        throw new BadRequestException(
+          `Only a signed report can be amended (current status: ${previous.status})`,
+        );
+      }
+
+      // Ensure the signed version is preserved as a ReportVersion snapshot.
+      const signedVersion = await tx.reportVersion.findFirst({
         where: { reportId: previous.id, version: previous.version },
       });
-      if (!existingVersion) {
-        await this.prisma.reportVersion.create({
+      if (!signedVersion) {
+        await tx.reportVersion.create({
           data: {
             reportId: previous.id,
             version: previous.version,
@@ -568,16 +667,72 @@ export class ReportsService {
             technique: previous.technique,
             comparison: previous.comparison,
             recommendations: previous.recommendations,
+            contentHtml: previous.contentHtml,
             authorId: previous.authorId,
             contentHash: previous.contentHash,
           },
         });
       }
-    }
 
-    await this.auditLog(actor, 'REPORT_AMENDED', 'REPORT', created.id, { studyUid });
+      // Seed the new draft from the signed report content.
+      const content: ReportContent = {
+        clinicalHistory: dto.clinicalHistory ?? previous.clinicalHistory ?? '',
+        findings: dto.findings ?? previous.findings ?? '',
+        impression: dto.impression ?? previous.impression ?? '',
+        technique: dto.technique ?? previous.technique ?? '',
+        comparison: dto.comparison ?? previous.comparison ?? '',
+        recommendations: dto.recommendations ?? previous.recommendations ?? '',
+        criticalFinding: dto.criticalFinding ?? previous.criticalFinding ?? false,
+        contentHtml:
+          dto.contentHtml !== undefined
+            ? sanitizeReportHtml(dto.contentHtml)
+            : previous.contentHtml ?? undefined,
+      };
+      const newVersion = previous.version + 1;
+      const hash = contentHash(content);
 
-    return { data: created };
+      const created = await tx.report.create({
+        data: {
+          studyId: study.id,
+          authorId: actor.id,
+          status: 'DRAFT',
+          version: newVersion,
+          ...content,
+          contentHash: hash,
+        },
+        include: { author: true },
+      });
+
+      return { created, previous };
+    });
+
+    // An amendment is editable immediately: RADIOLOGIST_SIGNED -> IN_READING ->
+    // REPORT_DRAFT. The final state is required for sign-off to be allowed.
+    await this.studies.updateStatus(
+      studyUid,
+      { status: StudyStatus.IN_READING },
+      actor,
+    );
+    await this.studies.updateStatus(
+      studyUid,
+      { status: StudyStatus.REPORT_DRAFT },
+      actor,
+    );
+
+    await this.auditLog(
+      actor,
+      'REPORT_AMENDED',
+      'REPORT',
+      result.created.id,
+      {
+        studyUid,
+        previousReportId: result.previous.id,
+        previousVersion: result.previous.version,
+        newVersion: result.created.version,
+      },
+    );
+
+    return { data: result.created };
   }
 
   /**
@@ -682,6 +837,17 @@ export class ReportsService {
 
     await this.auditLog(actor, 'CHANGE_REQUESTED', 'CHANGE_REQUEST', changeRequest.id, { studyUid, reportId: report.id, result: 'request_created' });
 
+    try {
+      await this.notifications.notifyRadiologist(changeRequest.assignedToId, {
+        type: 'REPORT_RETURNED',
+        title: 'Report returned',
+        message: 'A report was returned to you for revision.',
+        studyId: study.id,
+      });
+    } catch {
+      this.logger.warn('Could not persist report-return notification.');
+    }
+
     return { data: changeRequest };
   }
 
@@ -717,7 +883,7 @@ export class ReportsService {
     if (user.role === 'HOSPITAL' && study.hospitalId !== user.hospitalId) {
       throw new ForbiddenException('You do not have access to studies from this hospital');
     }
-    if (!['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'].includes(study.status)) {
+    if (!HOSPITAL_VISIBLE_STATES.includes(study.status)) {
       throw new NotFoundException('Final report is not yet available for this study');
     }
 
@@ -728,7 +894,10 @@ export class ReportsService {
     });
     if (!report) throw new NotFoundException(`No final report found for study ${studyUid}`);
 
-    const pdf = this.buildPdf({ study, report });
+    const company = await this.prisma.companySettings.findUnique({
+      where: { id: 'default' },
+    });
+    const pdf = this.buildPdf({ study, report, company });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="report-${study.accessionNumber}.pdf"`);
@@ -740,8 +909,56 @@ export class ReportsService {
     return text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
   }
 
-  private buildPdf(opts: { study: any; report: any }): string {
-    const { study, report } = opts;
+  /**
+   * Code 128-B bar positions for the report identifier. Kept as rectangles in
+   * the PDF content stream so the hospital PDF carries the same scannable
+   * identifier as the on-screen/print preview (no external barcode library).
+   */
+  private code128Bars(value: string): Array<{ x: number; width: number }> {
+    const patterns = [
+      '212222', '222122', '222221', '121223', '121322', '131222', '122213',
+      '122312', '132212', '221213', '221312', '231212', '112232', '122132',
+      '122231', '113222', '123122', '123221', '223211', '221132', '221231',
+      '213212', '223112', '312131', '311222', '321122', '321221', '312212',
+      '322112', '322211', '212123', '212321', '232121', '111323', '131123',
+      '131321', '112313', '132113', '132311', '211313', '231113', '231311',
+      '112133', '112331', '132131', '113123', '113321', '133121', '313121',
+      '211331', '231131', '213113', '213311', '213131', '311123', '311321',
+      '331121', '312113', '312311', '332111', '314111', '221411', '431111',
+      '111224', '111422', '121124', '121421', '141122', '141221', '112214',
+      '112412', '122114', '122411', '142112', '142211', '241211', '221114',
+      '413111', '241112', '134111', '111242', '121142', '121241', '114212',
+      '124112', '124211', '411212', '421112', '421211', '212141', '214121',
+      '412121', '111143', '111341', '131141', '114113', '114311', '411113',
+      '411311', '113141', '114131', '311141', '411131', '211412', '211214',
+      '211232', '2331112',
+    ];
+    const clean = value.replace(/[^\x20-\x7E]/g, '');
+    if (!clean) return [];
+    const codes: number[] = [];
+    let checksum = 104;
+    for (let i = 0; i < clean.length; i += 1) {
+      const code = clean.charCodeAt(i) - 32;
+      codes.push(code);
+      checksum += code * (i + 1);
+    }
+    const sequence = [104, ...codes, checksum % 103, 106];
+    const bars: Array<{ x: number; width: number }> = [];
+    let x = 0;
+    for (const code of sequence) {
+      const pattern = patterns[code];
+      if (!pattern) continue;
+      for (let i = 0; i < pattern.length; i += 1) {
+        const width = Number(pattern[i]);
+        if (i % 2 === 0) bars.push({ x, width });
+        x += width;
+      }
+    }
+    return bars;
+  }
+
+  private buildPdf(opts: { study: any; report: any; company?: any }): string {
+    const { study, report, company } = opts;
 
     const lines: string[] = [];
     const push = (text: string) => lines.push(text);
@@ -777,19 +994,29 @@ export class ReportsService {
     push('COMPARISON / PRIORS');
     push('-------------------');
     push(report.comparison || 'N/A');
-    push('');
-    push('FINDINGS');
-    push('--------');
-    push(report.findings || 'N/A');
-    push('');
-    push('IMPRESSION');
-    push('----------');
-    push(report.impression || 'N/A');
-    if (report.recommendations) {
+
+    if (htmlToPlainText(report.contentHtml)) {
       push('');
-      push('RECOMMENDATIONS');
-      push('---------------');
-      push(report.recommendations);
+      push('REPORT BODY');
+      push('-----------');
+      for (const line of htmlToPlainText(report.contentHtml).split('\n')) {
+        push(line);
+      }
+    } else {
+      push('');
+      push('FINDINGS');
+      push('--------');
+      push(report.findings || 'N/A');
+      push('');
+      push('IMPRESSION');
+      push('----------');
+      push(report.impression || 'N/A');
+      if (report.recommendations) {
+        push('');
+        push('RECOMMENDATIONS');
+        push('---------------');
+        push(report.recommendations);
+      }
     }
     if (report.criticalFinding) {
       push('');
@@ -803,6 +1030,25 @@ export class ReportsService {
     pushKey('Report Version', String(report.version));
     pushKey('Report ID', report.id);
     pushKey('Content Hash', report.contentHash ?? '');
+    push('');
+    push('------------------------------------------------');
+    push('REPORT FOOTER');
+    push('-------------');
+    pushKey(
+      'Company',
+      company?.name || study.hospital?.name || '[Company name not configured]',
+    );
+    pushKey('Phone', company?.phone || '[Company phone not configured]');
+    pushKey('Email', company?.email || '[Company email not configured]');
+    pushKey(
+      'About',
+      company?.description || '[Company description not configured]',
+    );
+    push(
+      company?.disclaimer ||
+        '[Report disclaimer not configured - contact your administrator]',
+    );
+    push(`Barcode: ${report.id}`);
 
     const contentLines = lines.map((l) => this.escapePdfText(l));
 
@@ -816,7 +1062,21 @@ export class ReportsService {
     for (const l of contentLines) {
       contentStream += `(${l}) Tj T*\n`;
     }
-    contentStream += 'ET';
+    contentStream += 'ET\n';
+
+    // Scannable report identifier in the lower-right footer area.
+    const barcodeBars = this.code128Bars(String(report.id));
+    if (barcodeBars.length > 0) {
+      const unit = 0.42;
+      const startX = 400;
+      const baseY = 30;
+      const barHeight = 40;
+      contentStream += 'q 0 0 0 rg\n';
+      for (const bar of barcodeBars) {
+        contentStream += `${(startX + bar.x * unit).toFixed(2)} ${baseY} ${(bar.width * unit).toFixed(2)} ${barHeight} re f\n`;
+      }
+      contentStream += 'Q\n';
+    }
 
     objects.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>');
     objects.push(`<< /Length ${contentStream.length} >>\nstream\n${contentStream}\nendstream`);

@@ -21,6 +21,7 @@ interface ReportVersionHistoryProps {
 const STATUS_STYLES: Record<ReportStatus, string> = {
   DRAFT: "bg-surface text-text-muted",
   SIGNED: "bg-accent/10 text-accent",
+  RADIOLOGIST_SIGNED: "bg-accent/10 text-accent",
   MANAGER_REVIEW: "bg-warning/10 text-warning",
   MANAGER_APPROVED: "bg-success/10 text-success",
   HOSPITAL_REVIEW: "bg-warning/10 text-warning",
@@ -30,6 +31,7 @@ const STATUS_STYLES: Record<ReportStatus, string> = {
 const STATUS_LABELS: Record<ReportStatus, string> = {
   DRAFT: "Draft",
   SIGNED: "Signed",
+  RADIOLOGIST_SIGNED: "Signed",
   MANAGER_REVIEW: "Manager Review",
   MANAGER_APPROVED: "Approved",
   HOSPITAL_REVIEW: "Hospital Review",

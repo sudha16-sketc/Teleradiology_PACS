@@ -40,6 +40,7 @@ export interface RegistrationRequest {
   requestedRole?: UserRole | null;
   role: UserRole;
   status: UserStatus;
+  hospitalId?: string | null;
   rejectionReason?: string | null;
   createdAt: string;
   approvedAt?: string | null;

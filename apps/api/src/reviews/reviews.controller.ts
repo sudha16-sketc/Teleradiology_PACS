@@ -39,6 +39,15 @@ export class ReviewsController {
     return this.reviewsService.deliver(studyUid, user);
   }
 
+  @Post(':studyUid/hospital-change-request')
+  @Roles('HOSPITAL')
+  hospitalChangeRequest(
+    @Param('studyUid') studyUid: string,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.reviewsService.hospitalChangeRequest(studyUid, user);
+  }
+
   @Post(':studyUid/hospital-review')
   @Roles('HOSPITAL')
   hospitalReview(

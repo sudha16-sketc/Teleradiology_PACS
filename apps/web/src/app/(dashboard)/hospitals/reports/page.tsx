@@ -3,9 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Report, StudyStatus } from "@axis/types";
-import { Search, Download, RefreshCw, Eye, Loader2, Check } from "lucide-react";
+import {
+  Search,
+  Download,
+  RefreshCw,
+  Eye,
+  Loader2,
+  Check,
+  Printer,
+} from "lucide-react";
 import { clsx } from "clsx";
 import { apiClient } from "@/lib/api-client";
+import { apiUrl } from "@/lib/platform";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
@@ -55,7 +64,7 @@ export default function HospitalReportsPage() {
 
   const downloadPdf = (studyUid: string, accessionNumber: string) => {
     const a = document.createElement("a");
-    a.href = `/api/reports/hospital/${studyUid}/pdf`;
+    a.href = apiUrl(`/reports/hospital/${studyUid}/pdf`);
     a.download = `report-${accessionNumber}.pdf`;
     document.body.appendChild(a);
     a.click();
@@ -192,6 +201,25 @@ export default function HospitalReportsPage() {
                           <Download size={12} />
                           PDF
                         </button>
+                        {/*
+                          Print is offered alongside the PDF, not instead of it.
+                          The PDF is the filed artefact; this is for a hospital
+                          that wants the same report on paper immediately, and
+                          it reads the same authorised report over the same
+                          endpoint permissions.
+                        */}
+                        <a
+                          href={`/reports/print/${encodeURIComponent(r.study?.studyInstanceUid ?? "")}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Open a print-optimised view"
+                          className={clsx(
+                            "flex items-center gap-1 rounded border border-border bg-surface px-2 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised",
+                          )}
+                        >
+                          <Printer size={12} />
+                          Print
+                        </a>
                         <button
                           onClick={() =>
                             router.push(`/hospitals/reports/${r.study?.studyInstanceUid}`)

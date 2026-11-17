@@ -1,7 +1,14 @@
-import { PrismaClient, UserRole, UserStatus } from '@prisma/client';
+import { PrismaClient, UserRole, UserStatus, Modality, Subspecialty } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
+
+function isProduction(): boolean {
+  return (
+    process.env.NODE_ENV === 'production' ||
+    process.env.AXIS_ENV === 'production'
+  );
+}
 
 async function hashPassword(pw: string): Promise<string> {
   return bcrypt.hash(pw, 12);
@@ -39,12 +46,12 @@ async function upsertUser(input: {
 }) {
   return prisma.user.upsert({
     where: { email: input.email },
+    // Security: the update branch must NOT reset credentials, role, or
+    // approval state. Re-running seed against an existing database must never
+    // hijack an admin account (password reset / role upgrade). Only contact and
+    // assignment metadata is refreshed.
     update: {
       displayName: input.displayName,
-      role: input.role,
-      status: UserStatus.APPROVED,
-      isActive: true,
-      passwordHash: input.passwordHash,
       hospitalId: input.hospitalId,
       subspecialty: input.subspecialty,
       licenseNumber: input.licenseNumber,
@@ -67,10 +74,70 @@ async function upsertUser(input: {
   });
 }
 
+async function upsertReportTemplate(input: {
+  id: string;
+  name: string;
+  description?: string;
+  modality?: Modality;
+  subspecialty?: Subspecialty;
+  bodyPart?: string;
+  clinicalHistory?: string;
+  findings?: string;
+  impression?: string;
+  technique?: string;
+  comparison?: string;
+  recommendations?: string;
+  isActive?: boolean;
+  createdById: string;
+}) {
+  return prisma.reportTemplate.upsert({
+    where: { id: input.id },
+    update: {
+      name: input.name,
+      description: input.description,
+      modality: input.modality,
+      subspecialty: input.subspecialty,
+      bodyPart: input.bodyPart,
+      clinicalHistory: input.clinicalHistory ?? '',
+      findings: input.findings ?? '',
+      impression: input.impression ?? '',
+      technique: input.technique ?? '',
+      comparison: input.comparison ?? '',
+      recommendations: input.recommendations ?? '',
+      isActive: input.isActive ?? true,
+    },
+    create: {
+      id: input.id,
+      name: input.name,
+      description: input.description,
+      modality: input.modality,
+      subspecialty: input.subspecialty,
+      bodyPart: input.bodyPart,
+      clinicalHistory: input.clinicalHistory ?? '',
+      findings: input.findings ?? '',
+      impression: input.impression ?? '',
+      technique: input.technique ?? '',
+      comparison: input.comparison ?? '',
+      recommendations: input.recommendations ?? '',
+      isActive: input.isActive ?? true,
+      createdById: input.createdById,
+    },
+  });
+}
+
 async function main() {
+  // Never allow the known-credential developer seed to touch a production DB.
+  // Use prisma/create-admin.ts for production administrator creation.
+  if (isProduction()) {
+    throw new Error(
+      'Refusing to run developer seed in a production environment. ' +
+        'Create administrators with prisma/create-admin.ts instead.',
+    );
+  }
+
   console.log('Seeding accounts and hospitals...');
-  const seedHash = await hashPassword('AxisDev123!');
-  const adminHash = await hashPassword('Admin@123456');
+  const seedHash = await hashPassword(process.env.AXIS_SEED_USERS_PASSWORD ?? 'AxisDev123!');
+  const adminHash = await hashPassword(process.env.AXIS_SEED_ADMIN_PASSWORD ?? 'Admin@123456');
 
   const hospitals = {
     cgh: await upsertHospital({
@@ -188,7 +255,108 @@ async function main() {
     phone: '+1 555 010 0203',
   });
 
+  // Get admin user for template creation
+  const adminUser = await prisma.user.findUnique({
+    where: { email: 'admin@axisradiology.com' },
+    select: { id: true },
+  });
+  if (!adminUser) {
+    throw new Error('Admin user not found for template creation');
+  }
+  const adminUserId = adminUser.id;
+
   console.log('Accounts ready');
+
+  // Seed default report templates
+  console.log('Seeding report templates...');
+  
+  await upsertReportTemplate({
+    id: 'template-mri-brain',
+    name: 'MRI Brain',
+    description: 'Standard MRI Brain protocol template',
+    modality: 'MRI',
+    subspecialty: 'NEURO',
+    bodyPart: 'Brain',
+    clinicalHistory: 'Clinical indication for MRI Brain',
+    findings: '',
+    impression: '',
+    technique: 'Multiplanar multi-sequence MRI of the brain without and with contrast.',
+    comparison: 'None',
+    recommendations: '',
+    isActive: true,
+    createdById: adminUserId,
+  });
+
+  await upsertReportTemplate({
+    id: 'template-mri-spine',
+    name: 'MRI Spine',
+    description: 'Standard MRI Spine protocol template',
+    modality: 'MRI',
+    subspecialty: 'NEURO',
+    bodyPart: 'Spine',
+    clinicalHistory: 'Clinical indication for MRI Spine',
+    findings: '',
+    impression: '',
+    technique: 'Multiplanar multi-sequence MRI of the cervical/thoracic/lumbar spine without and with contrast.',
+    comparison: 'None',
+    recommendations: '',
+    isActive: true,
+    createdById: adminUserId,
+  });
+
+  await upsertReportTemplate({
+    id: 'template-ct-head',
+    name: 'CT Head',
+    description: 'Standard CT Head protocol template',
+    modality: 'CT',
+    subspecialty: 'NEURO',
+    bodyPart: 'Head',
+    clinicalHistory: 'Clinical indication for CT Head',
+    findings: '',
+    impression: '',
+    technique: 'Non-contrast CT of the head. 5mm axial sections.',
+    comparison: 'None',
+    recommendations: '',
+    isActive: true,
+    createdById: adminUserId,
+  });
+
+  await upsertReportTemplate({
+    id: 'template-ct-chest',
+    name: 'CT Chest',
+    description: 'Standard CT Chest protocol template',
+    modality: 'CT',
+    subspecialty: 'CHEST',
+    bodyPart: 'Chest',
+    clinicalHistory: 'Clinical indication for CT Chest',
+    findings: '',
+    impression: '',
+    technique: 'Contrast-enhanced CT of the chest with lung and mediastinal windows.',
+    comparison: 'None',
+    recommendations: '',
+    isActive: true,
+    createdById: adminUserId,
+  });
+
+  await upsertReportTemplate({
+    id: 'template-xr-chest',
+    name: 'XR Chest',
+    description: 'Standard Chest X-ray template',
+    modality: 'XR',
+    subspecialty: 'CHEST',
+    bodyPart: 'Chest',
+    clinicalHistory: 'Clinical indication for Chest X-ray',
+    findings: '',
+    impression: '',
+    technique: 'PA and lateral chest radiographs.',
+    comparison: 'None',
+    recommendations: '',
+    isActive: true,
+    createdById: adminUserId,
+  });
+
+  console.log('Report templates ready: 5');
+
   console.log('Seeding complete! (accounts-only; run db:seed-demo for synthetic clinical data)');
 }
 

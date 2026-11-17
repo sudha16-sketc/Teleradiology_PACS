@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AuthUser, WorklistFilters, WorklistSort } from "@axis/types";
 import type { ThemeMode } from "@/lib/theme";
+import { apiClient } from "@/lib/api-client";
 
 type AuthStatus = "loading" | "authenticated" | "anonymous";
 
@@ -19,6 +20,7 @@ interface AppState {
   setCurrentUser: (user: AuthUser | null) => void;
   clearCurrentUser: () => void;
   setTheme: (theme: ThemeMode) => void;
+  hydrateAuth: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -41,4 +43,12 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   clearCurrentUser: () => set({ currentUser: null, authStatus: "anonymous" }),
   setTheme: (theme) => set({ theme }),
+  hydrateAuth: async () => {
+    try {
+      const res = await apiClient.get<{ data: AuthUser }>("/auth/me");
+      set({ currentUser: res.data, authStatus: "authenticated" });
+    } catch {
+      set({ currentUser: null, authStatus: "anonymous" });
+    }
+  },
 }));

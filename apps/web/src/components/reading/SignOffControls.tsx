@@ -30,15 +30,7 @@ export function SignOffControls({
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const canSignOff =
-    status === "REPORT_DRAFT" ||
-    status === "CORRECTION_REQUESTED" ||
-    status === "IN_READING";
-
-  const canMarkDelivered =
-    status === "MANAGER_APPROVED" ||
-    status === "DELIVERED_TO_HOSPITAL" ||
-    status === "HOSPITAL_REVIEW";
+  const canSignOff = status === "REPORT_DRAFT";
 
   const handleSignOff = async () => {
     if (busy) return;
@@ -56,25 +48,6 @@ export function SignOffControls({
     } catch (e) {
       setNotice(
         (e as { message?: string }).message ?? "Sign-off failed.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleMarkDelivered = async () => {
-    if (busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      await apiClient.post(
-        `/reports/${encodeURIComponent(studyInstanceUid)}/deliver`,
-      );
-      setNotice("Study marked as delivered.");
-      onChanged?.();
-    } catch (e) {
-      setNotice(
-        (e as { message?: string }).message ?? "Failed to mark delivered.",
       );
     } finally {
       setBusy(false);
@@ -109,14 +82,6 @@ export function SignOffControls({
                 <Loader2 size={14} className="inline animate-spin" />
               ) : null}{" "}
               Sign Report
-            </button>
-            <button
-              type="button"
-              disabled={busy || !canMarkDelivered}
-              onClick={() => void handleMarkDelivered()}
-              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Mark Delivered
             </button>
           </div>
 

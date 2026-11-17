@@ -49,7 +49,7 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-background px-6">
+    <main className="auth-light flex min-h-screen flex-col items-center justify-center bg-background px-6">
       <div className="mb-6 flex items-center gap-2.5">
         <Activity size={24} className="text-accent" />
         <span className="font-heading text-xl font-bold tracking-tight text-text-primary">
