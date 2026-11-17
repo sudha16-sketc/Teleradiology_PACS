@@ -12,6 +12,7 @@ import {
 } from './common/observability/correlation.middleware.js';
 import { securityHeadersMiddleware } from './common/security/security-headers.middleware.js';
 import { rateLimit } from './common/security/rate-limit.middleware.js';
+import { limitUploadBody } from './common/security/upload-size.middleware.js';
 import { logger } from './common/observability/structured-logger.js';
 
 /**
@@ -51,13 +52,34 @@ async function bootstrap() {
   app.use(securityHeadersMiddleware);
   app.use(requestLoggingMiddleware);
 
+  // Honor X-Forwarded-For only when a reverse proxy is actually present.
+  // Operators must set TRUST_PROXY (1 or a hop count) when deploying behind a
+  // proxy, otherwise every backend user shares the proxy's IP in rate limits.
+  const trustProxy = process.env.TRUST_PROXY;
+  if (trustProxy && trustProxy !== '0' && trustProxy !== 'false') {
+    const hops = Number(trustProxy);
+    const trustValue =
+      trustProxy === 'true' ? 1 : Number.isFinite(hops) && hops > 0 ? hops : trustProxy;
+    (app.getHttpAdapter().getInstance() as { set: (k: string, v: unknown) => void }).set(
+      'trust proxy',
+      trustValue,
+    );
+  }
+
   // Targeted abuse protection. In-process limiter (see rate-limit module notes).
   // Disabled under NODE_ENV=test so the automated suite is unaffected.
-  const rl = (name: string, windowMs: number, max: number) =>
-    rateLimit({ windowMs, max, name });
-  app.use('/api/auth/login', rl('login', 15 * 60 * 1000, 100));
+  const rl = (name: string, windowMs: number, max: number, keyFn?: (req: import('express').Request) => string) =>
+    rateLimit({ windowMs, max, name, keyFn });
+  const loginAccountKey = (req: import('express').Request) =>
+    `acct:${String((req.body as { email?: unknown })?.email ?? '').toLowerCase().trim()}`;
+  // Per-account throttle: bounds distributed brute force against one account
+  // regardless of which IPs are used.
+  app.use('/api/auth/login', rl('login_account', 15 * 60 * 1000, 20, loginAccountKey));
+  // Per-IP throttle: bounds single-client password spraying.
+  app.use('/api/auth/login', rl('login', 15 * 60 * 1000, 60));
   app.use('/api/auth/register', rl('register', 60 * 60 * 1000, 20));
   app.use('/api/dicom/ingest', rl('dicom_upload', 60 * 1000, 20));
+  app.use('/api/dicom/ingest', limitUploadBody);
   app.use('/api/studies/:uid/correction-requests', rl('correction_request', 60 * 60 * 1000, 50));
   app.use('/api/corrections/:id/approve', rl('correction_approve', 60 * 60 * 1000, 100));
   app.use('/api/corrections/:id/reject', rl('correction_reject', 60 * 60 * 1000, 100));

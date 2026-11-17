@@ -145,20 +145,47 @@ read (tenant + assignment isolation is enforced at the proxy).
 
 ## 6. OHIF setup
 
-- Container: `axis-ohif`, published `:3001` → internal `:80`.
+- Container: `axis-ohif`, built from `infra/ohif/Dockerfile` (which extends
+  `ohif/app:v3.13.0`), published `:3001` → internal `:80`.
 - Config: `infra/ohif/app-config.js`
   - `routerBasename: '/ohif'`
   - `extensions` / `modes` arrays present (required by OHIF).
   - DICOMweb `qidoRoot` / `wadoRoot` → `http://localhost:3000/api/dicom-web`
     (all traffic through the Axis API proxy).
-- `apps/web/next.config.mjs` rewrites `/ohif/:path*` → `:3001` so the viewer
-  is same-origin with the app and inherits the session cookie.
+- The app is installed into the `/ohif/` subdirectory of the container via
+  `ENV PUBLIC_URL=/ohif/`. The upstream `ohif/app` image bakes its asset URLs
+  in as root-relative — `index.html` loads `/app.bundle.<hash>.js` and the
+  rspack runtime hardcodes `__webpack_require__.p = "/"`, which is also what
+  builds the URL of every lazily loaded chunk — so a stock image renders a
+  blank viewer when proxied under a path prefix. The Dockerfile rebases that
+  public path onto `/ohif/` at build time and asserts the result, so a future
+  OHIF version bump fails the build instead of silently regressing.
+- The viewer **must** stay same-origin with the app: OHIF's DICOMweb client
+  issues its QIDO-RS/WADO-RS requests with `credentials: "same-origin"`, so on a
+  separate origin the browser would attach no cookie to `/api/dicom-web` and
+  every study request would 401.
+- `apps/web/next.config.mjs` rewrites `/ohif/:path*` → `:3001/ohif/:path*`.
+  `/ohif` is rewritten explicitly to `/ohif/index.html`; without that, `/ohif`
+  maps to a directory, which 301-redirects to `/ohif/`, while Next's own
+  trailing-slash normalisation 308-redirects `/ohif/` back — an endless loop.
 
-Verify the viewer serves:
+Because the viewer is now served from a path prefix, the OHIF image is built
+rather than pulled:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3001/ohif/
+docker compose build ohif
+docker compose up -d ohif
 ```
+
+Verify the viewer and its assets serve:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/ohif/
+curl -s http://localhost:3000/ohif/ | grep -oE '(src|href)="/[^"]*"' | grep -v '/ohif/'  # expect no output
+```
+
+Both requests need a session cookie: the web middleware only checks for the
+presence of `axis_session`, so any value is enough for a smoke test.
 
 ---
 

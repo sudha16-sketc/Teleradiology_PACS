@@ -12,8 +12,13 @@ import { log } from '../observability/structured-logger.js';
  * The limiter is disabled when NODE_ENV=test so the existing automated test
  * suite (which authenticates heavily from a single IP) is unaffected.
  */
-export function rateLimit(opts: { windowMs: number; max: number; name: string }) {
-  const { windowMs, max, name } = opts;
+export function rateLimit(opts: {
+  windowMs: number;
+  max: number;
+  name: string;
+  keyFn?: (req: Request) => string;
+}) {
+  const { windowMs, max, name, keyFn } = opts;
   const hits = new Map<string, { count: number; resetAt: number }>();
 
   return function rateLimiter(req: Request, res: Response, next: NextFunction): void {
@@ -21,7 +26,9 @@ export function rateLimit(opts: { windowMs: number; max: number; name: string })
       return next();
     }
 
-    const key = req.ip || req.socket?.remoteAddress || 'unknown';
+    const key = keyFn
+      ? keyFn(req)
+      : req.ip || req.socket?.remoteAddress || 'unknown';
     const now = Date.now();
 
     const record = hits.get(key);

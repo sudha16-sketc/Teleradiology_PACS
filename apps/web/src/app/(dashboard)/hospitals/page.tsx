@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Send, Clock, CheckCircle2, Timer, RefreshCw } from "lucide-react";
-import type { Study, StudyStatus } from "@axis/types";
+import type { Study, StudyStatus, ApiError } from "@axis/types";
 import { MetricCard } from "@/components/hospital/MetricCard";
 import { StudyPipeline } from "@/components/hospital/StudyPipeline";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -20,17 +20,22 @@ export default function HospitalPortalPage() {
   const router = useRouter();
   const [studies, setStudies] = useState<Study[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     setIsLoading(true);
-    setHasError(false);
+    setError(null);
     try {
       const res = await apiClient.get<StudiesEnvelope>("/studies");
       setStudies(res.data ?? []);
     } catch (e) {
+      // Keep the server's reason (e.g. a 403 "not linked to a hospital") instead
+      // of a generic message, otherwise every failure looks identical here.
+      const message =
+        (e as ApiError).message ??
+        "Unable to fetch your hospital's studies.";
       console.error("Failed to load hospital studies", e);
-      setHasError(true);
+      setError(message);
     } finally {
       setIsLoading(false);
     }
@@ -59,12 +64,12 @@ export default function HospitalPortalPage() {
     ["HOSPITAL_SUBMITTED", "RECEIVING", "VALIDATING", "UNASSIGNED", "ASSIGNED", "IN_READING", "REPORT_DRAFT"].includes(s.status),
   );
 
-  if (hasError) {
+  if (error) {
     return (
       <div className="p-6">
         <ErrorState
           title="Failed to load hospital portal"
-          description="Unable to fetch your hospital's studies."
+          description={error}
           onRetry={() => load()}
         />
       </div>

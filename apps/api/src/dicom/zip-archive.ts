@@ -100,11 +100,21 @@ export async function extractDicomArchive(uploadBuffer: Buffer): Promise<Extract
       // size. Checking only after decompression (as before) allows a small
       // compressed entry that expands to gigabytes ("zip bomb") to blow up
       // memory before the limit is ever enforced.
+      //
+      // A7: a DEFLATED entry declaring size 0 disables adm-zip's inflate cap
+      // (expectedLength > 0 is false) AND defeats the pre-decompression check,
+      // so a tiny archive can expand unboundedly. Reject entries whose declared
+      // uncompressed size is missing or non-positive outright.
       if (
-        entry.header &&
-        typeof entry.header.size === 'number' &&
-        entry.header.size > DICOM_LIMITS.MAX_FILE_BYTES
+        !entry.header ||
+        typeof entry.header.size !== 'number' ||
+        entry.header.size <= 0
       ) {
+        throw new BadRequestException(
+          `Archive entry has an invalid declared size: ${entry.entryName}`,
+        );
+      }
+      if (entry.header.size > DICOM_LIMITS.MAX_FILE_BYTES) {
         throw new BadRequestException(
           `Archive entry exceeds the per-file size limit: ${entry.entryName}`,
         );

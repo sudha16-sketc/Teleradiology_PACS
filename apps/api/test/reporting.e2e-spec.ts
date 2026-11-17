@@ -58,6 +58,7 @@ async function cleanupStudy(id: string, patientId: string) {
   await prisma.series.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.worklistItem.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.assignment.deleteMany({ where: { studyId: id } }).catch(() => undefined);
+  await prisma.notification.deleteMany({ where: { studyId: id } }).catch(() => undefined);
   await prisma.auditLog.deleteMany({ where: { resourceId: id } }).catch(() => undefined);
   await prisma.study.delete({ where: { id } }).catch(() => undefined);
   const remaining = await prisma.study.count({ where: { patientId } }).catch(() => 0);
@@ -221,6 +222,53 @@ describe('Phase 4 — Reporting', () => {
     });
   });
 
+  // ---- REPORT-3b: editing an existing DRAFT must re-normalise study status ----
+  // Regression: sign-off was permanently blocked for a pre-existing DRAFT report
+  // whose study lagged in ASSIGNED/IN_READING, because ensureDraftState only ran
+  // on the create branch of saveDraft.
+  describe('REPORT-3b: editing an existing DRAFT while study is ASSIGNED enables sign-off', () => {
+    let study: { id: string; studyInstanceUid: string; patientId: string };
+    let reportId: string;
+
+    beforeAll(async () => {
+      study = await seedStudy({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.ASSIGNED, assignedRadiologist: rad1Id });
+      await prisma.assignment.create({
+        data: { studyId: study.id, radiologistId: rad1Id, assignedById: rad1Id, isActive: true },
+      });
+      const report = await prisma.report.create({
+        data: {
+          studyId: study.id,
+          authorId: rad1Id,
+          status: 'DRAFT',
+          version: 1,
+          findings: '',
+          impression: '',
+          contentHash: 'x',
+        },
+      });
+      reportId = report.id;
+    });
+
+    afterAll(async () => {
+      await cleanupStudy(study.id, study.patientId);
+    });
+
+    it('REPORT-3b: saveDraft on the existing draft advances ASSIGNED -> REPORT_DRAFT', async () => {
+      await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ findings: 'Normal', impression: 'Normal study.' })
+        .expect(200);
+
+      const afterSave = await prisma.study.findUniqueOrThrow({ where: { id: study.id } });
+      expect(afterSave.status).toBe('REPORT_DRAFT');
+    });
+
+    it('REPORT-3b: the radiologist can then sign the report', async () => {
+      const sign = await rad1Agent.post(`/api/reports/${study.studyInstanceUid}/sign`);
+      expect(sign.status).toBe(201);
+    });
+  });
+
   // ---- REPORT-4: non-radiologist cannot save draft ----
   describe('REPORT-4: non-radiologist cannot save draft', () => {
     let study: { id: string; studyInstanceUid: string; patientId: string };
@@ -368,6 +416,21 @@ describe('Phase 4 — Reporting', () => {
       expect(dbReport).toBeTruthy();
       expect(dbReport!.contentHash).toHaveLength(64);
       expect(dbReport!.contentHash).toBe(expectedHash(draftContent));
+    });
+
+    it('REPORT-8d: returned report creates a PHI-minimal radiologist notification', async () => {
+      await managerAgent
+        .post(`/api/reports/${study.studyInstanceUid}/change-request`)
+        .send({ reason: 'Please clarify the impression.' })
+        .expect(201);
+
+      const notification = await prisma.notification.findFirst({
+        where: { recipientUserId: rad1Id, type: 'REPORT_RETURNED', studyId: study.id },
+      });
+      expect(notification).toMatchObject({
+        title: 'Report returned',
+        message: 'A report was returned to you for revision.',
+      });
     });
   });
 

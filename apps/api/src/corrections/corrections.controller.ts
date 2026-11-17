@@ -1,7 +1,11 @@
-import { Controller, Get, Post, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
 import { CorrectionsService } from './corrections.service.js';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
-import { CreateCorrectionRequestDto, RejectCorrectionDto } from './dto/corrections.dto.js';
+import {
+  CreateCorrectionRequestDto,
+  RejectCorrectionDto,
+  ListCorrectionsQueryDto,
+} from './dto/corrections.dto.js';
 import type { UserRole } from '@prisma/client';
 
 interface RequestUser {
@@ -49,8 +53,8 @@ export class CorrectionsController {
 
   @Get()
   @Roles('ADMIN', 'MANAGER', 'RADIOLOGIST', 'HOSPITAL')
-  list(@CurrentUser() user: RequestUser) {
-    return this.correctionsService.list(user);
+  list(@Query() dto: ListCorrectionsQueryDto, @CurrentUser() user: RequestUser) {
+    return this.correctionsService.list(user, dto);
   }
 
   @Post(':id/approve')

@@ -1,7 +1,16 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { AuditService } from './audit.service.js';
-import { IsOptional, IsString, IsInt, Min, Max, IsDateString } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsInt,
+  Min,
+  Max,
+  IsDateString,
+  IsEnum,
+} from 'class-validator';
 import { Type } from 'class-transformer';
+import { UserRole, AuditAction, AuditResource } from '@prisma/client';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
 
 class ListAuditDto {
@@ -23,16 +32,16 @@ class ListAuditDto {
   actorId?: string;
 
   @IsOptional()
-  @IsString()
-  actorRole?: string;
+  @IsEnum(UserRole)
+  actorRole?: UserRole;
 
   @IsOptional()
-  @IsString()
-  resource?: string;
+  @IsEnum(AuditResource)
+  resource?: AuditResource;
 
   @IsOptional()
-  @IsString()
-  action?: string;
+  @IsEnum(AuditAction)
+  action?: AuditAction;
 
   @IsOptional()
   @IsString()

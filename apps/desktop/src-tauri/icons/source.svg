@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Axis Desktop application icon.
+    Source of truth for every platform icon: regenerate with
+    "pnpm desktop:icon".
+
+    Brand colours are taken from apps/web/src/app/globals.css so the desktop
+    icon and the web client cannot drift apart:
+      bg.base      #0B0E14     (dark theme background)
+      accent.cyan  #3FD0E0     (color.accent)
+  -->
+  <rect width="1024" height="1024" rx="224" ry="224" fill="#0B0E14" />
+  <g
+    transform="translate(200,200) scale(26)"
+    fill="none"
+    stroke="#3FD0E0"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <!-- The same Activity mark the sign-in screen shows next to the word Axis. -->
+    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+  </g>
+</svg>

@@ -1,0 +1,53 @@
+# Permissions for the app's own #[tauri::command] handlers.
+#
+# The desktop window loads a *remote* Axis deployment, so every command it
+# invokes is subject to the capability ACL — app-defined commands included
+# (see tauri/src/webview/mod.rs: remote content cannot reach a custom command
+# without an explicit capability entry). This file declares them.
+#
+# Both commands open the native dialog themselves and grant read access only to
+# the paths the user actually chose, so a caller that cannot show a picker
+# cannot obtain a path to read. See src/file_select.rs.
+
+"$schema" = "../gen/schemas/acl-manifests.json"
+
+[[permission]]
+identifier = "allow-pick-dicom-files"
+description = """
+Opens the native file picker for DICOM submission and returns the validated
+files the user chose. Read access is granted per-selection, never up front.
+"""
+commands.allow = ["pick_dicom_files"]
+
+[[permission]]
+identifier = "allow-pick-dicom-folder"
+description = """
+Opens the native folder picker for DICOM submission and returns the validated
+directory the user chose. Read access is granted for that directory only.
+"""
+commands.allow = ["pick_dicom_folder"]
+
+[[permission]]
+identifier = "allow-collect-dicom-folder"
+description = """
+Enumerates a folder the user already picked through pick_dicom_folder, and
+grants read access to the DICOM files inside it.
+
+The walk runs in Rust rather than in JavaScript, so path construction, the
+symlink decision and the read grants all stay on the same side of the boundary
+as the dialog that authorised them. It follows no symlinks, descends at most
+twelve levels and visits at most 200,000 entries.
+"""
+commands.allow = ["collect_dicom_folder"]
+
+[[permission]]
+identifier = "allow-release-picked-paths"
+description = """
+Withdraws the read grants issued by pick_dicom_files / pick_dicom_folder.
+
+Called once an upload finishes so the shell does not retain filesystem access
+to every file the user has ever picked for the lifetime of the process. It can
+only narrow the scope, never widen it: it accepts no path the pickers did not
+already issue, and a path outside the current scope is a no-op.
+"""
+commands.allow = ["release_picked_paths"]

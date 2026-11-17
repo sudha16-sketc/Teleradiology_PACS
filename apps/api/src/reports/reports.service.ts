@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
   ConflictException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -73,12 +74,15 @@ interface Actor {
 
 @Injectable()
 export class ReportsService {
+  private readonly logger = new Logger(ReportsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly studies: StudiesService,
     private readonly reviews: ReviewsService,
     private readonly corrections: CorrectionsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async auditLog(
@@ -204,31 +208,57 @@ export class ReportsService {
     }
   }
 
-  async list(user: Actor) {
+  async list(user: Actor, query: { page?: string; pageSize?: string } = {}) {
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
     const where: Record<string, unknown> = {};
-    if (user.role === 'HOSPITAL' && user.hospitalId) {
+    if (user.role === 'HOSPITAL') {
+      // A HOSPITAL account with no linked hospital must never fall through to
+      // an unscoped query (which would expose every hospital's reports).
+      if (!user.hospitalId) {
+        throw new ForbiddenException('Your account is not linked to a hospital');
+      }
       where.study = {
         hospitalId: user.hospitalId,
-        status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'HOSPITAL_REVIEW', 'HOSPITAL_ACCEPTED', 'COMPLETED'] },
+        status: { in: [...HOSPITAL_VISIBLE_STATES] },
       };
     } else if (user.role === 'RADIOLOGIST') {
       where.study = { assignedRadiologistId: user.id };
     }
 
-    const reports = await this.prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: { patient: true, hospital: true },
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: { patient: true, hospital: true },
+          },
+          author: true,
         },
-        author: true,
+        orderBy: { updatedAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+    return {
+      data: reports,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
       },
-      orderBy: { updatedAt: 'desc' },
-    });
-    return { data: reports };
+    };
   }
 
-  async hospitalReports(user: Actor) {
+  async hospitalReports(user: Actor, query: { page?: string; pageSize?: string } = {}) {
+    const page = Math.max(parseInt(query.page ?? '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(query.pageSize ?? '20', 10) || 20, 1), 100);
+    const take = pageSize;
+    const skip = (page - 1) * pageSize;
     if (user.role === 'HOSPITAL' && !user.hospitalId) {
       throw new ForbiddenException('Your account is not linked to a hospital');
     }
@@ -241,17 +271,30 @@ export class ReportsService {
       },
     };
 
-    const reports = await this.prisma.report.findMany({
-      where,
-      include: {
-        study: {
-          include: { patient: true, hospital: true },
+    const [total, reports] = await Promise.all([
+      this.prisma.report.count({ where }),
+      this.prisma.report.findMany({
+        where,
+        include: {
+          study: {
+            include: { patient: true, hospital: true },
+          },
+          author: true,
         },
-        author: true,
+        orderBy: { updatedAt: 'desc' },
+        take,
+        skip,
+      }),
+    ]);
+    return {
+      data: reports,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
       },
-      orderBy: { updatedAt: 'desc' },
-    });
-    return { data: reports };
+    };
   }
 
   async getByStudy(studyUid: string, user?: Actor) {
@@ -389,6 +432,18 @@ export class ReportsService {
     if (study.status !== StudyStatus.REPORT_DRAFT) {
       await this.ensureDraftState(study, actor);
     }
+
+    // A draft can be created/edited while the study is ASSIGNED, IN_READING or
+    // REPORT_DRAFT. The workflow state must be normalised to REPORT_DRAFT on
+    // EVERY save (not just the first draft creation): if the study was moved
+    // back out of REPORT_DRAFT (reassignment, correction, etc.) while a draft
+    // already existed, leaving it in ASSIGNED/IN_READING would keep sign-off
+    // permanently disabled. ensureDraftState is idempotent and early-returns
+    // when the study is already REPORT_DRAFT.
+    await this.ensureDraftState(
+      { studyInstanceUid: study.studyInstanceUid, status: study.status },
+      actor,
+    );
 
     await this.auditLog(
       actor,
@@ -781,6 +836,17 @@ export class ReportsService {
     await this.prisma.study.update({ where: { id: study.id }, data: { status: 'CORRECTION_REQUESTED' } });
 
     await this.auditLog(actor, 'CHANGE_REQUESTED', 'CHANGE_REQUEST', changeRequest.id, { studyUid, reportId: report.id, result: 'request_created' });
+
+    try {
+      await this.notifications.notifyRadiologist(changeRequest.assignedToId, {
+        type: 'REPORT_RETURNED',
+        title: 'Report returned',
+        message: 'A report was returned to you for revision.',
+        studyId: study.id,
+      });
+    } catch {
+      this.logger.warn('Could not persist report-return notification.');
+    }
 
     return { data: changeRequest };
   }

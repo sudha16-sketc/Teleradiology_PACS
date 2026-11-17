@@ -171,6 +171,54 @@ describe('Phase 6 — Notifications', () => {
     expect(after.readAt).toBeTruthy();
   });
 
+  // Regression: the client deep-links a notification to /reading/[studyUid],
+  // which is keyed by the DICOM StudyInstanceUID. `studyId` is the internal
+  // Study primary key, so using it as a link produced a 404.
+  it('NOTIFICATION-5: list projects the routable studyInstanceUid, not the internal study id', async () => {
+    const { s, ra1 } = await driveCorrectionTo(true, 'approved');
+    const list = await ra1.get('/api/notifications').expect(200);
+    const n = list.body.data.find(
+      (x: any) => x.studyId === s.id && x.type === 'CORRECTION_APPROVED',
+    );
+    expect(n).toBeTruthy();
+    expect(n.study.studyInstanceUid).toBe(s.studyInstanceUid);
+    // The routable identifier must be the DICOM UID, never the internal key.
+    expect(n.study.studyInstanceUid).not.toBe(s.id);
+  });
+
+  it('NOTIFICATION-6: a study-less notification is returned with study null', async () => {
+    const { ra1 } = await driveCorrectionTo(true, 'approved');
+    await prisma.notification.create({
+      data: {
+        recipientUserId: (await prisma.user.findUniqueOrThrow({ where: { email: rad1.email } })).id,
+        type: 'CORRECTION_APPROVED',
+        title: 'orphaned',
+        message: 'no study reference',
+      },
+    });
+    const list = await ra1.get('/api/notifications').expect(200);
+    const n = list.body.data.find((x: any) => x.title === 'orphaned');
+    expect(n).toBeTruthy();
+    expect(n.study).toBeNull();
+  });
+
+  // A notification must only ever expose a study to its own recipient; the
+  // projection must not widen visibility across users.
+  it('NOTIFICATION-7: study projection does not leak other users notifications', async () => {
+    const { s, ra1 } = await driveCorrectionTo(true, 'approved');
+    await prisma.notification.create({
+      data: {
+        recipientUserId: (await prisma.user.findUniqueOrThrow({ where: { email: h_mmc.email } })).id,
+        type: 'CORRECTION_APPROVED',
+        title: 'other user only',
+        message: 'private',
+        studyId: s.id,
+      },
+    });
+    const list = await ra1.get('/api/notifications').expect(200);
+    expect(list.body.data.some((x: any) => x.title === 'other user only')).toBe(false);
+  });
+
   it('NOTIFICATION-4: mark-all-read updates unread count', async () => {
     const { ra1 } = await driveCorrectionTo(true, 'approved');
     const res = await ra1.post('/api/notifications/read-all').expect(201);

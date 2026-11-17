@@ -14,8 +14,21 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }, [hydrateAuth]);
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <ThemeManager>{children}</ThemeManager>
-    </QueryClientProvider>
+    /*
+     * The class boundary is the outer of the two on purpose. It is synchronous
+     * and imports almost nothing, so it still works when the providers below it
+     * are the thing that failed to render.
+     */
+    <ErrorBoundary
+      fallback={(error, reset) => (
+        <AppErrorBoundaryFallback error={error} reset={reset} />
+      )}
+    >
+      <QueryClientProvider client={queryClient}>
+        <GlobalErrorCapture>
+          <ThemeManager>{children}</ThemeManager>
+        </GlobalErrorCapture>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

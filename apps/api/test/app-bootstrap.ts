@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from '../src/app.module.js';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter.js';
 import { correlationMiddleware } from '../src/common/observability/correlation.middleware.js';
+import { limitUploadBody } from '../src/common/security/upload-size.middleware.js';
 
 // Prisma maps BIGINT columns (e.g. BackupRun.sizeBytes) to JS BigInt, which
 // JSON.stringify cannot serialize. Keep responses JSON-safe in the test harness.
@@ -28,6 +29,7 @@ export async function createTestApp(): Promise<{
   app.enableCors({ origin: true, credentials: true });
   app.use(cookieParser());
   app.use(correlationMiddleware);
+  app.use('/api/dicom/ingest', limitUploadBody);
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalFilters(new HttpExceptionFilter());

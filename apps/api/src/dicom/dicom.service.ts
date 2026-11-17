@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { readFile } from 'fs/promises';
 import AdmZip from 'adm-zip';
+import { Prisma } from '@prisma/client';
 import type { Modality, StudyPriority, Subspecialty, UserRole } from '@prisma/client';
 import { extractDicomArchive, type ExtractedArchive } from './zip-archive.js';
 import { parseDicomBuffer, validateDicomIdentifiers, type ParsedDicom } from './dicom.parser.js';
@@ -78,6 +79,13 @@ export class DicomService {
     return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
   }
 
+  private orthancTimeoutMs(): number {
+    const raw = process.env.AXIS_ORTHANC_TIMEOUT_MS;
+    if (!raw) return 30000;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
+  }
+
   private async orthancFetch(path: string, options: RequestInit = {}) {
     const url = `${this.orthancBase()}${path}`;
     const headers: Record<string, string> = {
@@ -86,9 +94,29 @@ export class DicomService {
     const auth = this.orthancAuthHeader();
     if (auth) headers.Authorization = auth;
 
-    const res = await fetch(url, { ...options, headers });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.orthancTimeoutMs());
+    let res: Awaited<ReturnType<typeof fetch>>;
+    try {
+      res = await fetch(url, { ...options, headers, signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timer);
+      // Never leak internal Orthanc URL/endpoint details (C27) or hang a
+      // worker forever while Orthanc is unhealthy (C15).
+      const timedOut = (err as Error)?.name === 'AbortError';
+      throw new ServiceUnavailableException(
+        timedOut
+          ? 'The imaging backend timed out'
+          : 'The imaging backend is temporarily unavailable',
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+
     if (!res.ok) {
-      throw new ServiceUnavailableException(`Orthanc returned ${res.status} for ${path}`);
+      throw new ServiceUnavailableException(
+        'The imaging backend could not fulfil the request',
+      );
     }
     return res;
   }
@@ -146,11 +174,13 @@ export class DicomService {
     const accepted = body && (body.Status === 'Success' || body.Status === 'AlreadyStored');
     if (!accepted || !body.ID) {
       throw new ServiceUnavailableException(
-        `Orthanc rejected DICOM instance (${body?.Message ?? 'unknown error'})`,
+        'The imaging backend rejected the DICOM instance',
       );
     }
     if (!body.ParentStudy || !body.ParentSeries || !body.ID) {
-      throw new ServiceUnavailableException('Orthanc did not return exact study/series/instance identifiers');
+      throw new ServiceUnavailableException(
+        'The imaging backend did not return study/series/instance identifiers',
+      );
     }
     return {
       parsed,
@@ -187,25 +217,33 @@ export class DicomService {
     let archive: ExtractedArchive | null = null;
     let study: any = null;
 
-    // Normalise the upload into a single ZIP buffer so the hardened extraction
-    // pipeline is always used:
-    //   - a single already-zipped archive is passed through untouched;
-    //   - one or more raw DICOM instances (folder/multi-file drag, or a single
-    //     .dcm) are bundled into an in-memory ZIP first.
-    let uploadBuffer: Buffer;
-    if (files.length === 1 && isZip(files[0].buffer)) {
-      uploadBuffer = files[0].buffer;
+    // Read the uploaded bytes from the disk-backed staging area (multer
+    // diskStorage) rather than an in-memory buffer, so studies up to the 1 GiB
+    // per-file limit can be ingested without holding the whole request in heap.
+    // Files are read back one at a time; the controller removes the staging
+    // directory in finally.
+    const readUpload = async (f: Express.Multer.File): Promise<Buffer> =>
+      f.path ? readFile(f.path) : Promise.resolve(f.buffer as Buffer);
+
+    let fileBuffer: Buffer;
+    if (files.length === 1) {
+      // A single upload: if it is a ZIP it is passed to the hardened
+      // extraction pipeline untouched; if it is a raw DICOM instance it is
+      // validated and ingested directly (no in-memory re-zip round-trip).
+      fileBuffer = await readUpload(files[0]);
     } else {
+      // Multiple raw instances (folder/multi-file drag) are bundled into a
+      // single ZIP so the hardened extraction/validation pipeline is reused.
       const zip = new AdmZip();
-      files.forEach((f, i) => {
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
         const base = (f.originalname || `instance`).split(/[\\/]/).pop() || `instance`;
         const ext = /\.(dcm|dicom)$/i.test(base) ? '' : '.dcm';
         const safeName = `${i + 1}_${base.replace(/\.[^.]*$/, '') || 'dicom'}${ext}`;
-        zip.addFile(safeName, f.buffer);
-      });
-      uploadBuffer = zip.toBuffer();
+        zip.addFile(safeName, await readUpload(f));
+      }
+      fileBuffer = zip.toBuffer();
     }
-    const fileBuffer = uploadBuffer;
 
     try {
       // 1. Collect the raw DICOM instances (single file or safely extracted ZIP).
@@ -296,25 +334,61 @@ export class DicomService {
       };
 
       if (existingStudy) {
+        // A5: a StudyInstanceUID is unique system-wide. Only the owning hospital
+        // may append to / re-ingest it; a different hospital forging the same UID
+        // must never silently take the study over.
+        if (existingStudy.hospitalId !== hospitalId) {
+          throw new ForbiddenException(
+            'A study with this StudyInstanceUID already belongs to another hospital and cannot be modified',
+          );
+        }
         study = await this.prisma.study.update({
           where: { id: existingStudy.id },
           data: {
             ...baseStudyData,
-            patientId: baseStudyData.patientId,
+            hospitalId: existingStudy.hospitalId,
             status: 'RECEIVING',
           },
           include: { patient: true, hospital: true },
         });
       } else {
-        study = await this.prisma.study.create({
-          data: {
-            ...baseStudyData,
-            studyInstanceUid: studyUid,
-            status: 'RECEIVING',
-            deliveredAt: null,
-          },
-          include: { patient: true, hospital: true },
-        });
+        try {
+          study = await this.prisma.study.create({
+            data: {
+              ...baseStudyData,
+              studyInstanceUid: studyUid,
+              status: 'RECEIVING',
+              deliveredAt: null,
+            },
+            include: { patient: true, hospital: true },
+          });
+        } catch (err) {
+          // Concurrent first-time uploads of the same UID race the unique
+          // constraint (P2002). Resolve in favor of the existing row instead of
+          // surfacing a 500, still enforcing hospital ownership.
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+            const raced = await this.prisma.study.findUnique({
+              where: { studyInstanceUid: studyUid },
+            });
+            if (!raced) throw err;
+            if (raced.hospitalId !== hospitalId) {
+              throw new ForbiddenException(
+                'A study with this StudyInstanceUID already belongs to another hospital and cannot be modified',
+              );
+            }
+            study = await this.prisma.study.update({
+              where: { id: raced.id },
+              data: {
+                ...baseStudyData,
+                hospitalId: raced.hospitalId,
+                status: 'RECEIVING',
+              },
+              include: { patient: true, hospital: true },
+            });
+          } else {
+            throw err;
+          }
+        }
       }
 
       // 5. Audit: study uploaded (validated, before DICOM import).

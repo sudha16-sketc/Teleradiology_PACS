@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { BackupStatus, BackupType, AuditAction, AuditResource } from '@prisma/client';
@@ -44,6 +44,16 @@ export class BackupService {
 
     const env = resolveBackupEnv();
     const ts = fileTimestamp();
+    const activeRun = await this.prisma.backupRun.findFirst({
+      where: { status: BackupStatus.RUNNING },
+      select: { id: true },
+    });
+    if (activeRun) {
+      throw new ConflictException(
+        `Backup already in progress (run ${activeRun.id}) — concurrent runs are not allowed`,
+      );
+    }
+
     const run = await this.prisma.backupRun.create({
       data: {
         type: t,
@@ -77,7 +87,7 @@ export class BackupService {
       } = { status: BackupStatus.COMPLETED, completedAt: new Date() };
 
       if (t === BackupType.DATABASE || t === BackupType.FULL) {
-        const dbFile = `${env.backupDir}/db_${ts}.sql`;
+        const dbFile = `${env.backupDir}/db_${run.id}_${ts}.sql`;
         const db = await dumpDatabase(dbFile, env);
         update.databaseArtifact = db.filePath;
         update.checksum = db.checksum;
@@ -88,7 +98,7 @@ export class BackupService {
       }
 
       if (t === BackupType.DICOM || t === BackupType.FULL) {
-        const orthancFile = `${env.backupDir}/orthanc_${ts}.tar`;
+        const orthancFile = `${env.backupDir}/orthanc_${run.id}_${ts}.tar`;
         const dicom = await exportOrthancVolume(orthancFile, env);
         update.dicomArtifact = dicom.filePath;
         if (!update.checksum) update.checksum = dicom.checksum;

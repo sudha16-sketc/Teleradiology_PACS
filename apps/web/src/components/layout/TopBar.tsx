@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import {
   ChevronDown,
   LogOut,
+  Maximize2,
+  Minimize2,
   Settings,
   UserRound,
 } from "lucide-react";
@@ -14,6 +16,13 @@ import { apiClient } from "@/lib/api-client";
 import { ROLE_LABELS } from "@/lib/permissions";
 import { NotificationBell } from "@/components/layout/NotificationBell";
 import { ThemeMenu } from "@/components/layout/ThemeMenu";
+import { UpdateCheckButton } from "@/components/UpdateStatus";
+import {
+  isWindowMaximized,
+  minimizeWindow,
+  toggleMaximizeWindow,
+} from "@/lib/desktop-bridge";
+import { isDesktop } from "@/lib/platform";
 
 function avatarInitials(name: string): string {
   return name
@@ -30,6 +39,7 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
   const currentUser = useAppStore((s) => s.currentUser);
   const clearCurrentUser = useAppStore((s) => s.clearCurrentUser);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,6 +50,10 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (isDesktop()) void isWindowMaximized().then(setMaximized);
   }, []);
 
   async function handleLogout() {
@@ -80,8 +94,34 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
       </div>
 
       <div className="flex items-center gap-4">
+        <UpdateCheckButton />
         <ThemeMenu />
         <NotificationBell />
+        {isDesktop() && (
+          <div className="flex items-center gap-1 border-l border-border pl-2">
+            <button
+              type="button"
+              onClick={() => void minimizeWindow()}
+              className="rounded-md p-2 text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary"
+              aria-label="Minimize window"
+              title="Minimize window"
+            >
+              <Minimize2 size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                const result = await toggleMaximizeWindow();
+                if (result.ok) setMaximized((current) => !current);
+              }}
+              className="rounded-md p-2 text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary"
+              aria-label={maximized ? "Restore window" : "Maximize window"}
+              title={maximized ? "Restore window" : "Maximize window"}
+            >
+              {maximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
+          </div>
+        )}
 
         <div className="relative" ref={menuRef}>
           <button

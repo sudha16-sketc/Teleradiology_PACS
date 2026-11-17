@@ -250,6 +250,12 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
     expect(res.body.message).toContain('DICOM');
   });
 
+  it('DICOM-ZIP-8: rejects an upload larger than the aggregate cap (A6, 413)', async () => {
+    const big = Buffer.alloc(2 * 1024 * 1024, 0x1f);
+    const res = await ingest(cghAgent, big, 'oversized.zip');
+    expect(res.status).toBe(413);
+  });
+
   it('DICOM-VAL-2: rejects a DICOM instance missing StudyInstanceUID', async () => {
     const res = await ingest(cghAgent, zipAround(buildP10({ study: false }), 'm.dcm'), 'm1.zip');
     expect(res.status).toBe(400);
@@ -351,5 +357,45 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
     const uid = '1.2.826.0.1.3680043.2.1143.3365540476747857567072393009509418480';
     const res = await mmcAgent.get(`/api/studies/${uid}`).expect(403);
     expect(res.body.message).toContain('access');
+  });
+
+  it('DICOM-ING-3: a different hospital cannot re-upload a DICOM whose StudyInstanceUID exists (A5 study takeover)', async () => {
+    const real = readFileSync(REAL_DICOM);
+    const res = await ingest(mmcAgent, zipAround(real, 'emri_small.dcm'), 'emri-mmc.zip');
+    expect(res.status).toBe(403);
+    expect(res.body.message).toContain('another hospital');
+  });
+});
+
+describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => {
+  let cghAgent: any;
+
+  beforeAll(async () => {
+    cghAgent = await loginAgent(server, h_cgh);
+  });
+
+  it('DICOM-ING-4: a single raw .dcm upload ingests and persists hierarchy like the zipped path', async () => {
+    const studyUid = `1.2.826.0.1.3680043.98.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+    const sopUid = `1.2.826.0.1.3680043.98.9.${Date.now()}`;
+    const raw = buildP10({ studyUid, sopUid });
+
+    const res = await cghAgent
+      .post('/api/dicom/ingest')
+      .attach('file', raw, { filename: 'single.dcm', contentType: 'application/octet-stream' });
+
+    expect(res.status).toBe(201);
+    const data = res.body.data;
+    expect(data.orthancStudyId).toBeTruthy();
+    expect(data.instanceCount).toBe(1);
+    expect(data.skipped).toBe(0);
+
+    const studyId: string = data.study.id;
+    createdStudyIds.push(studyId);
+
+    const study = await prisma.study.findUniqueOrThrow({ where: { id: studyId } });
+    expect(study.studyInstanceUid).toBe(studyUid);
+    expect(study.hospitalId).toBe(CGH_HOSPITAL_ID);
+    expect(study.seriesCount).toBe(1);
+    expect(study.instanceCount).toBe(1);
   });
 });

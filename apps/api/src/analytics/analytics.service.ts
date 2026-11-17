@@ -1,12 +1,22 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma, StudyStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SlaService } from '../sla/sla.service.js';
+import type { AuthenticatedUser } from '../auth/auth.constants.js';
 
 function minutesBetween(from: Date | null | undefined, to: Date | null | undefined): number | null {
   if (!from || !to) return null;
   const ms = to.getTime() - from.getTime();
   return Math.max(0, Math.round(ms / 60000));
 }
+
+const BACKLOG_STATES: StudyStatus[] = [
+  'HOSPITAL_SUBMITTED',
+  'RECEIVING',
+  'VALIDATING',
+  'UNASSIGNED',
+  'ASSIGNED',
+];
 
 @Injectable()
 export class AnalyticsService {
@@ -15,32 +25,58 @@ export class AnalyticsService {
     private readonly sla: SlaService,
   ) {}
 
-  async overview() {
+  /**
+   * Study-scope predicate for tenant isolation. MANAGERs only ever see their
+   * own hospital's data; ADMIN sees everything. A MANAGER without a hospitalId
+   * (a data anomaly) is denied instead of silently given global visibility.
+   */
+  private scopedStudyWhere(
+    user?: AuthenticatedUser,
+  ): { where: Prisma.StudyWhereInput; empty: boolean } {
+    if (!user || user.role !== 'MANAGER') return { where: {}, empty: false };
+    if (!user.hospitalId) return { where: {}, empty: true };
+    return { where: { hospitalId: user.hospitalId }, empty: false };
+  }
+
+  async overview(user?: AuthenticatedUser) {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const { where, empty } = this.scopedStudyWhere(user);
+
+    if (empty) {
+      return {
+        data: {
+          totalStudies: 0,
+          studiesToday: 0,
+          averageTAT: 0,
+          slaComplianceRate: 0,
+          backlogCount: 0,
+          deliverySuccessRate: 0,
+        },
+      };
+    }
+
+    const hospitalId = where.hospitalId as string | undefined;
 
     const [totalStudies, studiesToday, backlogCount] = await Promise.all([
-      this.prisma.study.count(),
-      this.prisma.study.count({ where: { createdAt: { gte: startOfDay } } }),
+      this.prisma.study.count({ where }),
+      this.prisma.study.count({ where: { ...where, createdAt: { gte: startOfDay } } }),
       this.prisma.study.count({
-        where: {
-          status: {
-            in: ['HOSPITAL_SUBMITTED', 'RECEIVING', 'VALIDATING', 'UNASSIGNED', 'ASSIGNED'],
-          },
-        },
+        where: { ...where, status: { in: BACKLOG_STATES } },
       }),
     ]);
 
-    const totalDeliveries = await this.prisma.deliveryAttempt.count();
+    const deliveryWhere = hospitalId ? { hospitalId } : {};
+    const totalDeliveries = await this.prisma.deliveryAttempt.count({ where: deliveryWhere });
     const successfulDeliveries = await this.prisma.deliveryAttempt.count({
-      where: { status: 'COMPLETED' },
+      where: { ...deliveryWhere, status: 'COMPLETED' },
     });
     const deliverySuccessRate =
       totalDeliveries > 0 ? (successfulDeliveries / totalDeliveries) * 100 : 100;
 
     // Server-derived TAT and SLA compliance (never read from unpopulated columns).
     const completed = await this.prisma.study.findMany({
-      where: { status: 'COMPLETED', completedAt: { not: null } },
+      where: { ...where, status: 'COMPLETED', completedAt: { not: null } },
       select: {
         id: true,
         priority: true,
@@ -84,7 +120,7 @@ export class AnalyticsService {
     };
   }
 
-  async tatDistribution() {
+  async tatDistribution(user?: AuthenticatedUser) {
     const ranges = [
       { label: '< 30 min', min: 0, max: 30 },
       { label: '30-60 min', min: 30, max: 60 },
@@ -93,8 +129,15 @@ export class AnalyticsService {
       { label: '> 4 hours', min: 240, max: Infinity },
     ];
 
+    const { where, empty } = this.scopedStudyWhere(user);
+    if (empty) {
+      return {
+        data: ranges.map((range) => ({ range: range.label, count: 0, percentage: 0 })),
+      };
+    }
+
     const completed = await this.prisma.study.findMany({
-      where: { status: 'COMPLETED', completedAt: { not: null } },
+      where: { ...where, status: 'COMPLETED', completedAt: { not: null } },
       select: { receivedAt: true, createdAt: true, completedAt: true },
     });
     const durations = completed
@@ -114,8 +157,15 @@ export class AnalyticsService {
     return { data: distribution };
   }
 
-  async hospitalPerformance() {
+  async hospitalPerformance(user?: AuthenticatedUser) {
+    const { where, empty } = this.scopedStudyWhere(user);
+
+    if (empty) {
+      return { data: [] };
+    }
+
     const hospitals = await this.prisma.hospital.findMany({
+      where: where.hospitalId ? { id: where.hospitalId as string } : {},
       include: {
         studies: {
           select: {

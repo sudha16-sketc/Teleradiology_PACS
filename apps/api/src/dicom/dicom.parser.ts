@@ -106,13 +106,21 @@ function readMetaHeader(buffer: Buffer): MetaHeader | undefined {
   return meta;
 }
 
+const MAX_VR_STRING_BYTES = 128 * 1024;
+
 function readString(dataSet: dicomParser.DataSet, tag: number): string | undefined {
   const el = dataSet.elements[tagKey((tag >> 16) & 0xffff, tag & 0xffff)];
   if (!el) return undefined;
   if (el.length == null || el.dataOffset == null) return undefined;
+  // Bound the VR value read: clinical fields are short, and a single oversized
+  // tag in a 200 MB attacker-controlled file must not cause quadratic CPU /
+  // memory burn (C16).
+  if (el.length > MAX_VR_STRING_BYTES) return undefined;
   const bytes = dataSet.byteArray.subarray(el.dataOffset, el.dataOffset + el.length);
-  let s = '';
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  // Latin-1 decode in one pass (O(n)) instead of per-char string
+  // concatenation. Note byteArray is a Uint8Array: Buffer.from(...) view over
+  // the same memory gives a real latin1 decode (C16).
+  const s = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('latin1');
   const trimmed = s.replace(/\u0000+$/g, '');
   return trimmed.length ? trimmed : undefined;
 }
