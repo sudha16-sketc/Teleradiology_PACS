@@ -169,6 +169,10 @@ html:has(.landing) {
   scroll-behavior: smooth;
 }
 
+html:has(.documentation-page) {
+  scroll-behavior: smooth;
+}
+
 .landing ::selection {
   background: #2563eb;
   color: #ffffff;
@@ -250,6 +254,9 @@ html:has(.landing) {
 
 @media (prefers-reduced-motion: reduce) {
   html:has(.landing) {
+    scroll-behavior: auto;
+  }
+  html:has(.documentation-page) {
     scroll-behavior: auto;
   }
   .landing *,
