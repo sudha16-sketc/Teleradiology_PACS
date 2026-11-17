@@ -36,6 +36,7 @@ model User {
   notifications           Notification[]   @relation("NotificationRecipient")
   authoredReports         Report[]         @relation("ReportAuthor")
   createdTemplates        ReportTemplate[] @relation("TemplateCreator")
+  reportImages            ReportImage[]    @relation("ReportImageUploader")
   reportVersions          ReportVersion[]  @relation("VersionAuthor")
   routingRules            RoutingRule[]    @relation("RoutingRuleCreator")
   assignedStudies         Study[]          @relation("AssignedRadiologist")
@@ -125,6 +126,7 @@ model Study {
   changeRequests        ChangeRequest[]
   deliveryAttempts      DeliveryAttempt[]
   instances             Instance[]
+  reportImages          ReportImage[]
   reports               Report[]
   series                Series[]
   assignedRadiologist   User?             @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
@@ -206,6 +208,8 @@ model Report {
   clinicalHistory               String            @default("")
   comparison                    String            @default("")
   technique                     String            @default("")
+  contentHtml                   String?
+  images                        ReportImage[]
   changeRequests                ChangeRequest[]
   deliveryAttempts              DeliveryAttempt[]
   author                        User              @relation("ReportAuthor", fields: [authorId], references: [id])
@@ -231,6 +235,7 @@ model ReportVersion {
   clinicalHistory     String          @default("")
   comparison          String          @default("")
   technique           String          @default("")
+  contentHtml         String?
   resultOfCorrections ChangeRequest[] @relation("CorrectionNewVersion")
   parentOfCorrections ChangeRequest[] @relation("CorrectionParentVersion")
   author              User            @relation("VersionAuthor", fields: [authorId], references: [id])
@@ -250,6 +255,7 @@ model ReportTemplate {
   technique       String        @default("")
   comparison      String        @default("")
   recommendations String        @default("")
+  contentHtml     String        @default("")
   isActive        Boolean       @default(true)
   createdById     String
   createdAt       DateTime      @default(now())
@@ -259,6 +265,43 @@ model ReportTemplate {
   @@index([modality])
   @@index([subspecialty])
   @@index([isActive])
+}
+
+/// Images embedded in rich report bodies. Binary content lives on disk under a
+/// configurable upload directory; only stable metadata and the storage key are
+/// persisted. Images are scoped to a report/study and an authenticated uploader.
+model ReportImage {
+  id           String   @id @default(cuid())
+  reportId     String
+  studyId      String
+  uploadedById String
+  storageKey   String   @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+  report       Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  study        Study    @relation(fields: [studyId], references: [id])
+  uploadedBy   User     @relation("ReportImageUploader", fields: [uploadedById], references: [id])
+
+  @@index([reportId])
+  @@index([studyId])
+  @@index([uploadedById])
+}
+
+/// Singleton organization profile used by the automated report footer. An empty
+/// string means "not configured" so the UI can render a clearly identified
+/// placeholder instead of inventing company information.
+model CompanySettings {
+  id          String   @id @default("default")
+  name        String   @default("")
+  phone       String   @default("")
+  email       String   @default("")
+  description String   @default("")
+  disclaimer  String   @default("")
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 model ChangeRequest {
@@ -537,6 +580,9 @@ enum AuditAction {
   REPORT_VIEWED
   REPORT_CREATED
   REPORT_EDITED
+  REPORT_TEMPLATE_CREATED
+  REPORT_TEMPLATE_UPDATED
+  REPORT_TEMPLATE_DELETED
   REPORT_SIGNED
   REPORT_AMENDED
   REPORT_FINALIZED
@@ -580,6 +626,7 @@ enum AuditAction {
 enum AuditResource {
   STUDY
   REPORT
+  REPORT_TEMPLATE
   USER
   ROUTING_RULE
   HOSPITAL

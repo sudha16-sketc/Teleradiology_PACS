@@ -64,7 +64,9 @@ export type {
 } from './patient.js';
 
 export type {
+  CompanySettings,
   Report,
+  ReportImage,
   ReportStatus,
   ReportTemplate,
   ReportVersion,

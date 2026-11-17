@@ -52,6 +52,10 @@ export class UpdateTemplateDto {
   recommendations?: string;
 
   @IsOptional()
+  @IsString()
+  contentHtml?: string;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 }

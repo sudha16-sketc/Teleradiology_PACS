@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Settings, Users, GitBranch, ClipboardList, Brain, ClipboardCheck, Loader2 } from "lucide-react";
+import { Settings, Users, GitBranch, ClipboardList, Brain, ClipboardCheck, Building2, FileText, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 
@@ -22,6 +22,18 @@ const OVERVIEW_LINKS: {
     description: "Review and approve pending account requests",
     icon: <ClipboardCheck size={20} />,
     href: "/admin/registration-requests",
+  },
+  {
+    label: "Report Templates",
+    description: "Create and manage rich report templates",
+    icon: <FileText size={20} />,
+    href: "/settings/templates",
+  },
+  {
+    label: "Company Report Footer",
+    description: "Configure company details printed on every report",
+    icon: <Building2 size={20} />,
+    href: "/settings/company",
   },
   {
     label: "Routing Rules",

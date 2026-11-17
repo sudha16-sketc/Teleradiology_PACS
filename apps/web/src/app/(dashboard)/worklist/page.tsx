@@ -200,7 +200,7 @@ export default function WorklistPage() {
       );
     }
 
-    if (filterState.priority?.length && !isRadiologist) {
+    if (filterState.priority?.length) {
       list = list.filter((item) =>
         filterState.priority!.includes(item.study.priority),
       );
@@ -233,7 +233,7 @@ export default function WorklistPage() {
     });
 
     return list;
-  }, [items, searchQuery, filterState, sortState, isRadiologist]);
+  }, [items, searchQuery, filterState, sortState]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {

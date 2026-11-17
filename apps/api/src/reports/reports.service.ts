@@ -10,6 +10,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { ReviewsService, HOSPITAL_VISIBLE_STATES } from '../reviews/reviews.service.js';
 import { StudiesService, ALLOWED_TRANSITIONS, TRANSITION_ACTORS } from '../studies/studies.service.js';
 import { CorrectionsService } from '../corrections/corrections.service.js';
+import { htmlToPlainText, sanitizeReportHtml } from '../common/html.js';
 import type { AuditAction, AuditResource } from '@axis/types';
 import { createHash } from 'crypto';
 import type { Response } from 'express';
@@ -29,28 +30,32 @@ export interface ReportContent {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  contentHtml?: string;
   criticalFinding?: boolean;
 }
 
 /**
  * Deterministic full 64-char SHA-256 content hash computed server-side over
  * every clinical content field. Never trust a client-submitted hash.
+ *
+ * The rich HTML body is appended only when present so legacy structured report
+ * hashes remain byte-for-byte stable.
  */
 export function contentHash(c: ReportContent = {}): string {
-  return createHash('sha256')
-    .update(
-      JSON.stringify([
-        c.clinicalHistory ?? '',
-        c.findings ?? '',
-        c.impression ?? '',
-        c.technique ?? '',
-        c.comparison ?? '',
-        c.recommendations ?? '',
-        c.criticalFinding ? 'critical' : 'normal',
-      ]),
-    )
-    .digest('hex');
+  const parts: string[] = [
+    c.clinicalHistory ?? '',
+    c.findings ?? '',
+    c.impression ?? '',
+    c.technique ?? '',
+    c.comparison ?? '',
+    c.recommendations ?? '',
+    c.criticalFinding ? 'critical' : 'normal',
+  ];
+  if (c.contentHtml) parts.push(c.contentHtml);
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }
+
+
 
 // States in which a draft may be created / edited.
 const DRAFTABLE_STATES: StudyStatus[] = [
@@ -306,6 +311,9 @@ export class ReportsService {
       recommendations: dto.recommendations ?? '',
       criticalFinding: dto.criticalFinding ?? false,
     };
+    if (dto.contentHtml !== undefined) {
+      content.contentHtml = sanitizeReportHtml(dto.contentHtml);
+    }
     const hash = contentHash(content);
 
     // Serialize draft creation per study. Without this lock, two concurrent
@@ -334,9 +342,28 @@ export class ReportsService {
       }
 
       if (existing) {
+        // Preserve any field the caller did not send. Rich-editor saves only
+        // send contentHtml + criticalFinding; structured/legacy saves only send
+        // the individual fields. Neither path may blank the other.
+        const effectiveContent: ReportContent = {
+          clinicalHistory: dto.clinicalHistory ?? existing.clinicalHistory,
+          findings: dto.findings ?? existing.findings,
+          impression: dto.impression ?? existing.impression,
+          technique: dto.technique ?? existing.technique,
+          comparison: dto.comparison ?? existing.comparison,
+          recommendations: dto.recommendations ?? existing.recommendations,
+          criticalFinding: dto.criticalFinding ?? existing.criticalFinding,
+          contentHtml:
+            dto.contentHtml !== undefined
+              ? content.contentHtml
+              : existing.contentHtml ?? undefined,
+        };
         const report = await tx.report.update({
           where: { id: existing.id },
-          data: { ...content, contentHash: hash },
+          data: {
+            ...effectiveContent,
+            contentHash: contentHash(effectiveContent),
+          },
           include: { author: true },
         });
         return { report, created: false };
@@ -414,8 +441,14 @@ export class ReportsService {
     if (report.status !== 'DRAFT') {
       throw new BadRequestException(`Only a draft report can be signed (current status: ${report.status})`);
     }
-    if (!report.findings.trim() || !report.impression.trim()) {
-      throw new BadRequestException('The report must have findings and impression before it can be signed');
+    const hasRichContent = htmlToPlainText(report.contentHtml).length > 0;
+    if (
+      !hasRichContent &&
+      (!report.findings.trim() || !report.impression.trim())
+    ) {
+      throw new BadRequestException(
+        'The report must have findings and impression (or rich report content) before it can be signed',
+      );
     }
 
     // Honor the authoritative workflow transition rules: REPORT_DRAFT -> RADIOLOGIST_SIGNED (actor: RADIOLOGIST).
@@ -466,6 +499,7 @@ export class ReportsService {
           technique: latest.technique,
           comparison: latest.comparison,
           recommendations: latest.recommendations,
+          contentHtml: latest.contentHtml,
           authorId: latest.authorId,
           contentHash: latest.contentHash,
         },
@@ -578,6 +612,7 @@ export class ReportsService {
             technique: previous.technique,
             comparison: previous.comparison,
             recommendations: previous.recommendations,
+            contentHtml: previous.contentHtml,
             authorId: previous.authorId,
             contentHash: previous.contentHash,
           },
@@ -593,6 +628,10 @@ export class ReportsService {
         comparison: dto.comparison ?? previous.comparison ?? '',
         recommendations: dto.recommendations ?? previous.recommendations ?? '',
         criticalFinding: dto.criticalFinding ?? previous.criticalFinding ?? false,
+        contentHtml:
+          dto.contentHtml !== undefined
+            ? sanitizeReportHtml(dto.contentHtml)
+            : previous.contentHtml ?? undefined,
       };
       const newVersion = previous.version + 1;
       const hash = contentHash(content);
@@ -789,7 +828,10 @@ export class ReportsService {
     });
     if (!report) throw new NotFoundException(`No final report found for study ${studyUid}`);
 
-    const pdf = this.buildPdf({ study, report });
+    const company = await this.prisma.companySettings.findUnique({
+      where: { id: 'default' },
+    });
+    const pdf = this.buildPdf({ study, report, company });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="report-${study.accessionNumber}.pdf"`);
@@ -801,8 +843,56 @@ export class ReportsService {
     return text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
   }
 
-  private buildPdf(opts: { study: any; report: any }): string {
-    const { study, report } = opts;
+  /**
+   * Code 128-B bar positions for the report identifier. Kept as rectangles in
+   * the PDF content stream so the hospital PDF carries the same scannable
+   * identifier as the on-screen/print preview (no external barcode library).
+   */
+  private code128Bars(value: string): Array<{ x: number; width: number }> {
+    const patterns = [
+      '212222', '222122', '222221', '121223', '121322', '131222', '122213',
+      '122312', '132212', '221213', '221312', '231212', '112232', '122132',
+      '122231', '113222', '123122', '123221', '223211', '221132', '221231',
+      '213212', '223112', '312131', '311222', '321122', '321221', '312212',
+      '322112', '322211', '212123', '212321', '232121', '111323', '131123',
+      '131321', '112313', '132113', '132311', '211313', '231113', '231311',
+      '112133', '112331', '132131', '113123', '113321', '133121', '313121',
+      '211331', '231131', '213113', '213311', '213131', '311123', '311321',
+      '331121', '312113', '312311', '332111', '314111', '221411', '431111',
+      '111224', '111422', '121124', '121421', '141122', '141221', '112214',
+      '112412', '122114', '122411', '142112', '142211', '241211', '221114',
+      '413111', '241112', '134111', '111242', '121142', '121241', '114212',
+      '124112', '124211', '411212', '421112', '421211', '212141', '214121',
+      '412121', '111143', '111341', '131141', '114113', '114311', '411113',
+      '411311', '113141', '114131', '311141', '411131', '211412', '211214',
+      '211232', '2331112',
+    ];
+    const clean = value.replace(/[^\x20-\x7E]/g, '');
+    if (!clean) return [];
+    const codes: number[] = [];
+    let checksum = 104;
+    for (let i = 0; i < clean.length; i += 1) {
+      const code = clean.charCodeAt(i) - 32;
+      codes.push(code);
+      checksum += code * (i + 1);
+    }
+    const sequence = [104, ...codes, checksum % 103, 106];
+    const bars: Array<{ x: number; width: number }> = [];
+    let x = 0;
+    for (const code of sequence) {
+      const pattern = patterns[code];
+      if (!pattern) continue;
+      for (let i = 0; i < pattern.length; i += 1) {
+        const width = Number(pattern[i]);
+        if (i % 2 === 0) bars.push({ x, width });
+        x += width;
+      }
+    }
+    return bars;
+  }
+
+  private buildPdf(opts: { study: any; report: any; company?: any }): string {
+    const { study, report, company } = opts;
 
     const lines: string[] = [];
     const push = (text: string) => lines.push(text);
@@ -838,19 +928,29 @@ export class ReportsService {
     push('COMPARISON / PRIORS');
     push('-------------------');
     push(report.comparison || 'N/A');
-    push('');
-    push('FINDINGS');
-    push('--------');
-    push(report.findings || 'N/A');
-    push('');
-    push('IMPRESSION');
-    push('----------');
-    push(report.impression || 'N/A');
-    if (report.recommendations) {
+
+    if (htmlToPlainText(report.contentHtml)) {
       push('');
-      push('RECOMMENDATIONS');
-      push('---------------');
-      push(report.recommendations);
+      push('REPORT BODY');
+      push('-----------');
+      for (const line of htmlToPlainText(report.contentHtml).split('\n')) {
+        push(line);
+      }
+    } else {
+      push('');
+      push('FINDINGS');
+      push('--------');
+      push(report.findings || 'N/A');
+      push('');
+      push('IMPRESSION');
+      push('----------');
+      push(report.impression || 'N/A');
+      if (report.recommendations) {
+        push('');
+        push('RECOMMENDATIONS');
+        push('---------------');
+        push(report.recommendations);
+      }
     }
     if (report.criticalFinding) {
       push('');
@@ -864,6 +964,25 @@ export class ReportsService {
     pushKey('Report Version', String(report.version));
     pushKey('Report ID', report.id);
     pushKey('Content Hash', report.contentHash ?? '');
+    push('');
+    push('------------------------------------------------');
+    push('REPORT FOOTER');
+    push('-------------');
+    pushKey(
+      'Company',
+      company?.name || study.hospital?.name || '[Company name not configured]',
+    );
+    pushKey('Phone', company?.phone || '[Company phone not configured]');
+    pushKey('Email', company?.email || '[Company email not configured]');
+    pushKey(
+      'About',
+      company?.description || '[Company description not configured]',
+    );
+    push(
+      company?.disclaimer ||
+        '[Report disclaimer not configured - contact your administrator]',
+    );
+    push(`Barcode: ${report.id}`);
 
     const contentLines = lines.map((l) => this.escapePdfText(l));
 
@@ -877,7 +996,21 @@ export class ReportsService {
     for (const l of contentLines) {
       contentStream += `(${l}) Tj T*\n`;
     }
-    contentStream += 'ET';
+    contentStream += 'ET\n';
+
+    // Scannable report identifier in the lower-right footer area.
+    const barcodeBars = this.code128Bars(String(report.id));
+    if (barcodeBars.length > 0) {
+      const unit = 0.42;
+      const startX = 400;
+      const baseY = 30;
+      const barHeight = 40;
+      contentStream += 'q 0 0 0 rg\n';
+      for (const bar of barcodeBars) {
+        contentStream += `${(startX + bar.x * unit).toFixed(2)} ${baseY} ${(bar.width * unit).toFixed(2)} ${barHeight} re f\n`;
+      }
+      contentStream += 'Q\n';
+    }
 
     objects.push('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>');
     objects.push(`<< /Length ${contentStream.length} >>\nstream\n${contentStream}\nendstream`);

@@ -17,6 +17,7 @@ export interface Report {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  contentHtml?: string | null;
   criticalFinding: boolean;
   criticalFindingAcknowledged: boolean;
   criticalFindingAcknowledgedBy?: string;
@@ -39,6 +40,7 @@ export interface ReportVersion {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  contentHtml?: string | null;
   authorId: string;
   author?: User;
   contentHash: string;
@@ -58,6 +60,7 @@ export interface ReportTemplate {
   technique?: string;
   comparison?: string;
   recommendations?: string;
+  contentHtml?: string;
   isActive: boolean;
   creator?: {
     id: string;
@@ -65,4 +68,27 @@ export interface ReportTemplate {
     email: string;
   };
   createdById?: string;
+}
+
+export interface ReportImage {
+  id: string;
+  reportId: string;
+  studyId: string;
+  uploadedById: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface CompanySettings {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  description: string;
+  disclaimer: string;
+  updatedById?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

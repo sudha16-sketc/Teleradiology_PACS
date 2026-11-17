@@ -41,6 +41,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/audit": Shield,
   "/operations": ServerCog,
   "/settings": Settings,
+  "/settings/templates": FileText,
   "/admin/registration-requests": ClipboardCheck,
   "/profile": Monitor,
 };

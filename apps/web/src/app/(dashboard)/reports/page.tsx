@@ -8,7 +8,7 @@ import { apiClient } from "@/lib/api-client";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { SkeletonTable } from "@/components/ui/Skeleton";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ReportStatusBadge } from "@/components/ui/ReportStatusBadge";
 import { formatDate } from "@/lib/format";
 
 const REPORT_STATUS_FILTERS = [
@@ -170,7 +170,7 @@ export default function ReportsPage() {
                   {report.study?.accessionNumber ?? "—"}
                 </span>
                 <div>
-                  <StatusBadge status={report.study?.status ?? "HOSPITAL_SUBMITTED"} />
+                  <ReportStatusBadge status={report.status} />
                 </div>
                 <span className="text-sm text-text-muted">
                   {report.author?.displayName ?? "—"}

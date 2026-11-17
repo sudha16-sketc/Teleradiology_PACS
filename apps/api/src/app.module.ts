@@ -22,6 +22,7 @@ import { SlaModule } from './sla/sla.module.js';
 import { BackupModule } from './backup/backup.module.js';
 import { RetentionModule } from './retention/retention.module.js';
 import { TemplatesModule } from './templates/templates.module.js';
+import { CompanyModule } from './company/company.module.js';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { TemplatesModule } from './templates/templates.module.js';
     BackupModule,
     RetentionModule,
     TemplatesModule,
+    CompanyModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AuthGuard },

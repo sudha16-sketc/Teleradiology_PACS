@@ -15,6 +15,7 @@ import { CorrectionWorkflow } from "@/components/reading/CorrectionWorkflow";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAppStore } from "@/lib/store";
+import { htmlToPlainText } from "@/lib/report-html";
 import type { ApiError, Study, Report } from "@axis/types";
 
 interface StudyEnvelope {
@@ -104,14 +105,14 @@ export default function ReadingPage() {
     );
   }
 
-  const reportHasContent = !!(
-    report?.findings?.trim() && report?.impression?.trim()
-  );
+  const reportHasContent =
+    htmlToPlainText(report?.contentHtml).length > 0 ||
+    !!(report?.findings?.trim() && report?.impression?.trim());
 
   return (
     <div className="flex h-full flex-col gap-4">
       <StudyContextBar
-        patientName={study.patient.displayName}
+        patientUid={study.patient?.patientId ?? "—"}
         accessionNumber={study.accessionNumber}
       />
 
@@ -125,7 +126,11 @@ export default function ReadingPage() {
           <PriorStudiesList studyUid={studyUid} />
           {isReviewer ? (
             <>
-              <ReportPanel studyInstanceUid={studyUid} report={report} />
+              <ReportPanel
+                studyInstanceUid={studyUid}
+                report={report}
+                study={study}
+              />
               {report && <CriticalFindingBanner report={report} />}
               <ReviewActions
                 studyInstanceUid={studyUid}
@@ -138,6 +143,7 @@ export default function ReadingPage() {
               <ReportPanel
                 studyInstanceUid={studyUid}
                 report={report}
+                study={study}
                 onReportSaved={() => void load({ background: true })}
               />
               {report && <CriticalFindingBanner report={report} />}
@@ -158,6 +164,7 @@ export default function ReadingPage() {
               <ReportPanel
                 studyInstanceUid={studyUid}
                 report={report}
+                study={study}
               />
               {report && <CriticalFindingBanner report={report} />}
             </>

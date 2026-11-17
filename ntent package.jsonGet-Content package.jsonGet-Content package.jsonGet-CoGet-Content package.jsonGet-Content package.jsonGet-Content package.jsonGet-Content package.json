@@ -1,0 +1,25 @@
+warning: in the working copy of 'apps/api/prisma/schema.prisma', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/api/src/templates/templates.service.ts', LF will be replaced by CRLF the next time Git touches it
+ .gitignore                                         |   3 [32m+[m
+ apps/api/prisma/schema.prisma                      | 868 [32m+++++++++++[m[31m----------[m
+ apps/api/prisma/seed.ts                            | 154 [32m+++[m[31m-[m
+ apps/api/src/app.module.ts                         |   2 [32m+[m
+ apps/api/src/main.ts                               |   2 [32m+[m[31m-[m
+ apps/api/src/reports/reports.service.ts            |  88 [32m++[m[31m-[m
+ apps/api/src/studies/studies.service.ts            |   4 [32m+[m[31m-[m
+ apps/api/src/templates/templates.service.ts        |  82 [32m+[m[31m-[m
+ apps/api/src/worklist/worklist.service.ts          |   2 [32m+[m[31m-[m
+ .../app/(dashboard)/reading/[studyUid]/page.tsx    |   2 [32m+[m[31m-[m
+ .../app/(dashboard)/reports/[studyUid]/page.tsx    |  23 [32m+[m
+ apps/web/src/app/providers.tsx                     |   8 [32m+[m
+ apps/web/src/components/reading/OHIFViewer.tsx     |   4 [32m+[m[31m-[m
+ apps/web/src/components/reading/ReportPanel.tsx    |  55 [32m+[m[31m-[m
+ .../web/src/components/reading/SignOffControls.tsx |  32 [31m-[m
+ apps/web/src/components/report/ReportActions.tsx   |  27 [32m+[m[31m-[m
+ apps/web/src/components/report/ReportEditor.tsx    | 137 [32m++[m[31m--[m
+ .../src/components/report/ReportVersionHistory.tsx |   2 [32m+[m
+ apps/web/src/lib/store.ts                          |  10 [32m+[m
+ apps/web/src/middleware.ts                         |  39 [31m-[m
+ apps/web/tsconfig.tsbuildinfo                      |   2 [32m+[m[31m-[m
+ packages/types/src/report.ts                       |  16 [32m+[m[31m-[m
+ 22 files changed, 920 insertions(+), 642 deletions(-)

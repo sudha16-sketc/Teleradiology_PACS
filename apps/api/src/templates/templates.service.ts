@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { sanitizeReportHtml } from '../common/html.js';
 import type { UserRole, Modality } from '@prisma/client';
 import type { AuditAction, AuditResource } from '@axis/types';
 
@@ -116,6 +117,7 @@ export class TemplatesService {
     technique?: string;
     comparison?: string;
     recommendations?: string;
+    contentHtml?: string;
     isActive?: boolean;
   }, actor: Actor) {
     this.assertCanManageTemplates(actor);
@@ -133,6 +135,9 @@ export class TemplatesService {
         technique: dto.technique ?? '',
         comparison: dto.comparison ?? '',
         recommendations: dto.recommendations ?? '',
+        contentHtml: dto.contentHtml
+          ? sanitizeReportHtml(dto.contentHtml)
+          : '',
         isActive: dto.isActive ?? true,
         createdById: actor.id,
       },
@@ -162,6 +167,7 @@ export class TemplatesService {
     technique?: string;
     comparison?: string;
     recommendations?: string;
+    contentHtml?: string;
     isActive?: boolean;
   }, actor: Actor) {
     const existing = await this.prisma.reportTemplate.findUnique({
@@ -194,6 +200,10 @@ export class TemplatesService {
         technique: dto.technique,
         comparison: dto.comparison,
         recommendations: dto.recommendations,
+        contentHtml:
+          dto.contentHtml !== undefined
+            ? sanitizeReportHtml(dto.contentHtml)
+            : undefined,
         isActive: dto.isActive,
       },
       include: {

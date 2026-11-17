@@ -12,11 +12,26 @@ import {
   ChevronUp,
   FileText,
   X,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { clsx } from "clsx";
 import type { ReportTemplate, UserRole } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
+import { RichReportEditor } from "@/components/report/RichReportEditor";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { htmlToPlainText, legacyFieldsToHtml } from "@/lib/report-html";
+
+interface TemplateNotice {
+  kind: "success" | "error";
+  message: string;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message.trim() ? message : fallback;
+}
 
 const MODALITIES = ["CT", "MRI", "XR", "US", "NM", "PET", "MG", "DX", "CR", "Fluoro"] as const;
 const SUBSPECIALTIES = [
@@ -45,8 +60,18 @@ interface TemplateFormData {
   technique: string;
   comparison: string;
   recommendations: string;
+  contentHtml: string;
   isActive: boolean;
 }
+
+const BLANK_TEMPLATE_HTML = [
+  "<h2>Clinical History</h2><p><br /></p>",
+  "<h2>Technique</h2><p><br /></p>",
+  "<h2>Comparison</h2><p><br /></p>",
+  "<h2>Findings</h2><p><br /></p>",
+  "<h2>Impression</h2><p><br /></p>",
+  "<h2>Recommendations</h2><p><br /></p>",
+].join("");
 
 const EMPTY_FORM: TemplateFormData = {
   name: "",
@@ -60,6 +85,7 @@ const EMPTY_FORM: TemplateFormData = {
   technique: "",
   comparison: "",
   recommendations: "",
+  contentHtml: BLANK_TEMPLATE_HTML,
   isActive: true,
 };
 
@@ -71,6 +97,8 @@ export default function TemplatesPage() {
 
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<TemplateNotice | null>(null);
   const [search, setSearch] = useState("");
   const [modalityFilter, setModalityFilter] = useState("");
   const [subspecialtyFilter, setSubspecialtyFilter] = useState("");
@@ -79,11 +107,14 @@ export default function TemplatesPage() {
   const [editingTemplate, setEditingTemplate] = useState<ReportTemplate | null>(null);
   const [formData, setFormData] = useState<TemplateFormData>(EMPTY_FORM);
   const [formErrors, setFormErrors] = useState<Partial<TemplateFormData>>({});
+  const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
 
   const loadTemplates = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const params = new URLSearchParams();
       if (search) params.set("search", search);
@@ -97,6 +128,9 @@ export default function TemplatesPage() {
       setTemplates(res.data ?? []);
     } catch (e) {
       console.error("Failed to load templates:", e);
+      setLoadError(
+        errorMessage(e, "Unable to load templates. Please try again."),
+      );
     } finally {
       setLoading(false);
     }
@@ -110,6 +144,7 @@ export default function TemplatesPage() {
     setEditingTemplate(null);
     setFormData(EMPTY_FORM);
     setFormErrors({});
+    setFormError(null);
     setShowForm(true);
   };
 
@@ -127,9 +162,13 @@ export default function TemplatesPage() {
       technique: template.technique ?? "",
       comparison: template.comparison ?? "",
       recommendations: template.recommendations ?? "",
+      contentHtml: template.contentHtml?.trim()
+        ? template.contentHtml
+        : legacyFieldsToHtml(template),
       isActive: template.isActive,
     });
     setFormErrors({});
+    setFormError(null);
     setShowForm(true);
   };
 
@@ -138,13 +177,15 @@ export default function TemplatesPage() {
     setEditingTemplate(null);
     setFormData(EMPTY_FORM);
     setFormErrors({});
+    setFormError(null);
   };
 
   const validateForm = (): boolean => {
     const errors: Partial<TemplateFormData> = {};
     if (!formData.name.trim()) errors.name = "Name is required";
-    if (!formData.findings.trim()) errors.findings = "Findings is required";
-    if (!formData.impression.trim()) errors.impression = "Impression is required";
+    if (!htmlToPlainText(formData.contentHtml)) {
+      errors.contentHtml = "Template content is required";
+    }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -154,6 +195,8 @@ export default function TemplatesPage() {
     if (!validateForm()) return;
 
     setSubmitting(true);
+    setFormError(null);
+    const wasEditing = Boolean(editingTemplate);
     try {
       if (editingTemplate) {
         await apiClient.patch<{ data: ReportTemplate }>(
@@ -164,9 +207,16 @@ export default function TemplatesPage() {
         await apiClient.post<{ data: ReportTemplate }>("/templates", formData);
       }
       handleCloseForm();
+      setNotice({
+        kind: "success",
+        message: wasEditing ? "Template updated." : "Template created.",
+      });
       await loadTemplates();
     } catch (e) {
       console.error("Failed to save template:", e);
+      setFormError(
+        errorMessage(e, "Unable to save template. Please try again."),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -174,12 +224,29 @@ export default function TemplatesPage() {
 
   const handleDelete = async (template: ReportTemplate) => {
     if (!confirm(`Delete template "${template.name}"?`)) return;
+
+    setDeletingId(template.id);
+    setNotice(null);
     try {
       await apiClient.delete(`/templates/${encodeURIComponent(template.id)}`);
-      await loadTemplates();
+      setNotice({
+        kind: "success",
+        message: `Template "${template.name}" deleted.`,
+      });
     } catch (e) {
       console.error("Failed to delete template:", e);
+      setNotice({
+        kind: "error",
+        message: errorMessage(
+          e,
+          `Unable to delete template "${template.name}". Please try again.`,
+        ),
+      });
+      setDeletingId(null);
+      return;
     }
+    setDeletingId(null);
+    await loadTemplates();
   };
 
   const handleChange = (field: keyof TemplateFormData, value: string | boolean) => {
@@ -211,6 +278,33 @@ export default function TemplatesPage() {
           </button>
         )}
       </div>
+
+      {notice && (
+        <div
+          role={notice.kind === "error" ? "alert" : "status"}
+          className={clsx(
+            "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
+            notice.kind === "error"
+              ? "border-error/30 bg-error/10 text-error"
+              : "border-success/30 bg-success/10 text-success",
+          )}
+        >
+          {notice.kind === "error" ? (
+            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          ) : (
+            <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
+          )}
+          <p className="flex-1">{notice.message}</p>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
+            aria-label="Dismiss message"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       <div className="rounded-md border border-border bg-surface">
         <div className="border-b border-border p-4">
@@ -283,6 +377,12 @@ export default function TemplatesPage() {
             <div className="flex items-center justify-center py-12">
               <Loader2 size={24} className="animate-spin text-text-muted" />
             </div>
+          ) : loadError ? (
+            <ErrorState
+              title="Unable to load templates"
+              description={loadError}
+              onRetry={() => void loadTemplates()}
+            />
           ) : filteredTemplates.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
               <FileText size={48} className="text-text-muted" />
@@ -404,10 +504,15 @@ export default function TemplatesPage() {
                             <button
                               type="button"
                               onClick={() => handleDelete(template)}
-                              className="p-1.5 rounded-md text-text-muted hover:bg-surface-raised hover:text-error transition-colors"
+                              disabled={deletingId === template.id}
+                              className="p-1.5 rounded-md text-text-muted hover:bg-surface-raised hover:text-error transition-colors disabled:cursor-not-allowed disabled:opacity-50"
                               title="Delete"
                             >
-                              <Trash2 size={14} />
+                              {deletingId === template.id ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={14} />
+                              )}
                             </button>
                           )}
                         </div>
@@ -437,6 +542,15 @@ export default function TemplatesPage() {
               </button>
             </div>
             <form onSubmit={handleSubmit} className="p-4">
+              {formError && (
+                <div
+                  role="alert"
+                  className="mb-4 flex items-start gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-sm text-error"
+                >
+                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  <p>{formError}</p>
+                </div>
+              )}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="space-y-4">
                   <div>
@@ -518,84 +632,20 @@ export default function TemplatesPage() {
                   </div>
                 </div>
 
-                <div className="space-y-4 lg:col-span-2">
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Clinical History
+                <div className="space-y-2 lg:col-span-2">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-muted">
+                    Template Content <span className="text-error">*</span>
                   </label>
-                  <textarea
-                    value={formData.clinicalHistory}
-                    onChange={(e) => handleChange("clinicalHistory", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-md border border-border bg-editor px-3 py-2 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:bg-editor focus:outline-none"
-                    placeholder="Relevant clinical history..."
+                  <RichReportEditor
+                    value={formData.contentHtml}
+                    onChange={(html) => handleChange("contentHtml", html)}
+                    enableImages={false}
+                    minHeight={320}
+                    placeholder="Build the reusable report template..."
                   />
-
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Technique
-                  </label>
-                  <textarea
-                    value={formData.technique}
-                    onChange={(e) => handleChange("technique", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-md border border-border bg-editor px-3 py-2 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:bg-editor focus:outline-none"
-                    placeholder="Imaging technique / protocol..."
-                  />
-
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Comparison
-                  </label>
-                  <textarea
-                    value={formData.comparison}
-                    onChange={(e) => handleChange("comparison", e.target.value)}
-                    rows={2}
-                    className="w-full rounded-md border border-border bg-editor px-3 py-2 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:bg-editor focus:outline-none"
-                    placeholder="Prior studies for comparison..."
-                  />
-
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Findings <span className="text-error">*</span>
-                  </label>
-                  <textarea
-                    value={formData.findings}
-                    onChange={(e) => handleChange("findings", e.target.value)}
-                    rows={6}
-                    className={clsx(
-                      "w-full rounded-md border bg-editor px-3 py-2 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:bg-editor focus:outline-none",
-                      formErrors.findings ? "border-error" : "border-border",
-                    )}
-                    placeholder="Enter radiological findings..."
-                  />
-                  {formErrors.findings && (
-                    <p className="mt-1 text-xs text-error">{formErrors.findings}</p>
+                  {formErrors.contentHtml && (
+                    <p className="text-xs text-error">{formErrors.contentHtml}</p>
                   )}
-
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Impression <span className="text-error">*</span>
-                  </label>
-                  <textarea
-                    value={formData.impression}
-                    onChange={(e) => handleChange("impression", e.target.value)}
-                    rows={4}
-                    className={clsx(
-                      "w-full rounded-md border bg-editor px-3 py-2 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:bg-editor focus:outline-none",
-                      formErrors.impression ? "border-error" : "border-border",
-                    )}
-                    placeholder="Enter impression / conclusion..."
-                  />
-                  {formErrors.impression && (
-                    <p className="mt-1 text-xs text-error">{formErrors.impression}</p>
-                  )}
-
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
-                    Recommendations
-                  </label>
-                  <textarea
-                    value={formData.recommendations}
-                    onChange={(e) => handleChange("recommendations", e.target.value)}
-                    rows={3}
-                    className="w-full rounded-md border border-border bg-editor px-3 py-2 font-serif text-sm leading-relaxed text-editor-ink placeholder-editor-ink/40 focus:border-accent focus:bg-editor focus:outline-none"
-                    placeholder="Follow-up / management recommendations..."
-                  />
                 </div>
               </div>
 

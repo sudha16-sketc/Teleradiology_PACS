@@ -1,0 +1,1 @@
+SELECT id, name, modality, subspecialty, "bodyPart", "isActive" FROM "ReportTemplate" ORDER BY name;

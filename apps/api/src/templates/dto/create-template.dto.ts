@@ -51,6 +51,10 @@ export class CreateTemplateDto {
   recommendations?: string;
 
   @IsOptional()
+  @IsString()
+  contentHtml?: string;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 }

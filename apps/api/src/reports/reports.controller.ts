@@ -49,6 +49,10 @@ class ReportContentDto {
   recommendations?: string;
 
   @IsOptional()
+  @IsString()
+  contentHtml?: string;
+
+  @IsOptional()
   @IsBoolean()
   criticalFinding?: boolean;
 }
