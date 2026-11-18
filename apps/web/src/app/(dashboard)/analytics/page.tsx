@@ -199,7 +199,8 @@ export default function AnalyticsPage() {
             description="Hospital performance metrics will appear once studies are submitted."
           />
         ) : (
-          <div className="rounded-md border border-border">
+          <div className="overflow-x-auto">
+          <div className="min-w-[800px] rounded-md border border-border">
             <div className="grid grid-cols-[1fr_0.5fr_0.5fr_0.5fr_0.5fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
               <div>Hospital</div>
               <div>Studies</div>
@@ -229,6 +230,7 @@ export default function AnalyticsPage() {
                 </span>
               </div>
             ))}
+          </div>
           </div>
         )}
       </div>

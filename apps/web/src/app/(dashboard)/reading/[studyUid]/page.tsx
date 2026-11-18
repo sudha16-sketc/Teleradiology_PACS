@@ -95,11 +95,11 @@ export default function ReadingPage() {
 
   if (loading || !study) {
     return (
-      <div className="flex h-full flex-col gap-4">
+      <div className="flex min-h-full flex-col gap-4">
         <Skeleton className="h-10 w-full" />
-        <div className="flex flex-1 gap-4">
-          <Skeleton className="flex-1" />
-          <Skeleton className="w-[380px]" />
+        <div className="flex flex-1 flex-col gap-4 lg:flex-row">
+          <Skeleton className="h-[45dvh] min-h-[280px] flex-1 lg:h-auto" />
+          <Skeleton className="h-48 w-full lg:h-auto lg:w-[380px] lg:shrink-0" />
         </div>
       </div>
     );
@@ -110,18 +110,18 @@ export default function ReadingPage() {
     !!(report?.findings?.trim() && report?.impression?.trim());
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="flex min-h-full flex-col gap-4">
       <StudyContextBar
         patientUid={study.patient?.patientId ?? "—"}
         accessionNumber={study.accessionNumber}
       />
 
-      <div className="flex flex-1 gap-0 overflow-hidden rounded-md border border-border">
-        <div className="flex-1 bg-surface">
+      <div className="flex min-h-[85dvh] flex-1 flex-col overflow-hidden rounded-md border border-border lg:min-h-0 lg:flex-row">
+        <div className="h-[42dvh] min-h-[280px] shrink-0 bg-surface lg:h-auto lg:min-h-0 lg:min-w-0 lg:flex-1">
           <OHIFViewer studyInstanceUid={study.studyInstanceUid} />
         </div>
 
-        <div className="w-[380px] shrink-0 overflow-y-auto border-l border-border bg-surface">
+        <div className="min-h-[43dvh] w-full flex-1 overflow-y-auto border-t border-border bg-surface lg:min-h-0 lg:w-[380px] lg:flex-none lg:border-l lg:border-t-0">
           <StudyMetadataPanel study={study} />
           <PriorStudiesList studyUid={studyUid} />
           {isReviewer ? (

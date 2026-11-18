@@ -38,7 +38,7 @@ export default function Footer() {
   return (
     <footer className="bg-navy-950 py-16 text-slate-300">
       <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-2 gap-10 md:grid-cols-4">
+        <div className="grid grid-cols-1 gap-8 min-[420px]:grid-cols-2 md:grid-cols-4 md:gap-10">
           {columns.map((column) => (
             <div key={column.heading}>
               <h3 className="text-sm font-semibold text-white">

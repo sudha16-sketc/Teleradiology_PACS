@@ -15,6 +15,7 @@ model User {
   hospitalId              String?
   subspecialty            String?
   isActive                Boolean          @default(true)
+  authVersion             Int              @default(0)
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   approvedAt              DateTime?
@@ -43,9 +44,31 @@ model User {
   approvedBy              User?            @relation("UserApproval", fields: [approvedById], references: [id])
   approvedUsers           User[]           @relation("UserApproval")
   hospital                Hospital?        @relation(fields: [hospitalId], references: [id])
+  passwordResetTokens     PasswordResetToken[]
 
   @@index([status])
   @@index([role])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuthRateLimit {
+  key     String   @id
+  count   Int      @default(0)
+  resetAt DateTime
+
+  @@index([resetAt])
 }
 
 model Hospital {

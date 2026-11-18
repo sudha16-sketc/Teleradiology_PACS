@@ -31,12 +31,13 @@ export class AuthGuard implements CanActivate {
     const token = request.cookies?.[SESSION_COOKIE];
     if (!token) throw new UnauthorizedException('Not authenticated');
 
-    let payload: { sub: string; jti?: string; email?: string };
+    let payload: { sub: string; jti?: string; email?: string; authVersion?: number };
     try {
       payload = jwt.verify(token, sessionSecret(), jwtVerifyOptions()) as {
         sub: string;
         jti?: string;
         email?: string;
+        authVersion?: number;
       };
     } catch {
       throw new UnauthorizedException('Session expired or invalid');
@@ -56,10 +57,14 @@ export class AuthGuard implements CanActivate {
         status: true,
         isActive: true,
         hospitalId: true,
+        authVersion: true,
       },
     });
 
     if (!user) throw new UnauthorizedException('User no longer exists');
+    if ((payload.authVersion ?? 0) !== user.authVersion) {
+      throw new UnauthorizedException('Session expired or invalid');
+    }
     if (user.status !== 'APPROVED' || !user.isActive) {
       throw new UnauthorizedException('Account is not active');
     }

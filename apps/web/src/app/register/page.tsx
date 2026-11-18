@@ -178,8 +178,8 @@ export default function RegisterPage() {
               ))}
             </select>
             <span className="mt-1 block text-xs text-text-muted">
-              Administrator access cannot be requested and is only granted by an
-              administrator.
+              Administrator access is limited to the trusted administrative
+              provisioning process.
             </span>
           </label>
 

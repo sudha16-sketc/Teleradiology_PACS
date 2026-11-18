@@ -90,6 +90,11 @@ export class UsersService {
     hospitalId?: string;
     subspecialty?: string;
   }) {
+    if (dto.role === UserRole.ADMIN) {
+      throw new BadRequestException(
+        'Administrator creation is restricted to the trusted administrative process',
+      );
+    }
     if (dto.role === UserRole.HOSPITAL && !dto.hospitalId) {
       throw new BadRequestException(
         'A hospital must be selected when creating a hospital account',
@@ -168,6 +173,11 @@ export class UsersService {
       status?: UserStatus;
     },
   ) {
+    if (dto.role === UserRole.ADMIN) {
+      throw new BadRequestException(
+        'Administrator promotion is restricted to the trusted administrative process',
+      );
+    }
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException(`User ${id} not found`);
 

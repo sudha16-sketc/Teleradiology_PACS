@@ -89,6 +89,7 @@ export interface SessionPayload {
   sub: string;
   email: string;
   jti?: string;
+  authVersion?: number;
 }
 
 export interface AuthenticatedUser {

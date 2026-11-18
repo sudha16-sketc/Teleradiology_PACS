@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsBoolean,
   IsEnum,
+  IsIn,
   MinLength,
 } from 'class-validator';
 import { Roles } from '../auth/auth.decorators.js';
@@ -19,7 +20,7 @@ class CreateUserDto {
   @IsString()
   email!: string;
 
-  @IsEnum(UserRole)
+  @IsIn([UserRole.MANAGER, UserRole.RADIOLOGIST, UserRole.HOSPITAL])
   role!: UserRole;
 
   @IsString()
@@ -54,7 +55,7 @@ class UpdateUserDto {
   displayName?: string;
 
   @IsOptional()
-  @IsEnum(UserRole)
+  @IsIn([UserRole.MANAGER, UserRole.RADIOLOGIST, UserRole.HOSPITAL])
   role?: UserRole;
 
   @IsOptional()

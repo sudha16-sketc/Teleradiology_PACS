@@ -44,6 +44,67 @@ Configure L4/L7 health checks against `/api/health/ready` and alert when it is
 not `200`. Wire `ready` into your orchestration/load-balancer drain logic so a
 box is taken out of rotation when Postgres or Orthanc is unreachable.
 
+## Authentication recovery and abuse protection
+
+### Password reset
+
+`POST /api/auth/forgot-password` always returns the same generic response for
+known and unknown email addresses. Approved, active accounts receive a
+Resend-delivered link to `/reset-password`; pending, suspended, and unknown
+accounts do not. Reset tokens are generated from 32 cryptographically random
+bytes, only their SHA-256 hashes are stored, and tokens are single-use and
+expire after 20 minutes by default. Configure
+`PASSWORD_RESET_TOKEN_TTL_MINUTES` from 15 through 30 minutes. Successful resets
+update the bcrypt password hash, invalidate other outstanding reset tokens, and
+increment the user's authentication version so existing sessions stop working.
+
+Configure these deployment variables:
+
+- `RESEND_API_KEY` — secret API key for the Resend account.
+- `EMAIL_FROM` — sender address verified by Resend.
+- `NEXT_PUBLIC_APP_URL` — public frontend origin used in links.
+
+Production startup requires the Resend API key and verified sender. Configure
+them through the deployment's secret manager; do not put real credentials in
+`.env.example`. For local development, set these values to test credentials to
+exercise email delivery. If they are absent, requests still return the generic
+response and the API logs a configuration error; no reset token is returned by
+the API or written to logs.
+
+### Shared rate limiting
+
+Login failures are limited by both client IP and normalized email. Password
+recovery requests are independently limited by IP and email/reset-token hash.
+Limits and counters are in PostgreSQL, so all API replicas share them; they
+expire automatically and `Retry-After` is returned with HTTP 429 responses.
+Configure:
+
+- `AUTH_LOGIN_MAX_ATTEMPTS` (default `10`) and
+  `AUTH_LOGIN_WINDOW_SECONDS` (default `900`).
+- `AUTH_RECOVERY_MAX_REQUESTS` (default `5`) and
+  `AUTH_RECOVERY_WINDOW_SECONDS` (default `900`).
+
+Set `TRUST_PROXY` to the correct proxy hop count when deployed behind a trusted
+reverse proxy so IP-based limits use the real client address. These limits
+expire by time window and do not permanently lock accounts.
+
+### Deployment
+
+Apply the additive Prisma migration with the normal migration deployment
+procedure (`pnpm --filter @axis/api exec prisma migrate deploy`), then deploy
+the API and frontend. The migration adds reset-token and shared limiter tables
+plus a user authentication-version column; it does not delete or rewrite user,
+audit, or clinical data. Set the email and rate-limit variables before rollout,
+verify API readiness, and test a reset end to end using a non-production account.
+
+A fresh-database migration-chain check currently stops at the pre-existing
+`20261029000000_report_study_version_unique` migration because the
+`Report_studyId_version_key` index already exists. This feature does not alter
+that historical migration. Before a fresh installation, resolve that existing
+migration-history issue separately; for an existing production database, verify
+its migration history is current before deploying. Do not reset or baseline a
+production database as a workaround.
+
 ## SLA & TAT
 
 SLA deadlines, remaining time and breach state are always computed **server-side**

@@ -8,6 +8,7 @@ import {
   LogOut,
   Maximize2,
   Minimize2,
+  Menu,
   Settings,
   UserRound,
 } from "lucide-react";
@@ -34,7 +35,15 @@ function avatarInitials(name: string): string {
     .toUpperCase();
 }
 
-export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
+export function TopBar({
+  breadcrumbs,
+  onOpenMobileNav,
+  mobileNavOpen,
+}: {
+  breadcrumbs?: string[];
+  onOpenMobileNav: () => void;
+  mobileNavOpen: boolean;
+}) {
   const router = useRouter();
   const currentUser = useAppStore((s) => s.currentUser);
   const clearCurrentUser = useAppStore((s) => s.clearCurrentUser);
@@ -71,29 +80,41 @@ export function TopBar({ breadcrumbs }: { breadcrumbs?: string[] }) {
   const isAdmin = currentUser?.role === "ADMIN";
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-surface/80 px-6 backdrop-blur-sm">
-      <div className="flex items-center gap-2 text-sm">
-        {breadcrumbs && breadcrumbs.length > 0 ? (
-          breadcrumbs.map((crumb, i) => (
-            <span key={i} className="flex items-center gap-2">
-              {i > 0 && <span className="text-text-muted">/</span>}
-              <span
-                className={
-                  i === breadcrumbs.length - 1
-                    ? "font-medium text-text-primary"
-                    : "text-text-muted"
-                }
-              >
-                {crumb}
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-surface/80 px-3 backdrop-blur-sm sm:px-6">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <button
+          type="button"
+          onClick={onOpenMobileNav}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary lg:hidden"
+          aria-label="Open navigation"
+          aria-controls="primary-navigation"
+          aria-expanded={mobileNavOpen}
+        >
+          <Menu size={19} />
+        </button>
+        <div className="flex min-w-0 items-center gap-2 overflow-x-auto whitespace-nowrap text-sm [scrollbar-width:none]">
+          {breadcrumbs && breadcrumbs.length > 0 ? (
+            breadcrumbs.map((crumb, i) => (
+              <span key={i} className="flex items-center gap-2">
+                {i > 0 && <span className="text-text-muted">/</span>}
+                <span
+                  className={
+                    i === breadcrumbs.length - 1
+                      ? "font-medium text-text-primary"
+                      : "text-text-muted"
+                  }
+                >
+                  {crumb}
+                </span>
               </span>
-            </span>
-          ))
-        ) : (
-          <span className="text-text-muted">Axis</span>
-        )}
+            ))
+          ) : (
+            <span className="text-text-muted">Axis</span>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex shrink-0 items-center gap-1 sm:gap-4">
         <UpdateCheckButton />
         <ThemeMenu />
         <NotificationBell />

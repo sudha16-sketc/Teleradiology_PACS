@@ -90,7 +90,7 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1 max-w-sm">
           <Search
             size={16}
@@ -107,7 +107,7 @@ export default function ReportsPage() {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary transition-colors focus:border-accent focus:outline-none"
+          className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary transition-colors focus:border-accent focus:outline-none sm:w-auto"
         >
           <option value="">All Statuses</option>
           {REPORT_STATUS_FILTERS.map((opt) => (
@@ -126,7 +126,8 @@ export default function ReportsPage() {
           description="Try adjusting your filters or search query."
         />
       ) : (
-        <div className="rounded-md border border-border">
+        <div className="overflow-x-auto">
+        <div className="min-w-[1100px] rounded-md border border-border">
           <div className="grid grid-cols-[1fr_1.2fr_0.5fr_0.9fr_0.8fr_0.7fr_0.4fr_0.5fr_0.4fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
             <div>Patient</div>
             <div>Study</div>
@@ -187,6 +188,7 @@ export default function ReportsPage() {
               </Link>
             );
           })}
+        </div>
         </div>
       )}
 

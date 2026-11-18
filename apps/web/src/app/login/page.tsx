@@ -100,6 +100,15 @@ export default function LoginPage() {
             />
           </label>
 
+          <div className="-mt-2 text-right">
+            <Link
+              href="/forgot-password"
+              className="text-xs font-medium text-accent hover:text-accent/80"
+            >
+              Forgot Password?
+            </Link>
+          </div>
+
           <button
             type="submit"
             disabled={submitting}

@@ -164,8 +164,8 @@ export default function NewStudyPage() {
           <h2 className="mb-3 font-heading text-sm font-semibold text-text-primary">
             Patient Information
           </h2>
-          <div className="grid grid-cols-2 gap-4">
-            <label className="flex flex-col gap-1 col-span-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="col-span-full flex flex-col gap-1">
               <span className="text-xs font-medium text-text-muted">
                 Patient Name *
               </span>
@@ -218,7 +218,7 @@ export default function NewStudyPage() {
           <h2 className="mb-3 font-heading text-sm font-semibold text-text-primary">
             Study Details
           </h2>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <label className="flex flex-col gap-1">
               <span className="text-xs font-medium text-text-muted">
                 Modality
@@ -244,7 +244,7 @@ export default function NewStudyPage() {
                 placeholder="e.g. Chest, Head, Left Knee"
               />
             </label>
-            <label className="flex flex-col gap-1 col-span-2">
+            <label className="col-span-full flex flex-col gap-1">
               <span className="text-xs font-medium text-text-muted">
                 Study Description
               </span>

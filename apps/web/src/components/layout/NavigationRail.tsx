@@ -15,6 +15,7 @@ import {
   ClipboardCheck,
   ChevronLeft,
   ChevronRight,
+  X,
   Activity,
   Clock,
   UploadCloud,
@@ -46,7 +47,13 @@ const ICONS: Record<string, LucideIcon> = {
   "/profile": Monitor,
 };
 
-export function NavigationRail() {
+export function NavigationRail({
+  mobileOpen,
+  onMobileClose,
+}: {
+  mobileOpen: boolean;
+  onMobileClose: () => void;
+}) {
   const pathname = usePathname();
   const { railCollapsed, setRailCollapsed, currentUser } = useAppStore();
 
@@ -56,17 +63,31 @@ export function NavigationRail() {
   return (
     <aside
       className={clsx(
-        "fixed left-0 top-0 z-40 flex h-full flex-col border-r border-border bg-surface transition-all duration-200",
-        railCollapsed ? "w-16" : "w-60",
+        "fixed inset-y-0 left-0 z-50 flex h-full w-60 max-w-[85vw] flex-col border-r border-border bg-surface transition-transform duration-200 lg:translate-x-0",
+        mobileOpen
+          ? "visible translate-x-0"
+          : "invisible -translate-x-full",
+        railCollapsed ? "lg:w-16" : "lg:w-60",
+        "lg:visible",
       )}
+      id="primary-navigation"
+      aria-label="Primary navigation"
     >
-      <div className="flex h-14 items-center gap-2.5 border-b border-border px-4">
+      <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
         <Activity size={20} className="shrink-0 text-accent" />
-        {!railCollapsed && (
+        {(!railCollapsed || mobileOpen) && (
           <span className="font-heading text-base font-bold tracking-tight text-text-primary">
             Axis
           </span>
         )}
+        <button
+          type="button"
+          onClick={onMobileClose}
+          className="ml-auto rounded-md p-2 text-text-muted hover:bg-surface-raised hover:text-text-primary lg:hidden"
+          aria-label="Close navigation"
+        >
+          <X size={18} />
+        </button>
       </div>
 
       <nav className="flex-1 overflow-y-auto py-2">
@@ -80,6 +101,7 @@ export function NavigationRail() {
               <li key={item.href}>
                 <Link
                   href={item.href}
+                  onClick={onMobileClose}
                   className={clsx(
                     "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                     isActive
@@ -96,9 +118,9 @@ export function NavigationRail() {
                         : "text-text-muted group-hover:text-text-primary",
                     )}
                   />
-                  {!railCollapsed && <span>{item.label}</span>}
+                  {(!railCollapsed || mobileOpen) && <span>{item.label}</span>}
 
-                  {railCollapsed && (
+                  {railCollapsed && !mobileOpen && (
                     <span className="pointer-events-none absolute left-full z-50 ml-2 hidden whitespace-nowrap rounded-md border border-border bg-surface-raised px-2.5 py-1 text-xs font-medium text-text-primary shadow-lg group-hover:block">
                       {item.label}
                     </span>
@@ -110,7 +132,7 @@ export function NavigationRail() {
         </ul>
       </nav>
 
-      <div className="border-t border-border px-2 py-2">
+      <div className="hidden border-t border-border px-2 py-2 lg:block">
         <button
           type="button"
           onClick={() => setRailCollapsed(!railCollapsed)}

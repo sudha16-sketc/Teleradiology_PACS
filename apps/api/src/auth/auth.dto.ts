@@ -1,4 +1,4 @@
-import { IsString, IsEmail, IsOptional, IsEnum, MinLength, MaxLength } from 'class-validator';
+import { IsString, IsEmail, IsOptional, IsEnum, IsIn, MinLength, MaxLength } from 'class-validator';
 import { UserRole } from '@prisma/client';
 import { IsStrongPassword } from '../common/validators/strong-password.js';
 
@@ -49,8 +49,31 @@ export class LoginDto {
   password!: string;
 }
 
+export class ForgotPasswordDto {
+  @IsEmail()
+  email!: string;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  @MinLength(32)
+  @MaxLength(128)
+  token!: string;
+
+  @IsString()
+  @MinLength(8)
+  @MaxLength(128)
+  @IsStrongPassword()
+  password!: string;
+
+  @IsString()
+  @MinLength(8)
+  @MaxLength(128)
+  confirmPassword!: string;
+}
+
 export class ApproveRequestDto {
-  @IsEnum(UserRole)
+  @IsIn([UserRole.MANAGER, UserRole.RADIOLOGIST, UserRole.HOSPITAL])
   role!: UserRole;
 
   /**

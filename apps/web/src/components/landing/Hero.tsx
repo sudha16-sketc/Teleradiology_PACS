@@ -150,7 +150,7 @@ export default function Hero() {
           <div className="lg:pl-0">
             <div className="pointer-events-none absolute right-0 top-0 hidden h-72 w-72 bg-accent-teal/20 blur-[120px] lg:block" />
             <div className="relative">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 min-[480px]:grid-cols-2">
                 {features.map((feature, index) => (
                   <div
                     key={feature.title}

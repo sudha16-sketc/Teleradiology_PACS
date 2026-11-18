@@ -15,7 +15,6 @@ import { formatDateTime } from "@/lib/format";
 import type { RegistrationRequest, UserRole, ApiError, Hospital } from "@axis/types";
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
-  { value: "ADMIN", label: "Administrator" },
   { value: "MANAGER", label: "Manager" },
   { value: "RADIOLOGIST", label: "Radiologist" },
   { value: "HOSPITAL", label: "Hospital" },
@@ -122,7 +121,7 @@ export default function RegistrationRequestsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
             <ClipboardList size={20} className="text-text-muted" />
@@ -179,7 +178,8 @@ export default function RegistrationRequestsPage() {
             </p>
           </div>
         ) : (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px]">
             <thead>
               <tr className="border-b border-border text-left">
                 <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">
@@ -273,7 +273,8 @@ export default function RegistrationRequestsPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         )}
       </div>
 

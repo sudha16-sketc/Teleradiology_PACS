@@ -13,14 +13,11 @@ import { clsx } from "clsx";
 import { apiClient } from "@/lib/api-client";
 import { formatDateTime } from "@/lib/format";
 import { RoleBadge } from "@/components/admin/RoleBadge";
+import { USER_MANAGEMENT_ASSIGNABLE_ROLES } from "@/lib/user-roles";
 import type { ApiError, User, UserRole, UserStatus } from "@axis/types";
 
-const ROLES: UserRole[] = [
-  "ADMIN",
-  "MANAGER",
-  "RADIOLOGIST",
-  "HOSPITAL",
-];
+const ROLES: UserRole[] = [...USER_MANAGEMENT_ASSIGNABLE_ROLES];
+const FILTER_ROLES: UserRole[] = ["ADMIN", ...ROLES];
 
 const STATUS_LABELS: Record<UserStatus, string> = {
   PENDING: "Pending",
@@ -209,7 +206,7 @@ export default function UsersPage() {
           className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent"
         >
           <option value="">All Roles</option>
-          {ROLES.map((role) => (
+          {FILTER_ROLES.map((role) => (
             <option key={role} value={role}>
               {role.replace("_", " ")}
             </option>
@@ -251,7 +248,8 @@ export default function UsersPage() {
             No users match your filters.
           </div>
         ) : (
-          <table className="w-full">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px]">
             <thead>
               <tr className="border-b border-border text-left">
                 <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">
@@ -307,21 +305,27 @@ export default function UsersPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <select
-                        value={user.role}
-                        onChange={(e) =>
-                          changeRole(user, e.target.value as UserRole)
-                        }
-                        className="rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent"
-                        aria-label={`Change role for ${user.displayName}`}
-                      >
-                        {ROLES.map((role) => (
-                          <option key={role} value={role}>
-                            {role.replace("_", " ")}
-                          </option>
-                        ))}
-                      </select>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {user.role === "ADMIN" ? (
+                        <span className="text-xs font-medium text-text-muted">
+                          Administrator
+                        </span>
+                      ) : (
+                        <select
+                          value={user.role}
+                          onChange={(e) =>
+                            changeRole(user, e.target.value as UserRole)
+                          }
+                          className="rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary outline-none transition-colors focus:border-accent"
+                          aria-label={`Change role for ${user.displayName}`}
+                        >
+                          {ROLES.map((role) => (
+                            <option key={role} value={role}>
+                              {role.replace("_", " ")}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                       <button
                         type="button"
                         onClick={() => setDetailUser(user)}
@@ -334,7 +338,8 @@ export default function UsersPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         )}
       </div>
 

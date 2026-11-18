@@ -66,17 +66,10 @@ async function bootstrap() {
     );
   }
 
-  // Targeted abuse protection. In-process limiter (see rate-limit module notes).
-  // Disabled under NODE_ENV=test so the automated suite is unaffected.
+  // Auth endpoints use the PostgreSQL-backed limiter in AuthService so limits
+  // are shared between API instances and count only failed login attempts.
   const rl = (name: string, windowMs: number, max: number, keyFn?: (req: import('express').Request) => string) =>
     rateLimit({ windowMs, max, name, keyFn });
-  const loginAccountKey = (req: import('express').Request) =>
-    `acct:${String((req.body as { email?: unknown })?.email ?? '').toLowerCase().trim()}`;
-  // Per-account throttle: bounds distributed brute force against one account
-  // regardless of which IPs are used.
-  app.use('/api/auth/login', rl('login_account', 15 * 60 * 1000, 20, loginAccountKey));
-  // Per-IP throttle: bounds single-client password spraying.
-  app.use('/api/auth/login', rl('login', 15 * 60 * 1000, 60));
   app.use('/api/auth/register', rl('register', 60 * 60 * 1000, 20));
   app.use('/api/dicom/ingest', rl('dicom_upload', 60 * 1000, 20));
   app.use('/api/dicom/ingest', limitUploadBody);

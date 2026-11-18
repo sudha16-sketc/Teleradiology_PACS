@@ -231,47 +231,49 @@ export default function AuditLogPage() {
         </button>
       </div>
 
-      <div className="rounded-md border border-border">
-        <div className="grid grid-cols-[1fr_0.8fr_1.2fr_0.6fr_1.2fr_0.8fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
-          <div>Timestamp</div>
-          <div>Actor</div>
-          <div>Action</div>
-          <div>Resource</div>
-          <div>Resource ID</div>
-          <div>IP</div>
-        </div>
-
-        {isLoading ? (
-          <SkeletonTable rows={8} />
-        ) : entries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12">
-            <Shield size={32} className="mb-3 text-text-muted" />
-            <p className="text-sm text-text-muted">No audit entries match your filter</p>
+      <div className="overflow-x-auto">
+        <div className="min-w-[960px] rounded-md border border-border">
+          <div className="grid grid-cols-[1fr_0.8fr_1.2fr_0.6fr_1.2fr_0.8fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <div>Timestamp</div>
+            <div>Actor</div>
+            <div>Action</div>
+            <div>Resource</div>
+            <div>Resource ID</div>
+            <div>IP</div>
           </div>
-        ) : (
-          entries.map((entry) => (
-            <div
-              key={entry.id}
-              className="grid grid-cols-[1fr_0.8fr_1.2fr_0.6fr_1.2fr_0.8fr] gap-4 border-b border-border px-4 py-3 last:border-b-0 hover:bg-surface-raised/50"
-            >
-              <span className="font-mono text-xs text-text-muted">
-                {formatTimestamp(entry.timestamp)}
-              </span>
-              <div className="flex flex-col">
-                <span className="text-sm text-text-primary">{entry.actorName}</span>
-                <span className="text-xs text-text-muted">{entry.actorRole}</span>
-              </div>
-              <ActionBadge action={entry.action} />
-              <span className="text-xs text-text-muted">{entry.resource}</span>
-              <span className="font-mono text-xs text-text-muted truncate">
-                {entry.resourceId}
-              </span>
-              <span className="font-mono text-xs text-text-muted">
-                {entry.ipAddress ?? "--"}
-              </span>
+
+          {isLoading ? (
+            <SkeletonTable rows={8} />
+          ) : entries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <Shield size={32} className="mb-3 text-text-muted" />
+              <p className="text-sm text-text-muted">No audit entries match your filter</p>
             </div>
-          ))
-        )}
+          ) : (
+            entries.map((entry) => (
+              <div
+                key={entry.id}
+                className="grid grid-cols-[1fr_0.8fr_1.2fr_0.6fr_1.2fr_0.8fr] gap-4 border-b border-border px-4 py-3 last:border-b-0 hover:bg-surface-raised/50"
+              >
+                <span className="font-mono text-xs text-text-muted">
+                  {formatTimestamp(entry.timestamp)}
+                </span>
+                <div className="flex flex-col">
+                  <span className="text-sm text-text-primary">{entry.actorName}</span>
+                  <span className="text-xs text-text-muted">{entry.actorRole}</span>
+                </div>
+                <ActionBadge action={entry.action} />
+                <span className="text-xs text-text-muted">{entry.resource}</span>
+                <span className="font-mono text-xs text-text-muted truncate">
+                  {entry.resourceId}
+                </span>
+                <span className="font-mono text-xs text-text-muted">
+                  {entry.ipAddress ?? "--"}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="flex items-center justify-between text-xs text-text-muted">

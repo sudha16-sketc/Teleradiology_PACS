@@ -339,7 +339,8 @@ export default function WorklistPage() {
           description="Studies will appear here once they are submitted to the platform."
         />
       ) : (
-        <div className="rounded-md border border-border">
+        <div className="overflow-x-auto">
+        <div className="min-w-[980px] rounded-md border border-border">
           <div className={`grid ${gridCols} gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted`}>
             <div />
             <div>Patient</div>
@@ -425,6 +426,7 @@ export default function WorklistPage() {
               )}
             </div>
           ))}
+        </div>
         </div>
       )}
 

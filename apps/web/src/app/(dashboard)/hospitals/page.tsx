@@ -77,8 +77,8 @@ export default function HospitalPortalPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="font-heading text-2xl font-bold text-text-primary">
             Hospital Portal
@@ -87,7 +87,7 @@ export default function HospitalPortalPage() {
             Your hospital&apos;s study submissions and reports
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={load}
             className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm font-medium text-text-muted hover:text-text-primary"
@@ -105,7 +105,7 @@ export default function HospitalPortalPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <MetricCard
           title="Studies Sent (Today)"
           value={sentToday}
@@ -130,11 +130,11 @@ export default function HospitalPortalPage() {
 
       {tracked && (
         <div className="rounded-md border border-border bg-surface p-5">
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="font-heading text-sm font-semibold text-text-primary">
               Study Tracker — {tracked.accessionNumber}
             </h2>
-            <span className="text-xs text-text-muted">
+            <span className="text-xs text-text-muted sm:text-right">
               {tracked.patient?.displayName} · {tracked.modality} ·{" "}
               {tracked.studyDescription}
             </span>

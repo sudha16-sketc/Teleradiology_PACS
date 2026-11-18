@@ -22,6 +22,9 @@ const PRODUCTION_REQUIRED: Array<{ key: string; why: string }> = [
   { key: 'AUTH_SECRET', why: 'session/JWT signing secret' },
   { key: 'CORS_ORIGIN', why: 'allow-listed frontend origin(s)' },
   { key: 'ORTHANC_URL', why: 'Orthanc service URL for DICOM storage/proxy' },
+  { key: 'RESEND_API_KEY', why: 'password-reset email delivery via Resend' },
+  { key: 'EMAIL_FROM', why: 'verified sender address for password-reset email' },
+  { key: 'NEXT_PUBLIC_APP_URL', why: 'public frontend origin for password-reset links' },
 ];
 
 export function assertRequiredEnv(): void {
@@ -46,6 +49,27 @@ export function assertRequiredEnv(): void {
     for (const { key, why } of PRODUCTION_REQUIRED) {
       if (!process.env[key]) {
         missing.push(`${key} (${why})`);
+      }
+    }
+  }
+
+  const boundedIntegers: Array<{
+    key: string;
+    min: number;
+    max: number;
+  }> = [
+    { key: 'AUTH_LOGIN_MAX_ATTEMPTS', min: 1, max: 1000 },
+    { key: 'AUTH_LOGIN_WINDOW_SECONDS', min: 1, max: 86400 },
+    { key: 'AUTH_RECOVERY_MAX_REQUESTS', min: 1, max: 1000 },
+    { key: 'AUTH_RECOVERY_WINDOW_SECONDS', min: 1, max: 86400 },
+    { key: 'PASSWORD_RESET_TOKEN_TTL_MINUTES', min: 15, max: 30 },
+  ];
+  for (const { key, min, max } of boundedIntegers) {
+    const raw = process.env[key];
+    if (raw !== undefined) {
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value < min || value > max) {
+        missing.push(`${key} (must be an integer from ${min} to ${max})`);
       }
     }
   }

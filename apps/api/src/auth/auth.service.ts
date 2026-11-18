@@ -1,7 +1,8 @@
 import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
 import type { Response } from 'express';
+import type { Request } from 'express';
 import jwt from 'jsonwebtoken';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -19,13 +20,18 @@ import {
   type AuthenticatedUser,
 } from './auth.constants.js';
 import { sessionRevocationStore } from './session-store.js';
-import type { RegisterDto, ApproveRequestDto, RejectRequestDto } from './auth.dto.js';
+import { AuthRateLimitService } from './auth-rate-limit.service.js';
+import { PasswordResetEmailService } from './password-reset-email.service.js';
+import { logger } from '../common/observability/structured-logger.js';
+import type { RegisterDto, ApproveRequestDto, RejectRequestDto, ResetPasswordDto } from './auth.dto.js';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly rateLimit: AuthRateLimitService,
+    private readonly resetEmail: PasswordResetEmailService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -92,18 +98,28 @@ export class AuthService {
     return { data: sanitizeUser(user) };
   }
 
-  async login(dto: { email: string; password: string }, response: Response) {
+  async login(
+    dto: { email: string; password: string },
+    request: Request,
+    response: Response,
+  ) {
+    const email = dto.email.toLowerCase().trim();
+    const loginLimit = await this.rateLimit.assertLoginAllowed(request, email, response);
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase().trim() },
+      where: { email },
     });
 
     if (!user) {
       await bcrypt.compare(dto.password, DUMMY_PASSWORD_HASH);
+      await this.rateLimit.recordFailedLogin(loginLimit.keys, loginLimit.windowSeconds);
       throw new UnauthorizedException('Invalid email or password');
     }
 
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!valid) throw new UnauthorizedException('Invalid email or password');
+    if (!valid) {
+      await this.rateLimit.recordFailedLogin(loginLimit.keys, loginLimit.windowSeconds);
+      throw new UnauthorizedException('Invalid email or password');
+    }
 
     if (user.status !== UserStatus.APPROVED || !user.isActive) {
       // One generic message for PENDING/REJECTED/SUSPENDED so the response does
@@ -115,7 +131,7 @@ export class AuthService {
 
     const jti = randomUUID();
     const token = jwt.sign(
-      { sub: user.id, email: user.email },
+      { sub: user.id, email: user.email, authVersion: user.authVersion },
       sessionSecret(),
       {
         algorithm: JWT_ALGORITHM,
@@ -126,6 +142,7 @@ export class AuthService {
       },
     );
     sessionRevocationStore.register(jti, user.id);
+    await this.rateLimit.resetLoginAccountCounter(email);
 
     response.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
@@ -147,6 +164,108 @@ export class AuthService {
       .catch(() => {});
 
     return { data: sanitizeUser(user) };
+  }
+
+  async forgotPassword(emailInput: string, request: Request, response: Response) {
+    const email = emailInput.toLowerCase().trim();
+    await this.rateLimit.assertRecoveryAllowed(request, 'forgot', email, response);
+
+    if (!this.resetEmail.isConfigured()) {
+      logger.error('password_reset_email_not_configured');
+      return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, status: true, isActive: true },
+    });
+    if (!user || user.status !== UserStatus.APPROVED || !user.isActive) {
+      return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const expiresAt = new Date(Date.now() + this.passwordResetTtlMs());
+    await this.prisma.$transaction(async (tx) => {
+      await tx.passwordResetToken.deleteMany({ where: { userId: user.id } });
+      await tx.passwordResetToken.create({
+        data: { tokenHash, userId: user.id, expiresAt },
+      });
+    });
+
+    try {
+      await this.resetEmail.sendPasswordReset(email, token);
+    } catch (error) {
+      logger.error('password_reset_email_delivery_failed', {
+        message: error instanceof Error ? error.message : 'Unknown email delivery error',
+      });
+      try {
+        await this.prisma.passwordResetToken.deleteMany({ where: { tokenHash } });
+      } catch (cleanupError) {
+        logger.error('password_reset_token_cleanup_failed', {
+          message:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : 'Unknown reset-token cleanup error',
+        });
+      }
+    }
+
+    return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };
+  }
+
+  async resetPassword(dto: ResetPasswordDto, request: Request, response: Response) {
+    const tokenHash = createHash('sha256').update(dto.token).digest('hex');
+    await this.rateLimit.assertRecoveryAllowed(request, 'reset', tokenHash, response);
+    if (dto.password !== dto.confirmPassword) {
+      throw new BadRequestException('Passwords do not match');
+    }
+
+    const resetToken = await this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+      select: {
+        userId: true,
+        expiresAt: true,
+        usedAt: true,
+        user: { select: { email: true } },
+      },
+    });
+    if (!resetToken || resetToken.usedAt || resetToken.expiresAt <= new Date()) {
+      throw new BadRequestException('Reset token is invalid or expired');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, 12);
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const consumed = await tx.passwordResetToken.updateMany({
+        where: { tokenHash, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
+      });
+      if (consumed.count !== 1) {
+        throw new BadRequestException('Reset token is invalid or expired');
+      }
+
+      await tx.user.update({
+        where: { id: resetToken.userId },
+        data: { passwordHash, authVersion: { increment: 1 } },
+      });
+      await tx.passwordResetToken.updateMany({
+        where: { userId: resetToken.userId, usedAt: null },
+        data: { usedAt: now },
+      });
+    });
+    sessionRevocationStore.revokeAllForUser(resetToken.userId);
+    await this.rateLimit.resetLoginAccountCounter(resetToken.user.email);
+
+    return { data: { success: true } };
+  }
+
+  private passwordResetTtlMs(): number {
+    const minutes = Number(process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES ?? 20);
+    if (!Number.isInteger(minutes) || minutes < 15 || minutes > 30) {
+      throw new Error('PASSWORD_RESET_TOKEN_TTL_MINUTES must be an integer from 15 to 30');
+    }
+    return minutes * 60 * 1000;
   }
 
   async me(user: AuthenticatedUser) {
@@ -198,6 +317,11 @@ export class AuthService {
     dto: ApproveRequestDto,
     admin: AuthenticatedUser,
   ) {
+    if (dto.role === UserRole.ADMIN) {
+      throw new BadRequestException(
+        'Administrator promotion is restricted to the trusted administrative process',
+      );
+    }
     const request = await this.prisma.user.findUnique({ where: { id } });
     if (!request) throw new NotFoundException('Registration request not found');
     if (request.status !== UserStatus.PENDING) {

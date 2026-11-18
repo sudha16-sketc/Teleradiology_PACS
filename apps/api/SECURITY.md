@@ -38,8 +38,15 @@ ensure the replacement values are never committed.
   (`role`, `hospitalId`, `displayName`).
 - `secure` is set when `NODE_ENV === 'production'`, so the cookie is sent only
   over HTTPS in production.
-- Login/register are rate-limited (see `PRODUCTION_OPERATIONS.md`).
+- Login and password recovery are rate-limited in shared PostgreSQL storage
+  (see `PRODUCTION_OPERATIONS.md`).
 - The Administrator role cannot self-assign during registration.
+- User Management and registration approval cannot create or promote an
+  Administrator. Administrator creation remains available only through the
+  trusted `db:create-admin` operational command.
+- Password reset tokens are random, single-use, hashed at rest, and expire
+  within a configurable 15–30-minute window. Reset invalidates prior sessions
+  through the persisted user authentication version.
 
 ## Authorization invariants
 
@@ -83,8 +90,9 @@ defined but unused, the application falls back gracefully:
   audit row — the API itself stays up. Artifact-less runs verify to `FAILED`.
 - **Health `/ready`**: returns `503` with per-component `down` status without
   crashing; `/live` stays `200`.
-- **Rate limiter / headers / correlation**: in-process implementations, no
-  external service to fail.
+- **General rate limiter / headers / correlation**: the non-auth rate limiter
+  remains in-process; authentication abuse counters use PostgreSQL so they are
+  shared across API instances.
 
 ## Generic error safety
 

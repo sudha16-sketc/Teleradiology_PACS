@@ -6,7 +6,9 @@ import {
   Param,
   Query,
   Res,
+  Req,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import type { Response } from 'express';
 import { UserRole } from '@prisma/client';
 import { AuthService } from './auth.service.js';
@@ -19,6 +21,8 @@ import type { AuthenticatedUser } from './auth.constants.js';
 import {
   RegisterDto,
   LoginDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
   ApproveRequestDto,
   RejectRequestDto,
 } from './auth.dto.js';
@@ -37,9 +41,30 @@ export class AuthController {
   @Post('login')
   login(
     @Body() dto: LoginDto,
+    @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
   ) {
-    return this.authService.login(dto, response);
+    return this.authService.login(dto, request, response);
+  }
+
+  @Public()
+  @Post('forgot-password')
+  forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.authService.forgotPassword(dto.email, request, response);
+  }
+
+  @Public()
+  @Post('reset-password')
+  resetPassword(
+    @Body() dto: ResetPasswordDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    return this.authService.resetPassword(dto, request, response);
   }
 
   @Public()
