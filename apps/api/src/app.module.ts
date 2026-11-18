@@ -23,6 +23,7 @@ import { BackupModule } from './backup/backup.module.js';
 import { RetentionModule } from './retention/retention.module.js';
 import { TemplatesModule } from './templates/templates.module.js';
 import { CompanyModule } from './company/company.module.js';
+import { ReconciliationModule } from './reconciliation/reconciliation.module.js';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { CompanyModule } from './company/company.module.js';
     RetentionModule,
     TemplatesModule,
     CompanyModule,
+    ReconciliationModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: AuthGuard },

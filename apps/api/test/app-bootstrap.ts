@@ -30,6 +30,7 @@ export async function createTestApp(): Promise<{
   app.use(cookieParser());
   app.use(correlationMiddleware);
   app.use('/api/dicom/ingest', limitUploadBody);
+  app.use('/api/dicom/reingest', limitUploadBody);
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalFilters(new HttpExceptionFilter());

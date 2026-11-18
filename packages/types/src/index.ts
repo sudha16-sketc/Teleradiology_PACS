@@ -73,6 +73,11 @@ export type {
 } from './report.js';
 
 export type {
+  ImagingAvailability,
+  ImagingAvailabilityResult,
+} from './imaging.js';
+
+export type {
   RoutingAction,
   RoutingCondition,
   RoutingOperator,

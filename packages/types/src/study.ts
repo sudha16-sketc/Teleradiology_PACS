@@ -1,6 +1,7 @@
 import type { Patient } from './patient.js';
 import type { Hospital } from './hospital.js';
 import type { User } from './user.js';
+import type { ImagingAvailability } from './imaging.js';
 
 export type StudyPriority = 'STAT' | 'URGENT' | 'ROUTINE';
 
@@ -52,6 +53,9 @@ export interface Study {
   assignedAt?: string;
   reportingStartedAt?: string;
   signedOffAt?: string;
+  imagingAvailability?: ImagingAvailability;
+  imagingAvailabilityReason?: string;
+  imagingCheckedAt?: string;
   managerReviewedAt?: string;
   managerApprovedAt?: string;
   deliveredAt?: string;

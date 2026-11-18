@@ -16,7 +16,16 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAppStore } from "@/lib/store";
 import { htmlToPlainText } from "@/lib/report-html";
-import type { ApiError, Study, Report } from "@axis/types";
+import {
+  IMAGING_AVAILABILITY_BADGE_CLASSES,
+  IMAGING_AVAILABILITY_LABELS,
+} from "@/lib/imaging-availability";
+import type {
+  ApiError,
+  ImagingAvailabilityResult,
+  Report,
+  Study,
+} from "@axis/types";
 
 interface StudyEnvelope {
   data: Study;
@@ -33,6 +42,8 @@ export default function ReadingPage() {
 
   const [study, setStudy] = useState<Study | null>(null);
   const [report, setReport] = useState<Report | null>(null);
+  const [availability, setAvailability] =
+    useState<ImagingAvailabilityResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,7 +56,10 @@ export default function ReadingPage() {
 
   const load = useCallback(async (options?: { background?: boolean }) => {
     const background = options?.background ?? false;
-    if (!background) setLoading(true);
+    if (!background) {
+      setLoading(true);
+      setAvailability(null);
+    }
     setError(null);
     try {
       const [studyRes, reportRes] = await Promise.all([
@@ -116,9 +130,26 @@ export default function ReadingPage() {
         accessionNumber={study.accessionNumber}
       />
 
+      {availability ? (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+          <span
+            className={`rounded-full border px-2 py-0.5 ${IMAGING_AVAILABILITY_BADGE_CLASSES[availability.state]}`}
+          >
+            {IMAGING_AVAILABILITY_LABELS[availability.state]}
+          </span>
+          <span>
+            Series {availability.actualSeriesCount}/{availability.expectedSeriesCount} ·
+            Instances {availability.actualInstanceCount}/{availability.expectedInstanceCount}
+          </span>
+        </div>
+      ) : null}
+
       <div className="flex min-h-[85dvh] flex-1 flex-col overflow-hidden rounded-md border border-border lg:min-h-0 lg:flex-row">
         <div className="h-[42dvh] min-h-[280px] shrink-0 bg-surface lg:h-auto lg:min-h-0 lg:min-w-0 lg:flex-1">
-          <OHIFViewer studyInstanceUid={study.studyInstanceUid} />
+          <OHIFViewer
+            studyInstanceUid={study.studyInstanceUid}
+            onAvailabilityChange={setAvailability}
+          />
         </div>
 
         <div className="min-h-[43dvh] w-full flex-1 overflow-y-auto border-t border-border bg-surface lg:min-h-0 lg:w-[380px] lg:flex-none lg:border-l lg:border-t-0">

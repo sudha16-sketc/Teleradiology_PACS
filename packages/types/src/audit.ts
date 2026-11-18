@@ -48,7 +48,10 @@ export type AuditAction =
   | 'BACKUP_VERIFIED'
   | 'RETENTION_PREVIEW'
   | 'RETENTION_EXECUTED'
-  | 'ARCHIVE_MARKED';
+  | 'ARCHIVE_MARKED'
+  | 'DICOM_AVAILABILITY_CHECK'
+  | 'DICOM_RECONCILIATION'
+  | 'DICOM_REINGEST';
 
 export type AuditResource =
   | 'STUDY'

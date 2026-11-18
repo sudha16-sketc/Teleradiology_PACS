@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -14,6 +15,9 @@ import { Prisma } from '@prisma/client';
 import type { Modality, StudyPriority, Subspecialty, UserRole } from '@prisma/client';
 import { extractDicomArchive, type ExtractedArchive } from './zip-archive.js';
 import { parseDicomBuffer, validateDicomIdentifiers, type ParsedDicom } from './dicom.parser.js';
+import { isValidDicomUid } from './dicom.constants.js';
+import { DicomWebService } from '../dicomweb/dicomweb.service.js';
+import type { ImagingAvailabilityResult } from '@axis/types';
 
 export interface IngestUser {
   id: string;
@@ -60,6 +64,10 @@ function isZip(buffer: Buffer): boolean {
   return buffer.length > 4 && buffer[0] === 0x50 && buffer[1] === 0x4b;
 }
 
+function normalizeUid(uid: string | null | undefined): string {
+  return (uid ?? '').replace(/[\u0000\s]+/g, '');
+}
+
 @Injectable()
 export class DicomService {
   private readonly logger = new Logger(DicomService.name);
@@ -67,6 +75,7 @@ export class DicomService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly dicomweb: DicomWebService,
   ) {}
 
   private orthancBase(): string {
@@ -194,7 +203,7 @@ export class DicomService {
 
   private async auditEntry(
     user: IngestUser,
-    action: 'STUDY_UPLOADED' | 'DICOM_IMPORTED' | 'DICOM_IMPORT_FAILED',
+    action: 'STUDY_UPLOADED' | 'DICOM_IMPORTED' | 'DICOM_IMPORT_FAILED' | 'DICOM_REINGEST',
     resourceId: string,
     metadata?: Record<string, unknown>,
   ) {
@@ -528,6 +537,230 @@ export class DicomService {
       if (archive) {
         await archive.cleanup();
       }
+    }
+  }
+
+  async reingestDicom(
+    files: Express.Multer.File[],
+    studyInstanceUid: string,
+    user: IngestUser,
+  ): Promise<{ study: unknown; availability: ImagingAvailabilityResult; storedCount: number }> {
+    if (!isValidDicomUid(studyInstanceUid)) {
+      throw new BadRequestException('Invalid StudyInstanceUID');
+    }
+    if (
+      user.role !== 'ADMIN' &&
+      user.role !== 'MANAGER' &&
+      user.role !== 'HOSPITAL'
+    ) {
+      throw new ForbiddenException('You are not permitted to recover DICOM data');
+    }
+
+    const study = await this.prisma.study.findUnique({
+      where: { studyInstanceUid },
+      include: { series: true, instances: true },
+    });
+    if (!study) throw new NotFoundException('Study not found');
+    if (user.role === 'HOSPITAL' && user.hospitalId !== study.hospitalId) {
+      throw new ForbiddenException(
+        'You do not have access to studies from this hospital',
+      );
+    }
+
+    let archive: ExtractedArchive | null = null;
+    const readUpload = async (file: Express.Multer.File): Promise<Buffer> =>
+      file.path ? readFile(file.path) : Promise.resolve(file.buffer as Buffer);
+
+    try {
+      let fileBuffer: Buffer;
+      if (files.length === 1) {
+        fileBuffer = await readUpload(files[0]);
+      } else {
+        const zip = new AdmZip();
+        for (let i = 0; i < files.length; i += 1) {
+          const file = files[i];
+          const base = (file.originalname || 'instance').split(/[\\/]/).pop() || 'instance';
+          const ext = /\.(dcm|dicom)$/i.test(base) ? '' : '.dcm';
+          const safeName = `${i + 1}_${base.replace(/\.[^.]*$/, '') || 'dicom'}${ext}`;
+          zip.addFile(safeName, await readUpload(file));
+        }
+        fileBuffer = zip.toBuffer();
+      }
+
+      const rawBuffers: Buffer[] = [];
+      if (isZip(fileBuffer)) {
+        archive = await extractDicomArchive(fileBuffer);
+        for (const file of archive.files) rawBuffers.push(await readFile(file));
+      } else {
+        rawBuffers.push(fileBuffer);
+      }
+      if (rawBuffers.length === 0) {
+        throw new BadRequestException('No DICOM files found in the upload');
+      }
+
+      const parsedByBuffer = new Map<Buffer, ParsedDicom>();
+      const parsedList: ParsedDicom[] = [];
+      for (const buffer of rawBuffers) {
+        const parsed = parseDicomBuffer(buffer);
+        const error = validateDicomIdentifiers(parsed, { unknownSyntaxOk: true });
+        if (error) {
+          throw new BadRequestException(`Invalid or unsupported DICOM file: ${error}`);
+        }
+        parsedByBuffer.set(buffer, parsed);
+        parsedList.push(parsed);
+      }
+
+      for (const parsed of parsedList) {
+        if (normalizeUid(parsed.studyInstanceUid) !== normalizeUid(studyInstanceUid)) {
+          throw new BadRequestException(
+            'An uploaded file belongs to a different StudyInstanceUID',
+          );
+        }
+      }
+
+      const seriesUids = [...new Set(parsedList.map((p) => normalizeUid(p.seriesInstanceUid)))];
+      const sopUids = [...new Set(parsedList.map((p) => normalizeUid(p.sopInstanceUid)))];
+      if (sopUids.length !== parsedList.length) {
+        throw new BadRequestException('The upload contains duplicate SOP Instance UIDs');
+      }
+
+      const [dbSeries, dbInstances] = await Promise.all([
+        this.prisma.series.findMany({
+          where: { seriesInstanceUid: { in: seriesUids } },
+          select: { id: true, studyId: true, seriesInstanceUid: true },
+        }),
+        this.prisma.instance.findMany({
+          where: { sopInstanceUid: { in: sopUids } },
+          select: { id: true, studyId: true, sopInstanceUid: true },
+        }),
+      ]);
+      for (const row of dbSeries) {
+        if (seriesUids.includes(normalizeUid(row.seriesInstanceUid)) &&
+            row.studyId !== study.id) {
+          throw new ForbiddenException(
+            'An uploaded series belongs to a different study',
+          );
+        }
+      }
+      for (const row of dbInstances) {
+        if (sopUids.includes(normalizeUid(row.sopInstanceUid)) &&
+            row.studyId !== study.id) {
+          throw new ForbiddenException(
+            'An uploaded instance belongs to a different study',
+          );
+        }
+      }
+
+      const stored: OrthancStored[] = [];
+      for (const buffer of rawBuffers) {
+        const parsed = parsedByBuffer.get(buffer) as ParsedDicom;
+        stored.push(await this.storeRawInstance(buffer, parsed));
+      }
+      const orthancStudyId = stored[0].orthancStudyId;
+      const orthancPatientId = stored[0].orthancPatientId;
+      if (stored.some((item) => item.orthancStudyId !== orthancStudyId)) {
+        throw new ServiceUnavailableException(
+          'The recovered instances did not map to a single Orthanc study',
+        );
+      }
+
+      const seriesByUid = new Map(
+        study.series.map((row) => [normalizeUid(row.seriesInstanceUid), row]),
+      );
+      const instanceByUid = new Map(
+        study.instances.map((row) => [normalizeUid(row.sopInstanceUid), row]),
+      );
+      const groups = new Map<string, OrthancStored[]>();
+      for (const item of stored) {
+        const uid = normalizeUid(item.parsed.seriesInstanceUid);
+        if (!groups.has(uid)) groups.set(uid, []);
+        groups.get(uid)!.push(item);
+      }
+
+      for (const [seriesUid, group] of groups) {
+        const parsed = group[0].parsed;
+        const data = {
+          orthancSeriesId: group[0].orthancSeriesId,
+          modality: this.mapModality(parsed.modality),
+          seriesNumber: parsed.seriesNumber ?? 1,
+          seriesDescription: parsed.seriesDescription || '',
+          instanceCount: group.length,
+          bodyPart: parsed.bodyPart || '',
+        };
+        const existingSeries = seriesByUid.get(seriesUid);
+        const series = existingSeries
+          ? await this.prisma.series.update({ where: { id: existingSeries.id }, data })
+          : await this.prisma.series.create({
+              data: { seriesInstanceUid: seriesUid, studyId: study.id, ...data },
+            });
+        seriesByUid.set(seriesUid, series);
+
+        for (const item of group) {
+          const sopUid = normalizeUid(item.parsed.sopInstanceUid);
+          const instanceData = {
+            orthancInstanceId: item.orthancInstanceId,
+            seriesId: series.id,
+            studyId: study.id,
+            instanceNumber: item.parsed.instanceNumber ?? 1,
+            sopClassUid: item.parsed.sopClassUid || '',
+          };
+          const existingInstance = instanceByUid.get(sopUid);
+          const instance = existingInstance
+            ? await this.prisma.instance.update({
+                where: { id: existingInstance.id },
+                data: instanceData,
+              })
+            : await this.prisma.instance.create({
+                data: { sopInstanceUid: sopUid, ...instanceData },
+              });
+          instanceByUid.set(sopUid, instance);
+        }
+      }
+
+      const [seriesCount, instanceCount] = await Promise.all([
+        this.prisma.series.count({ where: { studyId: study.id } }),
+        this.prisma.instance.count({ where: { studyId: study.id } }),
+      ]);
+      const updatedStudy = await this.prisma.study.update({
+        where: { id: study.id },
+        data: { orthancStudyId, orthancPatientId, seriesCount, instanceCount },
+        include: { patient: true, hospital: true },
+      });
+
+      const availability = await this.dicomweb.verifyStudyAvailability(
+        user,
+        studyInstanceUid,
+        { persist: true, audit: false },
+      );
+      if (availability.state !== 'AVAILABLE') {
+        throw availability.state === 'UNAVAILABLE'
+          ? new ServiceUnavailableException(
+              'The imaging service was unavailable while verifying recovery',
+            )
+          : new BadRequestException(
+              `Re-ingestion verification returned ${availability.state}: ${availability.reason}`,
+            );
+      }
+
+      await this.auditEntry(user, 'DICOM_REINGEST', study.id, {
+        storedCount: stored.length,
+        seriesCount,
+        instanceCount,
+        availability: availability.state,
+      });
+      return { study: updatedStudy, availability, storedCount: stored.length };
+    } catch (err) {
+      await this.auditEntry(user, 'DICOM_REINGEST', study.id, {
+        status: 'FAILED',
+        reason: (err as Error).message,
+      }).catch(() => undefined);
+      if (err instanceof BadRequestException || err instanceof ForbiddenException) {
+        throw err;
+      }
+      this.logger.error(`DICOM re-ingest failed: ${(err as Error).message}`);
+      throw err;
+    } finally {
+      if (archive) await archive.cleanup();
     }
   }
 }

@@ -12,6 +12,9 @@ import { orthancBaseUrl } from '../common/config/orthanc-url.js';
 import { getCorrelationId } from '../common/observability/correlation.middleware.js';
 import { log } from '../common/observability/structured-logger.js';
 import { safeRequestPath } from '../common/observability/safe-path.js';
+import { AuditService } from '../audit/audit.service.js';
+import { isValidDicomUid } from '../dicom/dicom.constants.js';
+import type { ImagingAvailability, ImagingAvailabilityResult } from '@axis/types';
 import type { Request, Response } from 'express';
 
 /**
@@ -92,9 +95,25 @@ function envInt(name: string, fallback: number): number {
 
 export type DicomWebUser = { id: string; role: UserRole };
 
+type DicomJsonElement = { Value?: unknown[] };
+
+function dicomJsonUid(item: unknown, tag: string): string | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const element = (item as Record<string, unknown>)[tag] as DicomJsonElement | undefined;
+  const value = element?.Value?.[0];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeUid(uid: string | null | undefined): string {
+  return (uid ?? '').replace(/[\u0000\s]+/g, '');
+}
+
 @Injectable()
 export class DicomWebService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   orthancUrl(): string {
     return orthancBaseUrl();
@@ -361,6 +380,253 @@ export class DicomWebService {
         'You do not have access to studies from this hospital',
       );
     }
+  }
+
+  private async fetchDicomwebJson<T>(
+    path: string,
+  ): Promise<{ ok: true; body: T } | { ok: false; status?: number }> {
+    const target = `${this.dicomwebBase()}${path}`;
+    const auth = this.upstreamAuthHeader();
+    const headers: Record<string, string> = {
+      Accept: 'application/dicom+json',
+      ...(auth ? { Authorization: auth } : {}),
+    };
+    const timeoutMs = envInt('AXIS_ORTHANC_TIMEOUT_MS', 30000);
+    const attempts = 2;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let upstream: Awaited<ReturnType<typeof fetch>>;
+      try {
+        upstream = await fetch(target, { method: 'GET', headers, signal: controller.signal });
+        clearTimeout(timer);
+      } catch (err) {
+        clearTimeout(timer);
+        log('warn', 'dicomweb_availability_upstream_failure', {
+          route: safeRequestPath(path),
+          attempt,
+          attempts,
+          timeoutMs,
+          timedOut: (err as Error)?.name === 'AbortError',
+          errorName: (err as Error)?.name ?? 'UnknownError',
+        });
+        if (attempt === attempts) return { ok: false };
+        continue;
+      }
+
+      if (!upstream.ok) {
+        if (upstream.body) await upstream.body.cancel().catch(() => undefined);
+        log('warn', 'dicomweb_availability_upstream_error', {
+          route: safeRequestPath(path),
+          upstreamStatus: upstream.status,
+        });
+        return { ok: false, status: upstream.status };
+      }
+
+      try {
+        return { ok: true, body: (await upstream.json()) as T };
+      } catch {
+        return { ok: false };
+      }
+    }
+    return { ok: false };
+  }
+
+  async listOrthancStudyUids(maxStudies = 500): Promise<string[]> {
+    const response = await this.fetchDicomwebJson<unknown>(
+      `/studies?limit=${Math.max(1, Math.min(maxStudies, 5000))}`,
+    );
+    if (!response.ok || !Array.isArray(response.body)) return [];
+    return response.body
+      .map((item) => dicomJsonUid(item, '0020000D'))
+      .filter((uid): uid is string => !!uid)
+      .map(normalizeUid);
+  }
+
+  private async persistAvailability(
+    studyId: string,
+    result: ImagingAvailabilityResult,
+    persist: boolean,
+  ): Promise<ImagingAvailabilityResult> {
+    if (!persist) return result;
+    await this.prisma.study.update({
+      where: { id: studyId },
+      data: {
+        imagingAvailability: result.state as ImagingAvailability,
+        imagingAvailabilityReason: result.reason,
+        imagingCheckedAt: new Date(result.checkedAt),
+      },
+    });
+    return result;
+  }
+
+  async verifyStudyAvailability(
+    user: DicomWebUser,
+    studyUid: string,
+    options: { persist?: boolean; audit?: boolean } = {},
+  ): Promise<ImagingAvailabilityResult> {
+    if (!isValidDicomUid(studyUid)) {
+      throw new BadRequestException('Invalid StudyInstanceUID');
+    }
+    await this.authorizeStudyAccess(
+      user,
+      `/studies/${encodeURIComponent(studyUid)}`,
+      'GET',
+    );
+
+    const study = await this.prisma.study.findUnique({
+      where: { studyInstanceUid: studyUid },
+      select: {
+        id: true,
+        seriesCount: true,
+        instanceCount: true,
+        series: { select: { seriesInstanceUid: true } },
+        instances: { select: { sopInstanceUid: true } },
+      },
+    });
+    if (!study) {
+      throw new NotFoundException('Study not found');
+    }
+
+    const checkedAt = new Date().toISOString();
+    const expectedSeriesUids = study.series
+      .map((row) => normalizeUid(row.seriesInstanceUid))
+      .filter(Boolean);
+    const expectedInstanceUids = study.instances
+      .map((row) => normalizeUid(row.sopInstanceUid))
+      .filter(Boolean);
+    const base = {
+      studyInstanceUid: studyUid,
+      checkedAt,
+      expectedSeriesCount: expectedSeriesUids.length || study.seriesCount,
+      expectedInstanceCount: expectedInstanceUids.length || study.instanceCount,
+      actualSeriesCount: 0,
+      actualInstanceCount: 0,
+      missingSeriesUids: [] as string[],
+      missingInstanceUids: [] as string[],
+    };
+
+    const result = async (
+      state: ImagingAvailability,
+      reason: string,
+      actualSeriesCount = 0,
+      actualInstanceCount = 0,
+      missingSeriesUids: string[] = [],
+      missingInstanceUids: string[] = [],
+    ): Promise<ImagingAvailabilityResult> => {
+      const value: ImagingAvailabilityResult = {
+        ...base,
+        state,
+        reason,
+        actualSeriesCount,
+        actualInstanceCount,
+        missingSeriesUids,
+        missingInstanceUids,
+      };
+      const persisted = await this.persistAvailability(
+        study.id,
+        value,
+        options.persist ?? true,
+      );
+      if (options.audit ?? true) {
+        await this.audit.create({
+          actorId: user.id,
+          actorName: 'Imaging availability check',
+          actorRole: user.role,
+          action: 'DICOM_AVAILABILITY_CHECK',
+          resource: 'STUDY',
+          resourceId: study.id,
+          metadata: { state, reason },
+        }).catch(() => undefined);
+      }
+      return persisted;
+    };
+
+    const qido = await this.fetchDicomwebJson<unknown>(
+      `/studies?StudyInstanceUID=${encodeURIComponent(studyUid)}`,
+    );
+    if (!qido.ok) {
+      return result('UNAVAILABLE', 'The imaging service is temporarily unavailable');
+    }
+    if (!Array.isArray(qido.body)) {
+      return result('UNAVAILABLE', 'The imaging service returned an unexpected response');
+    }
+    const matches = qido.body.filter(
+      (item) => normalizeUid(dicomJsonUid(item, '0020000D')) === normalizeUid(studyUid),
+    );
+    if (matches.length === 0) {
+      return result('MISSING', 'The study is not present in Orthanc');
+    }
+    if (matches.length > 1) {
+      return result('INCOMPLETE', 'Orthanc reports more than one study with this StudyInstanceUID');
+    }
+
+    const seriesResponse = await this.fetchDicomwebJson<unknown>(
+      `/studies/${encodeURIComponent(studyUid)}/series`,
+    );
+    if (!seriesResponse.ok || !Array.isArray(seriesResponse.body)) {
+      return result('UNAVAILABLE', 'The imaging service is temporarily unavailable');
+    }
+    const actualSeriesUids = seriesResponse.body
+      .map((item) => normalizeUid(dicomJsonUid(item, '0020000E')))
+      .filter(Boolean);
+    const actualInstanceUids: string[] = [];
+    for (const seriesUid of actualSeriesUids) {
+      const instances = await this.fetchDicomwebJson<unknown>(
+        `/studies/${encodeURIComponent(studyUid)}/series/${encodeURIComponent(seriesUid)}/instances`,
+      );
+      if (!instances.ok || !Array.isArray(instances.body)) {
+        return result('UNAVAILABLE', 'The imaging service is temporarily unavailable');
+      }
+      for (const item of instances.body) {
+        const sopUid = normalizeUid(dicomJsonUid(item, '00080018'));
+        if (sopUid) actualInstanceUids.push(sopUid);
+      }
+    }
+
+    const missingSeries = expectedSeriesUids.filter((uid) => !actualSeriesUids.includes(uid));
+    const missingInstances = expectedInstanceUids.filter(
+      (uid) => !actualInstanceUids.includes(uid),
+    );
+    const uniqueInstances = [...new Set(actualInstanceUids)];
+
+    if (actualSeriesUids.length === 0 || uniqueInstances.length === 0) {
+      return result(
+        'INCOMPLETE',
+        'The study is indexed but has no retrievable series or instances',
+        actualSeriesUids.length,
+        uniqueInstances.length,
+        missingSeries,
+        missingInstances,
+      );
+    }
+    if (missingSeries.length > 0 || missingInstances.length > 0) {
+      return result(
+        'INCOMPLETE',
+        'The study is present in Orthanc but expected series or instances are missing',
+        actualSeriesUids.length,
+        uniqueInstances.length,
+        missingSeries,
+        missingInstances,
+      );
+    }
+    if ((study.seriesCount > 0 && expectedSeriesUids.length === 0) ||
+        (study.instanceCount > 0 && expectedInstanceUids.length === 0)) {
+      return result(
+        'INCOMPLETE',
+        'Database counts exist without indexed series or instance identifiers; reconciliation required',
+        actualSeriesUids.length,
+        uniqueInstances.length,
+      );
+    }
+
+    return result(
+      'AVAILABLE',
+      'Study, series, and instances verified in Orthanc',
+      actualSeriesUids.length,
+      uniqueInstances.length,
+    );
   }
 
   async proxy(request: Request, method: string, response: Response) {

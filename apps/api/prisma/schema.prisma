@@ -45,6 +45,7 @@ model User {
   approvedUsers           User[]           @relation("UserApproval")
   hospital                Hospital?        @relation(fields: [hospitalId], references: [id])
   passwordResetTokens     PasswordResetToken[]
+  reconciliationRuns      StudyReconciliationRun[] @relation("ReconciliationRequester")
 
   @@index([status])
   @@index([role])
@@ -144,6 +145,9 @@ model Study {
   managerReviewedAt     DateTime?
   signedOffAt           DateTime?
   archivedAt            DateTime?
+  imagingAvailability    ImagingAvailability @default(PENDING)
+  imagingAvailabilityReason String?
+  imagingCheckedAt      DateTime?
   aiJobs                AIJob[]
   assignments           Assignment[]
   changeRequests        ChangeRequest[]
@@ -158,6 +162,7 @@ model Study {
   worklistItem          WorklistItem?
 
   @@index([orthancStudyId])
+  @@index([imagingAvailability])
   @@index([status])
   @@index([hospitalId])
   @@index([assignedRadiologistId])
@@ -498,6 +503,28 @@ model BackupRun {
   @@index([verifiedAt])
 }
 
+/// Read-only comparison of PostgreSQL study metadata against Orthanc. Runs
+/// record findings only; they never add, delete, or overwrite DICOM objects.
+model StudyReconciliationRun {
+  id               String                  @id @default(cuid())
+  status           ReconciliationRunStatus @default(RUNNING)
+  requestedById    String?
+  startedAt        DateTime                @default(now())
+  completedAt      DateTime?
+  studiesScanned   Int                     @default(0)
+  availableCount   Int                     @default(0)
+  missingCount     Int                     @default(0)
+  incompleteCount  Int                     @default(0)
+  unavailableCount Int                     @default(0)
+  unexpectedCount  Int                     @default(0)
+  findings         Json
+  failureReason    String?
+  requestedBy      User?                   @relation("ReconciliationRequester", fields: [requestedById], references: [id])
+
+  @@index([startedAt])
+  @@index([status])
+}
+
 /// Server-side operational SLA thresholds keyed by study priority. A global
 /// default is applied when no row exists for a study's priority. The server
 /// (never the browser) computes deadlines, remaining time, and breach state.
@@ -555,6 +582,20 @@ enum StudyStatus {
   CORRECTION_REQUESTED
   HOSPITAL_CHANGE_REQUESTED
   CANCELLED
+}
+
+enum ImagingAvailability {
+  PENDING
+  AVAILABLE
+  MISSING
+  UNAVAILABLE
+  INCOMPLETE
+}
+
+enum ReconciliationRunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
 }
 
 enum Modality {
@@ -644,6 +685,9 @@ enum AuditAction {
   RETENTION_PREVIEW
   RETENTION_EXECUTED
   ARCHIVE_MARKED
+  DICOM_AVAILABILITY_CHECK
+  DICOM_RECONCILIATION
+  DICOM_REINGEST
 }
 
 enum AuditResource {

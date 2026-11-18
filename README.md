@@ -382,6 +382,53 @@ local production-mode test.
 return a sanitized `503`/`504` with a correlation ID instead of failing the
 whole API. Verify the deployed service with `curl https://<api-host>/api/health/ready`.
 
+### Orthanc persistent storage and imaging recovery
+
+Orthanc stores both DICOM objects and its local index in
+`/var/lib/orthanc/db` (`infra/orthanc/orthanc.prod.json`). `render.yaml` declares
+a 10 GB `axis-orthanc-data` disk mounted at the same path. That blueprint only
+protects the live service if the disk is actually attached to it: confirm this
+in the Render dashboard (Service → Disks). Do not delete, reset, or reinitialize
+the disk or its contents.
+
+If the live `axis-orthanc` service has no disk:
+
+- Add a Render disk named `axis-orthanc-data`, mount path
+  `/var/lib/orthanc/db`, size `10 GB` (increase only if imaging volume requires
+  it), then redeploy. Only data written under that path survives redeploys.
+- Keep the API's `ORTHANC_URL` pointed at the private service's internal
+  `host:port` (for example `http://axis-orthanc:8042`), never `localhost`. If
+  the API is in the same blueprint, use `fromService` with property `hostport`.
+- `axis-orthanc` is a private service with a TCP port check on `8042`; do not
+  add `healthCheckPath`, which Render only supports for web services.
+- To confirm the current service is the one used during previous uploads, use
+  Render Shell on the Orthanc service and compare `GET /system` (the Orthanc
+  `ID`/`Name`) against any earlier deployment record or backup. Repository
+  history cannot prove live dashboard state.
+
+Running imaging storage on ephemeral infrastructure risks losing both DICOM
+objects and the Orthanc index on every redeploy/restart. PostgreSQL would keep
+study metadata while QIDO/WADO return no images, exactly the divergence the
+availability check now detects. Ephemeral services also provide no disk
+snapshots, cannot satisfy PHI retention/audit obligations, and cannot scale
+horizontally. With a disk attached, monitor capacity and plan backups beyond
+Render's short snapshot window.
+
+The authenticated imaging endpoints are:
+
+- `GET /api/dicom-web/availability/:studyUid` — verifies one study against
+  Orthanc for the signed-in user and records imaging availability.
+- `POST /api/dicom/reingest/:studyUid` — authorized recovery from original
+  DICOM files (multipart field `file`, ZIP or individual instances). Files are
+  parsed, UID-checked, stored in Orthanc, verified, and only then reflected as
+  available. Reports, assignments, tenants, and clinical statuses are preserved.
+- `GET|POST /api/admin/dicom-reconciliation` — ADMIN-only, paginated
+  reconciliation runs. `POST` accepts `page`, `pageSize` (max 50), and optional
+  `hospitalId`; results are recorded and never delete or overwrite DICOM data.
+
+If original DICOM files are unavailable, recovery requires obtaining them from
+the source facility; study metadata alone is never used to fabricate images.
+
 ---
 
 ## Docker Services

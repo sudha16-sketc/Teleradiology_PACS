@@ -4,6 +4,7 @@ import {
   UploadedFiles,
   UseInterceptors,
   BadRequestException,
+  Param,
   Req,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
@@ -112,6 +113,41 @@ export class DicomController {
       // Remove the per-request upload staging directory (and any files within
       // it) regardless of outcome. `files` may be empty if Multer aborted, so
       // always attempt the directory removal.
+      if (request.axisUploadDir) {
+        await rm(request.axisUploadDir, {
+          recursive: true,
+          force: true,
+        }).catch(() => undefined);
+      }
+    }
+  }
+
+  @Post('reingest/:studyUid')
+  @Roles('HOSPITAL', 'ADMIN', 'MANAGER')
+  @UseInterceptors(
+    FilesInterceptor('file', DICOM_LIMITS.MAX_INSTANCES, {
+      storage: uploadDiskStorage(),
+      limits: {
+        fileSize: DICOM_LIMITS.MAX_FILE_BYTES,
+        files: DICOM_LIMITS.MAX_INSTANCES,
+      },
+    }),
+  )
+  async reingest(
+    @UploadedFiles() files: Express.Multer.File[] | undefined,
+    @Param('studyUid') studyUid: string,
+    @CurrentUser() user: IngestUser,
+    @Req() req: Request,
+  ): Promise<{ data: unknown }> {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('No DICOM files uploaded for recovery');
+    }
+    const request = req as UploadRequest;
+    try {
+      return {
+        data: await this.dicomService.reingestDicom(files, studyUid, user),
+      };
+    } finally {
       if (request.axisUploadDir) {
         await rm(request.axisUploadDir, {
           recursive: true,

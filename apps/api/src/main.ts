@@ -73,6 +73,8 @@ async function bootstrap() {
   app.use('/api/auth/register', rl('register', 60 * 60 * 1000, 20));
   app.use('/api/dicom/ingest', rl('dicom_upload', 60 * 1000, 20));
   app.use('/api/dicom/ingest', limitUploadBody);
+  app.use('/api/dicom/reingest', rl('dicom_reingest', 60 * 1000, 10));
+  app.use('/api/dicom/reingest', limitUploadBody);
   app.use('/api/studies/:uid/correction-requests', rl('correction_request', 60 * 60 * 1000, 50));
   app.use('/api/corrections/:id/approve', rl('correction_approve', 60 * 60 * 1000, 100));
   app.use('/api/corrections/:id/reject', rl('correction_reject', 60 * 60 * 1000, 100));
