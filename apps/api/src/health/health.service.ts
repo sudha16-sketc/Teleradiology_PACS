@@ -1,10 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { orthancBaseUrl } from '../common/config/orthanc-url.js';
+import { log } from '../common/observability/structured-logger.js';
 import type { HealthComponent, HealthReport } from '@axis/types';
-
-function orthancBase(): string {
-  return (process.env.ORTHANC_URL ?? 'http://localhost:8042').replace(/\/+$/, '');
-}
 
 function orthancAuthHeader(): Record<string, string> {
   const u = process.env.ORTHANC_USERNAME;
@@ -13,6 +11,11 @@ function orthancAuthHeader(): Record<string, string> {
     return { Authorization: `Basic ${Buffer.from(`${u}:${p}`).toString('base64')}` };
   }
   return {};
+}
+
+function orthancHealthTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.AXIS_ORTHANC_HEALTH_TIMEOUT_MS ?? '5000', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
 }
 
 @Injectable()
@@ -46,13 +49,19 @@ export class HealthService {
     const orthStart = process.hrtime.bigint();
     let orthUp = true;
     try {
-      const res = await fetch(`${orthancBase()}/system`, {
+      const res = await fetch(`${orthancBaseUrl()}/system`, {
         headers: orthancAuthHeader(),
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(orthancHealthTimeoutMs()),
       });
       orthUp = res.ok;
-    } catch {
+      if (!orthUp) {
+        log('warn', 'orthanc_health_unexpected_status', { upstreamStatus: res.status });
+      }
+    } catch (err) {
       orthUp = false;
+      log('warn', 'orthanc_health_unreachable', {
+        errorName: (err as Error)?.name ?? 'UnknownError',
+      });
     }
     const orthMs = Number(process.hrtime.bigint() - orthStart) / 1e6;
     components.push({
@@ -61,9 +70,13 @@ export class HealthService {
       latencyMs: Math.round(orthMs),
     });
 
-    const ready = pgUp && orthUp;
+    // Imaging is a dependency, not a prerequisite for the rest of the PACS.
+    // A failed Orthanc probe must not make the platform drain the API and take
+    // reports/worklists down with it. Readiness tracks the database only;
+    // Orthanc remains visible as a degraded component for diagnostics.
+    const ready = pgUp;
     return {
-      status: ready ? 'ok' : 'degraded',
+      status: ready && orthUp ? 'ok' : 'degraded',
       ready,
       components,
       timestamp: new Date().toISOString(),

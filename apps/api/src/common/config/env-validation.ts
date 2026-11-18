@@ -63,6 +63,9 @@ export function assertRequiredEnv(): void {
     { key: 'AUTH_RECOVERY_MAX_REQUESTS', min: 1, max: 1000 },
     { key: 'AUTH_RECOVERY_WINDOW_SECONDS', min: 1, max: 86400 },
     { key: 'PASSWORD_RESET_TOKEN_TTL_MINUTES', min: 15, max: 30 },
+    { key: 'AXIS_ORTHANC_TIMEOUT_MS', min: 1000, max: 600000 },
+    { key: 'AXIS_ORTHANC_STREAM_IDLE_TIMEOUT_MS', min: 1000, max: 600000 },
+    { key: 'AXIS_ORTHANC_HEALTH_TIMEOUT_MS', min: 500, max: 60000 },
   ];
   for (const { key, min, max } of boundedIntegers) {
     const raw = process.env[key];
@@ -70,6 +73,32 @@ export function assertRequiredEnv(): void {
       const value = Number(raw);
       if (!Number.isInteger(value) || value < min || value > max) {
         missing.push(`${key} (must be an integer from ${min} to ${max})`);
+      }
+    }
+  }
+
+  if (isProduction()) {
+    const rawOrthancUrl = process.env.ORTHANC_URL;
+    if (rawOrthancUrl) {
+      const candidate = /^https?:\/\//i.test(rawOrthancUrl)
+        ? rawOrthancUrl
+        : `http://${rawOrthancUrl}`;
+      try {
+        const parsed = new URL(candidate);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          missing.push('ORTHANC_URL (must use http or https)');
+        }
+        if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+          missing.push('ORTHANC_URL (must not contain credentials, query or fragment)');
+        }
+        const loopback = /^(localhost|127\.|::1|\[::1\])$/i.test(parsed.hostname);
+        if (loopback && process.env.AXIS_ALLOW_LOOPBACK_ORTHANC !== '1') {
+          missing.push(
+            'ORTHANC_URL (loopback is not reachable from a deployed API; set a real Orthanc host or AXIS_ALLOW_LOOPBACK_ORTHANC=1 for local production testing)',
+          );
+        }
+      } catch {
+        missing.push('ORTHANC_URL (must be a valid URL or host:port)');
       }
     }
   }

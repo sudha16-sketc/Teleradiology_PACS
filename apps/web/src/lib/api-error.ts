@@ -121,6 +121,7 @@ export function classifyStatus(
   status: number,
   serverMessage?: string,
   correlationId?: string,
+  serverError?: string,
 ): ApiFailure {
   let kind: ApiFailureKind;
   if (status === 401) kind = "unauthenticated";
@@ -128,7 +129,17 @@ export function classifyStatus(
   else if (status === 404) kind = "not_found";
   else if (status === 409) kind = "conflict";
   else if (status === 400 || status === 422) kind = "validation";
-  else if (status === 503) kind = "imaging_unavailable";
+  else if (
+    status === 503 &&
+    serverError === "Imaging Backend Error"
+  )
+    kind = "imaging_unavailable";
+  else if (
+    status === 504 &&
+    (serverError === "Imaging Backend Error" ||
+      /imaging backend/i.test(serverMessage ?? ""))
+  )
+    kind = "imaging_unavailable";
   else if (status >= 500) kind = "server";
   else if (status >= 400) kind = "client";
   else kind = "unknown";

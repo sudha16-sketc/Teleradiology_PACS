@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { PrismaClient, UserRole, UserStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { normalizePhoneOrThrow } from '../src/common/validators/phone.js';
 
 const prisma = new PrismaClient();
 
@@ -19,6 +20,7 @@ async function main() {
     process.exit(1);
   }
 
+  const phone = normalizePhoneOrThrow(process.env.ADMIN_PHONE);
   const passwordHash = await bcrypt.hash(password, 12);
 
   const existing = await prisma.user.findUnique({ where: { email } });
@@ -54,7 +56,7 @@ async function main() {
       status: UserStatus.APPROVED,
       isActive: true,
       passwordHash,
-      phone: process.env.ADMIN_PHONE,
+      phone,
       organization: process.env.ADMIN_ORG,
     },
   });

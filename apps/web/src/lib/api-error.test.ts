@@ -13,13 +13,25 @@ describe("API failure handling", () => {
     const offline = classifyThrown(new TypeError("fetch failed"), "req-offline");
     const timeout = classifyThrown({ name: "TimeoutError" }, "req-timeout");
     const auth = classifyStatus(401, undefined, "req-auth");
-    const imaging = classifyStatus(503, "upstream detail", "req-image");
+    const imaging = classifyStatus(
+      503,
+      "upstream detail",
+      "req-image",
+      "Imaging Backend Error",
+    );
+    const mailOutage = classifyStatus(
+      503,
+      "Password reset email delivery failed",
+      "req-mail",
+      "Service Unavailable",
+    );
 
     expect(offline.message).toBe("Unable to connect to PACS server.");
     expect(offline.correlationId).toBe("req-offline");
     expect(timeout.kind).toBe("timeout");
     expect(auth.requiresSignIn).toBe(true);
     expect(imaging.message).not.toContain("upstream detail");
+    expect(mailOutage.kind).toBe("server");
     expect(isConnectivityFailure(offline)).toBe(true);
     expect(failureHint(offline)).toContain("does not work offline");
   });

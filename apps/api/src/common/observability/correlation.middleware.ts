@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
 import { log } from './structured-logger.js';
+import { safeRequestPath } from './safe-path.js';
 import { requestContext } from './request-context.js';
 
 export const CORRELATION_HEADER = 'x-request-id';
@@ -45,7 +46,7 @@ export function requestLoggingMiddleware(
     log('info', 'request', {
       correlationId: r.correlationId,
       method: req.method,
-      path: req.originalUrl || req.url,
+      path: safeRequestPath(req.originalUrl || req.url),
       status: res.statusCode,
       durationMs: Math.round(durMs),
       actorId: r.user?.id,

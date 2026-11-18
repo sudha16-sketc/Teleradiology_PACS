@@ -217,7 +217,7 @@ async function request<T>(
     const serverId =
       response.headers.get("x-request-id") ?? body?.correlationId ?? requestId;
     throw new ApiRequestError(
-      classifyStatus(response.status, body?.message, serverId),
+      classifyStatus(response.status, body?.message, serverId, body?.error),
       path,
       body,
     );

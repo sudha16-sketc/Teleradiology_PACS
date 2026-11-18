@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { orthancBaseUrl } from '../common/config/orthanc-url.js';
 import { readFile } from 'fs/promises';
 import AdmZip from 'adm-zip';
 import { Prisma } from '@prisma/client';
@@ -69,7 +70,7 @@ export class DicomService {
   ) {}
 
   private orthancBase(): string {
-    return (process.env.ORTHANC_URL ?? 'http://localhost:8042').replace(/\/+$/, '');
+    return orthancBaseUrl();
   }
 
   private orthancAuthHeader(): string | undefined {

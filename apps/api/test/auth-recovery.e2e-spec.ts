@@ -124,6 +124,49 @@ describe('Authentication recovery and abuse controls', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('fails visibly when password reset email delivery is not configured', async () => {
+    const originalKey = process.env.RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    try {
+      const response = await setIp(request.agent(server), testIp(51))
+        .post('/api/auth/forgot-password')
+        .send({ email })
+        .expect(503);
+      expect(response.body.message).toContain('not configured');
+    } finally {
+      if (originalKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = originalKey;
+    }
+  });
+
+  it('uses separate rate-limit buckets for forgot and reset requests', async () => {
+    const originalMax = process.env.AUTH_RECOVERY_MAX_REQUESTS;
+    process.env.AUTH_RECOVERY_MAX_REQUESTS = '1';
+    const limiter = app.get(AuthRateLimitService);
+    const ip = testIp(53);
+    const req = { ip, socket: { remoteAddress: ip } } as unknown as Request;
+    const res = {
+      setHeader: () => undefined,
+    } as unknown as Response;
+    const identifier = `scope-${randomUUID()}@example.test`;
+
+    try {
+      await limiter.assertRecoveryAllowed(req, 'forgot', identifier, res);
+      await limiter.assertRecoveryAllowed(req, 'reset', identifier, res);
+      let status: number | undefined;
+      try {
+        await limiter.assertRecoveryAllowed(req, 'forgot', identifier, res);
+      } catch (error) {
+        if (error instanceof HttpException) status = error.getStatus();
+        else throw error;
+      }
+      expect(status).toBe(429);
+    } finally {
+      if (originalMax === undefined) delete process.env.AUTH_RECOVERY_MAX_REQUESTS;
+      else process.env.AUTH_RECOVERY_MAX_REQUESTS = originalMax;
+    }
+  });
+
   it('rejects invalid and expired reset tokens', async () => {
     await setIp(request.agent(server), testIp(34))
       .post('/api/auth/reset-password')
@@ -301,5 +344,19 @@ describe('Authentication recovery and abuse controls', () => {
     await adminAgent.patch(`/api/users/${userId}`).send({ role: 'MANAGER' }).expect(200);
     await adminAgent.patch(`/api/users/${userId}`).send({ role: 'RADIOLOGIST' }).expect(200);
     await adminAgent.get('/api/users').expect(200);
+  });
+
+  it('cleans up the reset token and reports provider failures instead of fake success', async () => {
+    await prisma.passwordResetToken.deleteMany({ where: { userId } });
+    fetchMock.mockImplementation(async () => new Response(null, { status: 500 }));
+
+    const response = await setIp(request.agent(server), testIp(52))
+      .post('/api/auth/forgot-password')
+      .send({ email })
+      .expect(503);
+    expect(response.body.message).toMatch(/could not be delivered|temporarily unavailable/);
+
+    const tokenCount = await prisma.passwordResetToken.count({ where: { userId } });
+    expect(tokenCount).toBe(0);
   });
 });

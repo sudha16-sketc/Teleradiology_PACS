@@ -49,10 +49,12 @@ export class AuthRateLimitService {
     request: Request,
     scope: LimitScope,
     identifier: string,
+    kind?: 'forgot' | 'reset',
   ): LimitIdentity[] {
+    const suffix = kind ? `:${kind}` : '';
     return [
-      { scope: `${scope}:ip`, value: this.clientIp(request) },
-      { scope: `${scope}:identifier`, value: identifier },
+      { scope: `${scope}${suffix}:ip`, value: this.clientIp(request) },
+      { scope: `${scope}${suffix}:identifier`, value: identifier },
     ];
   }
 
@@ -133,7 +135,7 @@ export class AuthRateLimitService {
     response: Response,
   ): Promise<void> {
     const options = this.limit('recovery');
-    const keys = this.identities(request, 'recovery', `${kind}:${identifier}`).map(
+    const keys = this.identities(request, 'recovery', identifier, kind).map(
       ({ scope, value }) => this.key(scope, value),
     );
     await this.assertNotLimited(keys, options.max, response);

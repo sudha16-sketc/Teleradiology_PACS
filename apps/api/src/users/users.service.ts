@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { sanitizeUser } from '../common/sanitize-user.js';
 import { UserRole, UserStatus } from '@prisma/client';
+import { normalizePhoneOrThrow } from '../common/validators/phone.js';
 
 interface ListUsersParams {
   search?: string;
@@ -90,6 +91,7 @@ export class UsersService {
     hospitalId?: string;
     subspecialty?: string;
   }) {
+    const phone = normalizePhoneOrThrow(dto.phone);
     if (dto.role === UserRole.ADMIN) {
       throw new BadRequestException(
         'Administrator creation is restricted to the trusted administrative process',
@@ -126,7 +128,7 @@ export class UsersService {
           status: UserStatus.APPROVED,
           isActive: true,
           passwordHash,
-          phone: dto.phone,
+          phone,
           organization: dto.organization,
           licenseNumber: dto.licenseNumber,
           hospitalId: dto.hospitalId,
@@ -173,6 +175,7 @@ export class UsersService {
       status?: UserStatus;
     },
   ) {
+    const phone = dto.phone === undefined ? undefined : normalizePhoneOrThrow(dto.phone);
     if (dto.role === UserRole.ADMIN) {
       throw new BadRequestException(
         'Administrator promotion is restricted to the trusted administrative process',
@@ -253,7 +256,7 @@ export class UsersService {
           ? { displayName: dto.displayName.trim() }
           : {}),
         ...(dto.role ? { role: dto.role } : {}),
-        ...(dto.phone !== undefined ? { phone: dto.phone || null } : {}),
+        ...(phone !== undefined ? { phone } : {}),
         ...(dto.organization !== undefined ? { organization: dto.organization || null } : {}),
         ...(dto.licenseNumber !== undefined ? { licenseNumber: dto.licenseNumber || null } : {}),
         ...(dto.hospitalId !== undefined ? { hospitalId: dto.hospitalId || null } : {}),

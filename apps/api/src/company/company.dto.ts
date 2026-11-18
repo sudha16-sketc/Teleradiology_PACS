@@ -1,4 +1,5 @@
 import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsPhoneInput } from '../common/validators/phone.js';
 
 export class UpdateCompanySettingsDto {
   @IsOptional()
@@ -7,8 +8,7 @@ export class UpdateCompanySettingsDto {
   name?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(60)
+  @IsPhoneInput()
   phone?: string;
 
   @IsOptional()

@@ -18,7 +18,12 @@ describe("API rewrite destination", () => {
 
     const { default: config } = await import("../../next.config.mjs");
     const rewrites = await config.rewrites?.();
-    const apiRewrite = rewrites?.find((rewrite) => rewrite.source === "/api/:path*");
+    const rewriteList = Array.isArray(rewrites)
+      ? rewrites
+      : (rewrites?.beforeFiles ?? []);
+    const apiRewrite = rewriteList.find(
+      (rewrite: { source: string }) => rewrite.source === "/api/:path*",
+    );
 
     expect(apiRewrite?.destination).toBe(
       "https://teleradiology-pacs.onrender.com/api/:path*",

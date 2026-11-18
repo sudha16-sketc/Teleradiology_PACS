@@ -1,40 +1,72 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+
+const RESEND_EMAILS_URL = 'https://api.resend.com/emails';
+const EMAIL_REQUEST_TIMEOUT_MS = 10000;
+const OUTAGE_COOLDOWN_MS = 30000;
 
 @Injectable()
 export class PasswordResetEmailService {
+  private unavailableUntil = 0;
+
   isConfigured(): boolean {
     return Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
   }
 
-  async sendPasswordReset(email: string, token: string): Promise<void> {
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.EMAIL_FROM;
-    if (!apiKey || !from) {
-      throw new Error('Password reset email is not configured');
+  assertConfigured(): void {
+    if (!this.isConfigured()) {
+      throw new ServiceUnavailableException(
+        'Password reset email delivery is not configured',
+      );
     }
+    if (Date.now() < this.unavailableUntil) {
+      throw new ServiceUnavailableException(
+        'Password reset email delivery is temporarily unavailable',
+      );
+    }
+  }
+
+  private markUnavailable(): void {
+    this.unavailableUntil = Date.now() + OUTAGE_COOLDOWN_MS;
+  }
+
+  async sendPasswordReset(email: string, token: string): Promise<void> {
+    this.assertConfigured();
+    const apiKey = process.env.RESEND_API_KEY as string;
+    const from = process.env.EMAIL_FROM as string;
 
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
     const resetUrl = new URL('/reset-password', baseUrl);
     resetUrl.searchParams.set('token', token);
     const expiresMinutes = process.env.PASSWORD_RESET_TOKEN_TTL_MINUTES ?? '20';
 
-    const result = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from,
-        to: [email],
-        subject: 'Reset your Axis password',
-        text: `Use this link to reset your Axis password. It expires in ${expiresMinutes} minutes:\n\n${resetUrl.toString()}\n\nIf you did not request this, you can ignore this email.`,
-        html: `<p>Use the link below to reset your Axis password. It expires in ${expiresMinutes} minutes.</p><p><a href="${resetUrl.toString()}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
-      }),
-    });
+    try {
+      const result = await fetch(RESEND_EMAILS_URL, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from,
+          to: [email],
+          subject: 'Reset your Axis password',
+          text: `Use this link to reset your Axis password. It expires in ${expiresMinutes} minutes:\n\n${resetUrl.toString()}\n\nIf you did not request this, you can ignore this email.`,
+          html: `<p>Use the link below to reset your Axis password. It expires in ${expiresMinutes} minutes.</p><p><a href="${resetUrl.toString()}">Reset password</a></p><p>If you did not request this, you can ignore this email.</p>`,
+        }),
+        signal: AbortSignal.timeout(EMAIL_REQUEST_TIMEOUT_MS),
+      });
 
-    if (!result.ok) {
-      throw new Error(`Password reset email provider returned HTTP ${result.status}`);
+      if (!result.ok) {
+        this.markUnavailable();
+        throw new Error(`Password reset email provider returned HTTP ${result.status}`);
+      }
+    } catch (error) {
+      this.markUnavailable();
+      const detail =
+        error instanceof Error ? error.name : 'Unknown email delivery error';
+      throw new ServiceUnavailableException(
+        `Password reset email delivery failed: ${detail}`,
+      );
     }
   }
 }

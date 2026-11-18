@@ -4,6 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { Activity, CheckCircle2 } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
+import {
+  normalizePhone,
+  PHONE_VALIDATION_MESSAGE,
+} from "@/lib/phone";
+import { PhoneField } from "@/components/PhoneField";
 import type { ApiError, UserRole } from "@axis/types";
 
 const inputClass =
@@ -49,8 +54,14 @@ export default function RegisterPage() {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
+    const phone = normalizePhone(form.phone);
+    if (phone === null) {
+      setError(PHONE_VALIDATION_MESSAGE);
+      setSubmitting(false);
+      return;
+    }
     try {
-      await apiClient.post("/auth/register", form);
+      await apiClient.post("/auth/register", { ...form, phone });
       setSubmitted(true);
     } catch (err) {
       const apiError = err as ApiError;
@@ -140,12 +151,9 @@ export default function RegisterPage() {
             <span className="mb-1 block text-xs font-medium text-text-muted">
               Phone Number
             </span>
-            <input
-              type="tel"
+            <PhoneField
               value={form.phone ?? ""}
-              onChange={(e) => update("phone", e.target.value)}
-              placeholder="+91 98765 43210"
-              className={inputClass}
+              onChange={(value) => update("phone", value)}
             />
           </label>
 

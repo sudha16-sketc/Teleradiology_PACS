@@ -11,6 +11,7 @@ import {
 import { Roles } from '../auth/auth.decorators.js';
 import { UsersService } from './users.service.js';
 import { IsStrongPassword } from '../common/validators/strong-password.js';
+import { IsPhoneInput } from '../common/validators/phone.js';
 
 class CreateUserDto {
   @IsString()
@@ -29,7 +30,7 @@ class CreateUserDto {
   password!: string;
 
   @IsOptional()
-  @IsString()
+  @IsPhoneInput()
   phone?: string;
 
   @IsOptional()
@@ -59,7 +60,7 @@ class UpdateUserDto {
   role?: UserRole;
 
   @IsOptional()
-  @IsString()
+  @IsPhoneInput()
   phone?: string;
 
   @IsOptional()

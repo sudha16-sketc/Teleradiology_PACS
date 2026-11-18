@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, ConflictException, NotFoundException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import type { Response } from 'express';
 import type { Request } from 'express';
 import jwt from 'jsonwebtoken';
@@ -22,6 +22,7 @@ import {
 import { sessionRevocationStore } from './session-store.js';
 import { AuthRateLimitService } from './auth-rate-limit.service.js';
 import { PasswordResetEmailService } from './password-reset-email.service.js';
+import { normalizePhoneOrThrow } from '../common/validators/phone.js';
 import { logger } from '../common/observability/structured-logger.js';
 import type { RegisterDto, ApproveRequestDto, RejectRequestDto, ResetPasswordDto } from './auth.dto.js';
 
@@ -35,6 +36,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    const phone = normalizePhoneOrThrow(dto.phone);
     if (dto.requestedRole === UserRole.ADMIN) {
       throw new BadRequestException(
         'The Administrator role cannot be self-assigned during registration',
@@ -63,7 +65,7 @@ export class AuthService {
         data: {
           email: dto.email.toLowerCase().trim(),
           displayName: dto.displayName.trim(),
-          phone: dto.phone,
+          phone,
           organization: dto.organization,
           licenseNumber: dto.licenseNumber,
           requestedRole: dto.requestedRole,
@@ -170,10 +172,7 @@ export class AuthService {
     const email = emailInput.toLowerCase().trim();
     await this.rateLimit.assertRecoveryAllowed(request, 'forgot', email, response);
 
-    if (!this.resetEmail.isConfigured()) {
-      logger.error('password_reset_email_not_configured');
-      return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };
-    }
+    this.resetEmail.assertConfigured();
 
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -205,10 +204,13 @@ export class AuthService {
         logger.error('password_reset_token_cleanup_failed', {
           message:
             cleanupError instanceof Error
-              ? cleanupError.message
+              ? cleanupError.name
               : 'Unknown reset-token cleanup error',
         });
       }
+      throw new ServiceUnavailableException(
+        'Password reset email could not be delivered. Please try again later.',
+      );
     }
 
     return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };

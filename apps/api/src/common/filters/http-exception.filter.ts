@@ -10,6 +10,7 @@ import type { Response } from 'express';
 import type { ApiError } from '@axis/types';
 import { getCorrelationId } from '../observability/correlation.middleware.js';
 import { log } from '../observability/structured-logger.js';
+import { safeRequestPath } from '../observability/safe-path.js';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -18,6 +19,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest();
     const correlationId = getCorrelationId(request);
+    const safePath = safeRequestPath(request.url ?? '');
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Internal server error';
@@ -41,7 +43,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       log('error', 'unhandled_exception', {
         correlationId,
         method: request?.method,
-        path: request?.url,
+        path: safePath,
         actorId: (request as { user?: { id?: string } })?.user?.id,
         error: (exception as Error)?.message,
         stack: (exception as Error)?.stack,
@@ -53,7 +55,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message,
       error,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path: safePath,
     };
     if (correlationId) errorResponse.correlationId = correlationId;
 
@@ -61,7 +63,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     log(status >= 500 ? 'error' : 'warn', 'http_error', {
       correlationId,
       method: request?.method,
-      path: request?.url,
+      path: safePath,
       status,
       message,
       actorId: (request as { user?: { id?: string } })?.user?.id,

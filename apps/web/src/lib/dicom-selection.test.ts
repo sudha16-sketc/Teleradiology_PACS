@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_FILE_BYTES,
   MAX_FILES,
-  MAX_TOTAL_BYTES,
   validateSelection,
 } from "./dicom-selection";
 
@@ -29,8 +28,11 @@ describe("DICOM selection budgets", () => {
     ).toMatchObject({ ok: false, code: "file_too_large" });
     expect(
       validateSelection([
-        { name: "a.dcm", size: MAX_TOTAL_BYTES / 2 },
-        { name: "b.dcm", size: MAX_TOTAL_BYTES / 2 + 1 },
+        { name: "a.dcm", size: MAX_FILE_BYTES },
+        { name: "b.dcm", size: MAX_FILE_BYTES },
+        { name: "c.dcm", size: MAX_FILE_BYTES },
+        { name: "d.dcm", size: MAX_FILE_BYTES },
+        { name: "e.dcm", size: 1 },
       ]),
     ).toMatchObject({ ok: false, code: "total_too_large" });
     expect(

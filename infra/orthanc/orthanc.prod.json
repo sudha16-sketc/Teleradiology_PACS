@@ -1,0 +1,35 @@
+{
+  "Name": "Axis Orthanc",
+  "AccessionGenerator": "REJECT",
+  "DicomAet": "ORTHANC",
+  "DicomCheckCalledAet": false,
+  "DicomPort": 4242,
+  "HttpPort": 8042,
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+  "AuthenticationEnabled": ${ORTHANC_AUTH_ENABLED:-false},
+  "RegisteredUsers": {
+    "${ORTHANC_USERNAME:-orthanc}": "${ORTHANC_PASSWORD:-orthanc}"
+  },
+  "RemoteAccessAllowed": true,
+  "Plugins": [
+    "/usr/share/orthanc/plugins/"
+  ],
+  "DicomWeb": {
+    "Enable": true,
+    "EnableQido": true,
+    "EnableStow": true,
+    "EnableWado": true,
+    "Wado": {
+      "Root": "/dicom-web"
+    },
+    "Stow": {
+      "Root": "/dicom-web"
+    },
+    "Qido": {
+      "Root": "/dicom-web"
+    }
+  },
+  "PublicDatabaseConnections": 10,
+  "TotalDatabaseConnections": 20
+}

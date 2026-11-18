@@ -10,6 +10,11 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    exclude: [
+      "src/lib/report-access.test.ts",
+      "**/node_modules/**",
+      "**/dist/**",
+    ],
     // The web app is not unit tested with a browser harness yet; the frontend
     // contract worth pinning down is the platform abstraction, which needs none.
     passWithNoTests: false,

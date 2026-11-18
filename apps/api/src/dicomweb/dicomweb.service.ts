@@ -7,6 +7,10 @@ import {
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { orthancBaseUrl } from '../common/config/orthanc-url.js';
+import { getCorrelationId } from '../common/observability/correlation.middleware.js';
+import { log } from '../common/observability/structured-logger.js';
+import { safeRequestPath } from '../common/observability/safe-path.js';
 import type { Request, Response } from 'express';
 
 /**
@@ -92,7 +96,7 @@ export class DicomWebService {
   constructor(private readonly prisma: PrismaService) {}
 
   orthancUrl(): string {
-    return (process.env.ORTHANC_URL ?? 'http://localhost:8042').replace(/\/+$/, '');
+    return orthancBaseUrl();
   }
 
   private dicomwebBase(): string {
@@ -391,41 +395,79 @@ export class DicomWebService {
     if (orthancAuth) headers.authorization = orthancAuth;
 
     const hasBody = method !== 'GET' && method !== 'HEAD';
-
+    const retryable = !hasBody;
+    const attempts = retryable ? 2 : 1;
     const timeoutMs = envInt('AXIS_ORTHANC_TIMEOUT_MS', 30000);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const correlationId = getCorrelationId(request);
+    const route = safeRequestPath(request.originalUrl ?? request.url);
 
-    let upstream: Awaited<ReturnType<typeof fetch>>;
-    try {
-      upstream = await fetch(target, {
-        method,
-        headers,
-        body: hasBody
-          ? (request as unknown as ReadableStream<Uint8Array>)
-          : undefined,
-        duplex: hasBody ? 'half' : undefined,
-        signal: controller.signal,
-      } as RequestInit);
-    } catch (err) {
-      clearTimeout(timer);
-      const timedOut = (err as Error)?.name === 'AbortError';
-      this.sendError(response, timedOut ? 504 : 503, request.url, timedOut);
+    let upstream: Awaited<ReturnType<typeof fetch>> | undefined;
+    let controller = new AbortController();
+    let timedOut = false;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        upstream = await fetch(target, {
+          method,
+          headers,
+          body: hasBody
+            ? (request as unknown as ReadableStream<Uint8Array>)
+            : undefined,
+          duplex: hasBody ? 'half' : undefined,
+          signal: controller.signal,
+        } as RequestInit);
+        clearTimeout(timer);
+        break;
+      } catch (err) {
+        clearTimeout(timer);
+        timedOut = (err as Error)?.name === 'AbortError';
+        log('warn', 'dicomweb_upstream_failure', {
+          correlationId,
+          method,
+          route,
+          attempt,
+          attempts,
+          timeoutMs,
+          timedOut,
+          errorName: (err as Error)?.name ?? 'UnknownError',
+        });
+        if (attempt === attempts) {
+          this.sendError(response, timedOut ? 504 : 503, route, timedOut, correlationId);
+          return;
+        }
+      }
+    }
+
+    if (!upstream) {
+      this.sendError(response, 503, route, false, correlationId);
       return;
-    } finally {
-      clearTimeout(timer);
     }
 
     // On non-success responses, do NOT stream Orthanc's error body verbatim:
-    // it can contain internal endpoint/path details (C27). Send a sanitized,
-    // stable JSON payload instead.
+    // it can contain internal endpoint/path details (C27). Keep the upstream
+    // status in the server log, but never expose its body or URL to the client.
     if (upstream.status >= 400) {
       if (upstream.body) await upstream.body.cancel().catch(() => undefined);
+      log('warn', 'dicomweb_upstream_error', {
+        correlationId,
+        method,
+        route,
+        upstreamStatus: upstream.status,
+      });
       response.removeHeader('content-length');
       response.removeHeader('transfer-encoding');
-      this.sendError(response, upstream.status, request.url, false);
+      this.sendError(response, upstream.status, route, false, correlationId);
       return;
     }
+
+    log('info', 'dicomweb_upstream_response', {
+      correlationId,
+      method,
+      route,
+      upstreamStatus: upstream.status,
+    });
 
     response.status(upstream.status);
     for (const key of FORWARD_RESPONSE_HEADERS) {
@@ -438,7 +480,44 @@ export class DicomWebService {
       const nodeStream = Readable.fromWeb(
         upstream.body as unknown as import('stream/web').ReadableStream,
       );
+      const streamIdleTimeoutMs = envInt('AXIS_ORTHANC_STREAM_IDLE_TIMEOUT_MS', 60000);
+      let streamTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearStreamTimer = () => {
+        if (streamTimer) clearTimeout(streamTimer);
+        streamTimer = undefined;
+      };
+      const armStreamTimer = () => {
+        clearStreamTimer();
+        streamTimer = setTimeout(() => {
+          log('warn', 'dicomweb_stream_timeout', {
+            correlationId,
+            method,
+            route,
+            idleTimeoutMs: streamIdleTimeoutMs,
+          });
+          controller.abort();
+        }, streamIdleTimeoutMs);
+      };
+
+      nodeStream.on('error', (err: Error) => {
+        clearStreamTimer();
+        log('error', 'dicomweb_stream_error', {
+          correlationId,
+          method,
+          route,
+          errorName: err?.name ?? 'UnknownError',
+        });
+        if (!response.writableEnded) response.destroy();
+      });
+      nodeStream.once('end', clearStreamTimer);
+      response.once('close', () => {
+        clearStreamTimer();
+        if (!response.writableEnded) controller.abort();
+      });
+
+      armStreamTimer();
       nodeStream.pipe(response);
+      nodeStream.on('data', armStreamTimer);
     } else {
       response.end();
     }
@@ -447,17 +526,22 @@ export class DicomWebService {
   private sendError(
     response: Response,
     status: number,
-    requestUrl: string,
+    route: string,
     timedOut: boolean,
+    correlationId?: string,
   ) {
+    if (status >= 500) {
+      response.setHeader('Retry-After', timedOut ? '2' : '5');
+    }
     response.status(status).json({
       statusCode: status,
       message: timedOut
         ? 'The imaging backend timed out'
         : 'The imaging backend could not fulfil the DICOMweb request',
-      error: status >= 500 ? 'Imaging Backend Error' : 'Imaging Backend Error',
+      error: 'Imaging Backend Error',
       timestamp: new Date().toISOString(),
-      path: requestUrl,
+      path: route,
+      correlationId,
     });
   }
 }

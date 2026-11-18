@@ -295,6 +295,16 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `DICOMweb_URL`             | `http://localhost:8042/dicom-web`                     | DICOMweb base URL                       |
 | `ORTHANC_USERNAME`         | `orthanc`                                            | Orthanc HTTP auth username              |
 | `ORTHANC_PASSWORD`         | `orthanc`                                            | Orthanc HTTP auth password              |
+| `TRUST_PROXY`              | `1`                                                  | Trusted proxy hops for `X-Forwarded-For` rate limits |
+| `AXIS_ORTHANC_TIMEOUT_MS`  | `30000`                                              | DICOMweb upstream request timeout        |
+| `AXIS_ORTHANC_STREAM_IDLE_TIMEOUT_MS` | `60000`                                   | WADO stream idle timeout                 |
+| `AXIS_ORTHANC_HEALTH_TIMEOUT_MS` | `5000`                                         | Orthanc readiness probe timeout          |
+| `AXIS_ALLOW_LOOPBACK_ORTHANC` | _(unset)_                                         | Permit loopback `ORTHANC_URL` in production |
+| `RESEND_API_KEY`           | _(unset)_                                            | Resend API key for password-reset email  |
+| `EMAIL_FROM`               | _(unset)_                                            | Verified sender for password-reset email |
+| `PASSWORD_RESET_TOKEN_TTL_MINUTES` | `20`                                       | Password reset token lifetime            |
+| `AUTH_RECOVERY_MAX_REQUESTS` | `5`                                               | Forgot/reset requests per window per IP and identifier |
+| `AUTH_RECOVERY_WINDOW_SECONDS` | `900`                                           | Recovery rate-limit window               |
 | `OHIF_URL`                 | `http://localhost:3001`                               | Next.js `/ohif` rewrite upstream        |
 | `KEYCLOAK_URL`             | `http://localhost:8180`                               | Keycloak base URL                       |
 | `KEYCLOAK_REALM`           | `axis`                                               | Keycloak realm name                     |
@@ -314,6 +324,15 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `SESSION_EXPIRY`           | `3600`                                               | Session TTL in seconds                  |
 | `AXIS_DESKTOP_SERVER_URL`  | _(unset)_                                            | Desktop deployment origin (see below)   |
 | `NEXT_PUBLIC_DESKTOP_API_URL` | _(unset)_                                        | Escape hatch only — leave empty         |
+
+Password recovery requires `RESEND_API_KEY` and `EMAIL_FROM` on the API host.
+The API returns `503` instead of a fake success when email delivery is not
+configured or the provider fails. `/forgot-password` and `/reset-password` are
+public web routes; all other application routes still require a session.
+
+Phone numbers accept 10 digits (stored as `+91<number>`), `+91` followed by 10
+digits, or an international `+` number with 8–15 digits. Spaces, letters and
+other separators are rejected; the value is normalized before it is stored.
 
 ### Vercel web deployment
 
@@ -345,9 +364,23 @@ run `pnpm run build:web`; its deployment also requires the web upstream settings
 documented above.
 
 Set the API's production environment variables in Render: `DATABASE_URL`,
-`AUTH_SECRET`, `CORS_ORIGIN`, and `ORTHANC_URL`. Render supplies `PORT`; the API
-listens on it. Configure additional integrations such as Redis, RabbitMQ,
-Keycloak, or object storage only when enabled for that deployment.
+`AUTH_SECRET`, `CORS_ORIGIN`, `TRUST_PROXY=1`, `ORTHANC_URL`, and the Resend
+settings. Render supplies `PORT`; the API listens on it. Configure additional
+integrations such as Redis, RabbitMQ, Keycloak, or object storage only when
+enabled for that deployment.
+
+Deploy Orthanc as a private service alongside the API. `render.yaml` contains a
+starter service (`axis-orthanc`) using `infra/orthanc/Dockerfile.prod` with a
+persistent disk; set `ORTHANC_URL` on the API to that service's internal
+`host:port`. Do not point production at `localhost` — startup validation rejects
+loopback URLs unless `AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a
+local production-mode test.
+
+`/api/health/ready` returns `200` when PostgreSQL is reachable and includes an
+`orthanc` component diagnostic. If Orthanc is down, the response includes
+`"status":"degraded"` but reports/worklists remain available; viewer requests
+return a sanitized `503`/`504` with a correlation ID instead of failing the
+whole API. Verify the deployed service with `curl https://<api-host>/api/health/ready`.
 
 ---
 
@@ -478,7 +511,9 @@ For production, deploy the Dockerfile as its own Render Web Service and set the
 Vercel web app's `OHIF_URL` to that service's HTTPS origin. The existing
 same-origin Vercel rewrites serve the viewer at `/ohif` and DICOMweb at `/api`,
 so the browser keeps the first-party Axis session cookie. Do not configure the
-viewer to call Orthanc directly or use a localhost URL in production.
+viewer to call Orthanc directly or use a localhost URL in production. If the
+QIDO preflight fails, the viewer shows an actionable imaging error instead of a
+blank viewer; the message and logs contain only a safe route and correlation ID.
 
 The Render service's own `/ohif/` URL serves the viewer assets, but direct
 access to that service does not provide authenticated DICOM access: the API

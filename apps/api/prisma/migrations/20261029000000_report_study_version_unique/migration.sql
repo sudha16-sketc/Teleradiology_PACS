@@ -35,4 +35,4 @@ WHERE r.id = ranked.id
 
 -- If any non-empty duplicate remains, the unique index below fails and the
 -- migration aborts for manual review.
-CREATE UNIQUE INDEX "Report_studyId_version_key" ON "Report"("studyId", version);
+CREATE UNIQUE INDEX IF NOT EXISTS "Report_studyId_version_key" ON "Report"("studyId", version);

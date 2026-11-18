@@ -1,5 +1,6 @@
 import { PrismaClient, UserRole, UserStatus, Modality, Subspecialty } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { normalizePhoneOrThrow } from '../src/common/validators/phone.js';
 
 const prisma = new PrismaClient();
 
@@ -44,6 +45,7 @@ async function upsertUser(input: {
   organization?: string;
   phone?: string;
 }) {
+  const phone = normalizePhoneOrThrow(input.phone);
   return prisma.user.upsert({
     where: { email: input.email },
     // Security: the update branch must NOT reset credentials, role, or
@@ -56,7 +58,7 @@ async function upsertUser(input: {
       subspecialty: input.subspecialty,
       licenseNumber: input.licenseNumber,
       organization: input.organization,
-      phone: input.phone,
+      phone,
     },
     create: {
       email: input.email,
@@ -69,7 +71,7 @@ async function upsertUser(input: {
       subspecialty: input.subspecialty,
       licenseNumber: input.licenseNumber,
       organization: input.organization,
-      phone: input.phone,
+      phone,
     },
   });
 }
@@ -200,7 +202,7 @@ async function main() {
     role: UserRole.MANAGER,
     passwordHash: seedHash,
     organization: 'Axis Radiology',
-    phone: '+1 555 010 0001',
+    phone: '+15550100001',
   });
 
   await upsertUser({
@@ -211,7 +213,7 @@ async function main() {
     subspecialty: 'NEURO',
     licenseNumber: 'MCI-778899',
     organization: 'Axis Radiology',
-    phone: '+1 555 010 0101',
+    phone: '+15550100101',
   });
 
   await upsertUser({
@@ -222,7 +224,7 @@ async function main() {
     subspecialty: 'CHEST',
     licenseNumber: 'MCI-885522',
     organization: 'Axis Radiology',
-    phone: '+1 555 010 0102',
+    phone: '+15550100102',
   });
 
   await upsertUser({
@@ -232,7 +234,7 @@ async function main() {
     passwordHash: seedHash,
     hospitalId: hospitals.cgh.id,
     organization: hospitals.cgh.name,
-    phone: '+1 555 010 0201',
+    phone: '+15550100201',
   });
 
   await upsertUser({
@@ -242,7 +244,7 @@ async function main() {
     passwordHash: seedHash,
     hospitalId: hospitals.mmc.id,
     organization: hospitals.mmc.name,
-    phone: '+1 555 010 0202',
+    phone: '+15550100202',
   });
 
   await upsertUser({
@@ -252,7 +254,7 @@ async function main() {
     passwordHash: seedHash,
     hospitalId: hospitals.rtc.id,
     organization: hospitals.rtc.name,
-    phone: '+1 555 010 0203',
+    phone: '+15550100203',
   });
 
   // Get admin user for template creation

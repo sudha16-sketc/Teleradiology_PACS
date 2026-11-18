@@ -12,6 +12,11 @@ import {
 import { clsx } from "clsx";
 import { apiClient } from "@/lib/api-client";
 import { formatDateTime } from "@/lib/format";
+import {
+  normalizePhone,
+  PHONE_VALIDATION_MESSAGE,
+} from "@/lib/phone";
+import { PhoneField } from "@/components/PhoneField";
 import { RoleBadge } from "@/components/admin/RoleBadge";
 import { USER_MANAGEMENT_ASSIGNABLE_ROLES } from "@/lib/user-roles";
 import type { ApiError, User, UserRole, UserStatus } from "@axis/types";
@@ -113,13 +118,19 @@ export default function UsersPage() {
     e.preventDefault();
     setFormSubmitting(true);
     setFormError(null);
+    const phone = normalizePhone(form.phone);
+    if (phone === null) {
+      setFormError(PHONE_VALIDATION_MESSAGE);
+      setFormSubmitting(false);
+      return;
+    }
     try {
       await apiClient.post<SingleUserEnvelope>("/users", {
         displayName: form.displayName.trim(),
         email: form.email.trim(),
         password: form.password,
         role: form.role,
-        phone: form.phone.trim() || undefined,
+        phone: phone || undefined,
         organization: form.organization.trim() || undefined,
         licenseNumber: form.licenseNumber.trim() || undefined,
       });
@@ -444,13 +455,9 @@ export default function UsersPage() {
                 <span className="mb-1 block text-xs font-medium text-text-muted">
                   Phone
                 </span>
-                <input
-                  type="tel"
+                <PhoneField
                   value={form.phone}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, phone: e.target.value }))
-                  }
-                  className={inputClass}
+                  onChange={(value) => setForm((f) => ({ ...f, phone: value }))}
                 />
               </label>
 

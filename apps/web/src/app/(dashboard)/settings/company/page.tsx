@@ -4,6 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Building2, Loader2, Save } from "lucide-react";
 import type { ApiError, CompanySettings } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
+import {
+  normalizePhone,
+  PHONE_VALIDATION_MESSAGE,
+} from "@/lib/phone";
+import { PhoneField } from "@/components/PhoneField";
 import { useAppStore } from "@/lib/store";
 
 interface CompanyForm {
@@ -70,8 +75,14 @@ export default function CompanySettingsPage() {
     setSaving(true);
     setNotice(null);
     setError(null);
+    const phone = normalizePhone(form.phone);
+    if (phone === null) {
+      setError(PHONE_VALIDATION_MESSAGE);
+      setSaving(false);
+      return;
+    }
     try {
-      await apiClient.put("/company-settings", form);
+      await apiClient.put("/company-settings", { ...form, phone });
       setNotice("Company footer settings saved.");
     } catch (e) {
       setError((e as ApiError)?.message ?? "Failed to save company settings.");
@@ -133,13 +144,10 @@ export default function CompanySettingsPage() {
           </Field>
           <div className="grid gap-5 sm:grid-cols-2">
             <Field label="Phone">
-              <input
+              <PhoneField
                 value={form.phone}
-                onChange={(e) => update("phone", e.target.value)}
+                onChange={(value) => update("phone", value)}
                 disabled={!canEdit}
-                maxLength={60}
-                placeholder="Contact phone number"
-                className={inputClasses}
               />
             </Field>
             <Field label="Email">
