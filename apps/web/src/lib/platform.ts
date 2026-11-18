@@ -85,11 +85,6 @@ export function isWeb(): boolean {
   return platformKind() === "web";
 }
 
-/** Absolute origin of the deployment serving this frontend, or "" when relative. */
-function appOrigin(): string {
-  return readEnv().appUrl?.trim().replace(/\/+$/, "") ?? "";
-}
-
 function isAbsoluteHttpUrl(value: string): boolean {
   return /^https?:\/\/[^/?#\s]+/i.test(value);
 }
@@ -184,10 +179,7 @@ export function apiUrl(path: string): string {
  * would strip the cookie and 401 every study request.
  */
 export function ohifBaseUrl(): string {
-  const origin = appOrigin();
-  return origin
-    ? `${origin}${SAME_ORIGIN_OHIF_PREFIX}`
-    : SAME_ORIGIN_OHIF_PREFIX;
+  return SAME_ORIGIN_OHIF_PREFIX;
 }
 
 /** Viewer URL for a single study, matching the existing `/ohif` route. */

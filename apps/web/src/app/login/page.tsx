@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Activity } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
+import { safeReturnTo } from "@/lib/return-to";
 import { useAppStore } from "@/lib/store";
 import type { AuthUser, ApiError } from "@axis/types";
 
@@ -22,6 +23,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("returnTo");
+    if (requested) setReturnTo(safeReturnTo(requested));
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -40,7 +47,7 @@ export default function LoginPage() {
         RADIOLOGIST: "/worklist",
         HOSPITAL: "/hospitals",
       };
-      router.replace(redirectMap[role] ?? "/worklist");
+      router.replace(returnTo ?? redirectMap[role] ?? "/worklist");
     } catch (err) {
       const apiError = err as ApiError;
       setError(apiError.message ?? "Unable to sign in. Please try again.");

@@ -6,6 +6,7 @@ import { isDesktop, ohifViewerUrl } from "@/lib/platform";
 import { openViewerWindow } from "@/lib/desktop-bridge";
 import { apiClient, failureOf } from "@/lib/api-client";
 import type { ApiFailure } from "@/lib/api-error";
+import { loginUrl } from "@/lib/return-to";
 import { ErrorPanel } from "@/components/ErrorPanel";
 
 interface OHIFViewerProps {
@@ -13,6 +14,14 @@ interface OHIFViewerProps {
 }
 
 const LOAD_TIMEOUT_MS = 30000;
+const SESSION_CHECK_MS = 60000;
+
+function redirectToLogin(): void {
+  if (typeof window === "undefined") return;
+  window.location.assign(
+    loginUrl(window.location.pathname + window.location.search),
+  );
+}
 
 export function OHIFViewer({ studyInstanceUid }: OHIFViewerProps) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -49,7 +58,8 @@ export function OHIFViewer({ studyInstanceUid }: OHIFViewerProps) {
       .catch((error: unknown) => {
         if (cancelled) return;
         const detected = failureOf(error);
-        if (detected.kind === "unauthenticated" || detected.kind === "forbidden") {
+        if (detected.kind === "unauthenticated") {
+          redirectToLogin();
           return;
         }
         setFailure(detected);
@@ -62,6 +72,23 @@ export function OHIFViewer({ studyInstanceUid }: OHIFViewerProps) {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [studyInstanceUid, retryKey, resetState]);
+
+  useEffect(() => {
+    // The API is the only session authority. While the viewer is open, verify
+    // that the same session is still valid and leave the viewer only through
+    // the main login page when it expires or is revoked elsewhere.
+    const checkSession = () => {
+      void apiClient.get("/auth/me").catch((error: unknown) => {
+        if (failureOf(error).kind === "unauthenticated") redirectToLogin();
+      });
+    };
+    const interval = setInterval(checkSession, SESSION_CHECK_MS);
+    window.addEventListener("focus", checkSession);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", checkSession);
+    };
+  }, []);
 
   const source = ohifViewerUrl(studyInstanceUid);
 

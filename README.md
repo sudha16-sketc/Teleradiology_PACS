@@ -515,6 +515,23 @@ viewer to call Orthanc directly or use a localhost URL in production. If the
 QIDO preflight fails, the viewer shows an actionable imaging error instead of a
 blank viewer; the message and logs contain only a safe route and correlation ID.
 
+There is no second OHIF login. `window.config` deliberately has no `oidc` block,
+and `/ohif/*` is excluded from the frontend middleware redirect so an iframe can
+never land on Axis `/login`. The Reading Page is protected by the normal
+`SessionGuard`; every DICOMweb request is authorized by the API using the
+existing `axis_session` cookie, the authenticated user's role, hospital and
+study assignment. Expired or revoked sessions produce HTTP 401 and return the
+top-level page to `/login?returnTo=<reading-page>`; forbidden studies produce
+HTTP 403 and an error panel. The proxy only allows GET/HEAD, so STOW/DELETE
+through `/api/dicom-web` is not available; DICOM uploads continue to use
+`/api/dicom/ingest`.
+
+Do not set OHIF's `APP_CONFIG`, `CLIENT_ID` or `HEALTHCARE_API_ENDPOINT`
+environment variables: the upstream OHIF entrypoint treats them as an override
+and can replace the repository's `app-config.js` with an OIDC-enabled config.
+Orthanc credentials stay in the API environment and are never sent to the
+browser.
+
 The Render service's own `/ohif/` URL serves the viewer assets, but direct
 access to that service does not provide authenticated DICOM access: the API
 session cookie is scoped to the Axis frontend origin and uses `SameSite=Lax`.
@@ -796,10 +813,10 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 
 | Area               | Status                                                                 |
 | ------------------ | ---------------------------------------------------------------------- |
-| **OHIF Viewer**    | Placeholder component only (`OHIFViewerPlaceholder`). Full iframe/embed integration is pending. |
+| **OHIF Viewer**    | Embedded from the authorized Reading Page using the main Axis session; no independent OHIF login. |
 | **Mock Data**      | All data is seeded synthetic data prefixed with `AX-SYN`. No real clinical data is included. |
-| **Authentication** | Keycloak is provisioned but full OIDC middleware (guards, token verification, session management) is not yet wired into the NestJS API or Next.js frontend. |
-| **Authorization**  | Role-based access control is defined in the schema but route guards are not yet implemented. |
+| **Authentication** | Signed cookie sessions (`axis_session`) are enforced by the NestJS API. Keycloak/OIDC is provisioned but intentionally not used by the embedded viewer. |
+| **Authorization**  | Global `AuthGuard`/`RolesGuard` plus DICOMweb study, hospital and assignment checks are enforced server-side. |
 | **AI Integration** | AI job model and endpoints exist as placeholders. No actual ML inference pipelines are connected. |
 | **Report Delivery**| DeliveryAttempt model exists. Actual delivery mechanisms (HL7, FHIR, email, fax) are not implemented. |
 | **Routing Rules**  | RoutingRule model and UI (RoutingRuleBuilder) exist. The rule engine that evaluates conditions and triggers actions is not yet built. |
@@ -827,7 +844,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 - [x] Next.js 14 App Router frontend with Tailwind CSS
 - [x] Dashboard layout: NavigationRail, TopBar, AppShell
 - [x] Worklist page with filters (status, priority, modality, hospital)
-- [x] Reading room with OHIF placeholder, report panel, sign-off controls
+- [x] Reading room with embedded OHIF viewer, report panel, sign-off controls
 - [x] Report editor with version history, critical finding toggle
 - [x] Hospital management with study timeline and pipeline visualization
 - [x] Analytics dashboard (overview metrics, TAT, hospital performance)
@@ -841,7 +858,6 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 #### In Progress
 
 - [ ] Keycloak OIDC integration (guards, token verification)
-- [ ] OHIF viewer full embedding
 - [ ] Real-time worklist updates (WebSocket/SSE)
 
 #### Planned

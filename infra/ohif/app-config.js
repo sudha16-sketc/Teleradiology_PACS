@@ -19,7 +19,11 @@ window.config = {
   extensions: [],
   modes: [],
 
-  showStudyList: true,
+  // No `oidc` block by design. Authentication is owned by the main Axis API;
+  // adding an OIDC provider here would create a second, independent login.
+  // The study list is disabled so imaging is always entered from the
+  // authorized Axis Reading Page.
+  showStudyList: false,
 
   dataSources: [
     {

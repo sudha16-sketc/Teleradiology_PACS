@@ -167,8 +167,8 @@ describe("ohif urls", () => {
     );
   });
 
-  it("prefixes the configured app origin when one is published", () => {
+  it("ignores a published app origin so the session cookie stays first-party", () => {
     process.env.NEXT_PUBLIC_APP_URL = "https://pacs.example.org/";
-    expect(ohifBaseUrl()).toBe("https://pacs.example.org/ohif");
+    expect(ohifBaseUrl()).toBe("/ohif");
   });
 });

@@ -16,6 +16,7 @@ import { NextResponse, type NextRequest } from "next/server";
  *     authoritative gate once a protected page actually renders.
  */
 const SESSION_COOKIE = "axis_session";
+const OHIF_PREFIX = "/ohif";
 const PUBLIC_PATHS = [
   "/login",
   "/register",
@@ -30,6 +31,18 @@ export function isPublicPath(pathname: string): boolean {
   );
 }
 
+export function isViewerPath(pathname: string): boolean {
+  return pathname === OHIF_PREFIX || pathname.startsWith(`${OHIF_PREFIX}/`);
+}
+
+/** Only a cookie-less top-level viewer document should be sent to /login. */
+export function viewerDocumentNeedsLogin(
+  secFetchDest: string | null,
+  hasSession: boolean,
+): boolean {
+  return !hasSession && secFetchDest === "document";
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -38,6 +51,22 @@ export function middleware(request: NextRequest) {
     pathname.startsWith("/_next") ||
     pathname.startsWith("/api")
   ) {
+    return NextResponse.next();
+  }
+
+  // OHIF is rendered inside the authenticated Reading Page and has no login of
+  // its own. Redirecting /ohif/* here made the iframe navigate to /login, and
+  // its assets could be redirected too. Every DICOMweb request still goes
+  // through /api/dicom-web, where AuthGuard + study authorization are authoritative.
+  if (isViewerPath(pathname)) {
+    const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
+    if (viewerDocumentNeedsLogin(request.headers.get("sec-fetch-dest"), hasSession)) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/login";
+      url.search = "";
+      url.searchParams.set("returnTo", `${pathname}${request.nextUrl.search}`);
+      return NextResponse.redirect(url);
+    }
     return NextResponse.next();
   }
 

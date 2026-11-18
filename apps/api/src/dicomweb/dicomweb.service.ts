@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   UnauthorizedException,
+  MethodNotAllowedException,
 } from '@nestjs/common';
 import { UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -371,6 +372,11 @@ export class DicomWebService {
     const authenticated = request as Request & { user?: DicomWebUser };
     if (!authenticated.user) {
       throw new UnauthorizedException('Authentication required for DICOMweb');
+    }
+    if (method !== 'GET' && method !== 'HEAD') {
+      throw new MethodNotAllowedException(
+        'Only read DICOMweb operations are supported through this proxy',
+      );
     }
     // Study-scoped or unscoped access is authorized before any proxying.
     // The query string is part of the authorization input: QIDO-RS identity

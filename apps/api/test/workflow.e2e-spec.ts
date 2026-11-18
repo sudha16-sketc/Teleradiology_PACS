@@ -629,14 +629,17 @@ describe('Phase 3 -- DICOMweb authorization', () => {
     });
 
     it('DICOM-QIDO-9: a filter does not grant scope to a mutating request', async () => {
-      // The unscoped allow-list is GET-only, so a radiologist must not gain an
-      // upstream write just by adding a study filter.
+      // The proxy is read-only; neither an unscoped filter nor a study-scoped
+      // path may be used for STOW/DELETE through the browser-facing API.
       await rad1Agent
         .post(`/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`)
-        .expect(403);
+        .expect(405);
       await rad1Agent
         .delete(`/api/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(real.studyInstanceUid)}`)
-        .expect(403);
+        .expect(405);
+      await rad1Agent
+        .post(`/api/dicom-web/studies/${real.studyInstanceUid}/series`)
+        .expect(405);
     });
 
     it('DICOM-QIDO-10: hospital scoping still applies to filtered requests', async () => {

@@ -7,6 +7,7 @@ import { ShieldAlert } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
 import { roleHasAccess, ROLE_REDIRECTS } from "@/lib/permissions";
+import { loginUrl } from "@/lib/return-to";
 import type { AuthUser, UserRole } from "@axis/types";
 
 interface ApiEnvelope<T> {
@@ -82,7 +83,7 @@ export function SessionGuard({
 
   if (authStatus === "anonymous") {
     if (pathname !== "/login") {
-      router.replace("/login");
+      router.replace(loginUrl(pathname));
     }
     return null;
   }
