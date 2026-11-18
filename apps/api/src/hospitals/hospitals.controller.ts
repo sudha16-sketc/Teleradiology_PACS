@@ -1,5 +1,13 @@
-import { Controller, Get, Param, ForbiddenException } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  Post,
+} from '@nestjs/common';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
+import { CreateHospitalDto } from './dto/create-hospital.dto.js';
 import { HospitalsService } from './hospitals.service.js';
 
 interface RequestUser {
@@ -20,6 +28,12 @@ export class HospitalsController {
   @Roles('ADMIN', 'MANAGER')
   list() {
     return this.hospitalsService.list();
+  }
+
+  @Post()
+  @Roles('ADMIN')
+  create(@Body() dto: CreateHospitalDto) {
+    return this.hospitalsService.create(dto);
   }
 
   /**

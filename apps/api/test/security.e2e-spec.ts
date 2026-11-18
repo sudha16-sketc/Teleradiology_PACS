@@ -60,6 +60,7 @@ function transition(agent: any, studyUid: string, status: string): Test {
 }
 
 let createdStudyIds: string[] = [];
+const createdHospitalIds: string[] = [];
 
 beforeAll(async () => {
   const built = await createTestApp();
@@ -88,8 +89,53 @@ afterAll(async () => {
     await prisma.report.deleteMany({ where: { studyId } });
     await prisma.study.delete({ where: { id: studyId } });
   }
+  if (createdHospitalIds.length) {
+    await prisma.hospital.deleteMany({
+      where: { id: { in: createdHospitalIds } },
+    });
+  }
   await prisma.$disconnect();
   await app.close();
+});
+
+describe('Hospital management', () => {
+  it('allows only administrators to add hospitals and rejects duplicate codes', async () => {
+    const code = `TEST-${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+    const hospitalData = {
+      name: 'Temporary Hospital',
+      code,
+      address: '1 Test Way',
+      timezone: 'UTC',
+    };
+
+    const managerAgent = await loginAgent(server, manager);
+    await managerAgent.post('/api/hospitals').send(hospitalData).expect(403);
+
+    const adminAgent = await loginAgent(server, USERS.ADMIN);
+    const created = await adminAgent
+      .post('/api/hospitals')
+      .send(hospitalData)
+      .expect(201);
+    createdHospitalIds.push(created.body.data.id);
+    expect(created.body.data).toMatchObject({
+      name: hospitalData.name,
+      code,
+      address: hospitalData.address,
+      timezone: hospitalData.timezone,
+      isActive: true,
+    });
+
+    const listed = await adminAgent.get('/api/hospitals').expect(200);
+    expect(listed.body.data.some((hospital: { id: string }) =>
+      hospital.id === created.body.data.id,
+    )).toBe(true);
+
+    await adminAgent.post('/api/hospitals').send(hospitalData).expect(409);
+    await adminAgent
+      .post('/api/hospitals')
+      .send({ ...hospitalData, code: 'INVALID CODE' })
+      .expect(400);
+  });
 });
 
 describe('Phase 1 security -- tenant isolation (HOSPITAL)', () => {

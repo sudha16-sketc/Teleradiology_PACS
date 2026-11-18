@@ -30,6 +30,12 @@ const OVERVIEW_LINKS: {
     href: "/settings/templates",
   },
   {
+    label: "Hospitals",
+    description: "Add and manage hospitals available for user approval",
+    icon: <Building2 size={20} />,
+    href: "/settings/hospitals",
+  },
+  {
     label: "Company Report Footer",
     description: "Configure company details printed on every report",
     icon: <Building2 size={20} />,

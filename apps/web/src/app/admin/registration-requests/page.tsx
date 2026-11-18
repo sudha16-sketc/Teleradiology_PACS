@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   Check,
   X,
@@ -31,6 +32,8 @@ interface HospitalsEnvelope {
 export default function RegistrationRequestsPage() {
   const [requests, setRequests] = useState<RegistrationRequest[]>([]);
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [hospitalsLoading, setHospitalsLoading] = useState(true);
+  const [hospitalError, setHospitalError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"PENDING" | "ALL">("PENDING");
@@ -64,12 +67,24 @@ export default function RegistrationRequestsPage() {
     load();
   }, [load]);
 
-  useEffect(() => {
-    apiClient
-      .get<HospitalsEnvelope>("/hospitals")
-      .then((res) => setHospitals(res.data))
-      .catch(() => setHospitals([]));
+  const loadHospitals = useCallback(async () => {
+    setHospitalsLoading(true);
+    setHospitalError(null);
+    try {
+      const response = await apiClient.get<HospitalsEnvelope>("/hospitals");
+      setHospitals(response.data);
+    } catch (err) {
+      setHospitalError((err as ApiError).message ?? "Failed to load hospitals.");
+    } finally {
+      setHospitalsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadHospitals();
+    window.addEventListener("focus", loadHospitals);
+    return () => window.removeEventListener("focus", loadHospitals);
+  }, [loadHospitals]);
 
   const activeHospitals = hospitals.filter((h) => h.isActive);
 
@@ -371,7 +386,7 @@ export default function RegistrationRequestsPage() {
                 <select
                   value={finalHospitalId}
                   onChange={(e) => setFinalHospitalId(e.target.value)}
-                  disabled={submitting}
+                  disabled={submitting || hospitalsLoading || !!hospitalError}
                   className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none transition-colors focus:border-accent"
                 >
                   <option value="">Select a hospital…</option>
@@ -381,6 +396,34 @@ export default function RegistrationRequestsPage() {
                     </option>
                   ))}
                 </select>
+                {hospitalError ? (
+                  <span className="mt-1 block text-xs text-error">
+                    {hospitalError}{" "}
+                    <button
+                      type="button"
+                      onClick={() => void loadHospitals()}
+                      className="font-medium underline"
+                    >
+                      Retry
+                    </button>
+                  </span>
+                ) : (
+                  <Link
+                    href="/settings/hospitals"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 inline-block text-xs font-medium text-accent hover:underline"
+                  >
+                    Add or manage hospitals
+                  </Link>
+                )}
+                {!hospitalsLoading &&
+                  !hospitalError &&
+                  activeHospitals.length === 0 && (
+                    <span className="mt-1 block text-xs text-warning">
+                      No active hospitals are available yet.
+                    </span>
+                  )}
                 <span className="mt-1 block text-xs text-text-muted">
                   A hospital account cannot load any study, report or correction
                   until it is linked to a hospital.
