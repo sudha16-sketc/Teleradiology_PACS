@@ -405,7 +405,7 @@ export default function RegistrationRequestsPage() {
               <button
                 type="button"
                 onClick={handleApprove}
-                disabled={submitting || hospitalMissing || activeHospitals.length === 0}
+                disabled={submitting || hospitalMissing}
                 className="flex items-center gap-1.5 rounded-md bg-success px-4 py-2 text-sm font-medium text-background transition-colors hover:bg-success/90 disabled:opacity-60"
               >
                 {submitting ? (
