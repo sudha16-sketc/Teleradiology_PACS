@@ -384,44 +384,61 @@ service into the API's secret store (or use `fromService` in the Blueprint).
 Never publish port 6379 or expose the Redis URL to the browser. See
 `infra/redis/README.md`.
 
-Deploy Orthanc as a private service alongside the API. `render.yaml` contains a
-starter service (`axis-orthanc`) using `infra/orthanc/Dockerfile.prod` with a
-persistent disk; set `ORTHANC_URL` on the API to that service's internal
-`host:port`. Do not point production at `localhost` — startup validation rejects
-loopback URLs unless `AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a
-local production-mode test.
+Deploy Orthanc on the existing public Render web service, not as a paid private
+service. In that service's Build settings set Runtime to Docker, Dockerfile Path
+to `infra/orthanc/Dockerfile.prod` and Docker Context to `infra/orthanc`. Keep
+the existing disk mounted at `/var/lib/orthanc/db` and leave the Render HTTP
+health check path unset so the default TCP probe on `8042` is used.
+
+Set `ORTHANC_AUTH_ENABLED=true` plus generated `ORTHANC_USERNAME` and
+`ORTHANC_PASSWORD` on the Orthanc service, then set the same credentials and
+`ORTHANC_URL=https://<public-orthanc-origin>` on the API. `ORTHANC_URL` must not
+include `/dicom-web`. `infra/orthanc/orthanc.prod.json` requires all three auth
+variables; the container refuses to start if any is missing. Do not point
+production at `localhost` — startup validation rejects loopback URLs unless
+`AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a local production-mode
+test.
 
 `/api/health/ready` returns `200` only when PostgreSQL **and** Redis are
-reachable, and includes `postgres`, `redis` and `orthanc` component diagnostics.
-If Orthanc is down, the response reports `"status":"degraded"` but
-reports/worklists remain available; viewer requests return a sanitized
-`503`/`504` with a correlation ID instead of failing the whole API. If Redis is
-down, readiness fails and protected requests return `503` rather than allowing
-unauthenticated access. Verify with `curl https://<api-host>/api/health/ready`.
+reachable, and includes `postgresql`, `redis`, `orthanc` and `dicomweb` component
+diagnostics. If Orthanc or its DICOMweb plugin is down, the response reports
+`"status":"degraded"` but reports/worklists remain available; viewer requests
+return a sanitized `503`/`504` with a correlation ID instead of failing the whole
+API. If Redis is down, readiness fails and protected requests return `503` rather
+than allowing unauthenticated access. Verify with
+`curl https://<api-host>/api/health/ready`.
 
 ### Orthanc persistent storage and imaging recovery
 
 Orthanc stores both DICOM objects and its local index in
-`/var/lib/orthanc/db` (`infra/orthanc/orthanc.prod.json`). `render.yaml` declares
-a 10 GB `axis-orthanc-data` disk mounted at the same path. That blueprint only
-protects the live service if the disk is actually attached to it: confirm this
-in the Render dashboard (Service → Disks). Do not delete, reset, or reinitialize
-the disk or its contents.
+`/var/lib/orthanc/db` (`infra/orthanc/orthanc.prod.json`). The production image
+is `jodogne/orthanc-plugins:1.13.1`; keep that version aligned with an existing
+1.13.x disk because Orthanc refuses to open an incompatible SQLite index.
+Confirm in the Render dashboard (Service → Disks) that the existing disk remains
+attached at that path. Do not delete, reset, or reinitialize the disk or its
+contents.
 
-If the live `axis-orthanc` service has no disk:
+If the live Orthanc service has no disk:
 
 - Add a Render disk named `axis-orthanc-data`, mount path
   `/var/lib/orthanc/db`, size `10 GB` (increase only if imaging volume requires
   it), then redeploy. Only data written under that path survives redeploys.
-- Keep the API's `ORTHANC_URL` pointed at the private service's internal
-  `host:port` (for example `http://axis-orthanc:8042`), never `localhost`. If
-  the API is in the same blueprint, use `fromService` with property `hostport`.
-- `axis-orthanc` is a private service with a TCP port check on `8042`; do not
-  add `healthCheckPath`, which Render only supports for web services.
+- Keep the API's `ORTHANC_URL` pointed at the public HTTPS origin of the same
+  service (for example `https://teleradiology-pacs-2.onrender.com`), never
+  `localhost`, and never with a `/dicom-web` suffix.
+- The existing service is a web service with a default TCP port check on `8042`;
+  do not add a `healthCheckPath`, because unauthenticated HTTP probes would get
+  `401` after auth is enabled.
 - To confirm the current service is the one used during previous uploads, use
-  Render Shell on the Orthanc service and compare `GET /system` (the Orthanc
-  `ID`/`Name`) against any earlier deployment record or backup. Repository
-  history cannot prove live dashboard state.
+  `GET /system` with the configured credentials and compare the Orthanc `ID` or
+  `Name` against any earlier deployment record or backup. Repository history
+  cannot prove live dashboard state.
+- Verify `GET /plugins` includes `dicom-web` and `GET /dicom-web/studies`
+  returns `200`, both with the configured credentials. A stock Orthanc with only
+  `explorer.js` cannot serve `/dicom-web/studies`, so QIDO failures appear as
+  `dicomweb_availability_upstream_error route: /studies upstreamStatus: 404`.
+  Rebuild/redeploy that service from `infra/orthanc/Dockerfile.prod`; do not
+  change the API routes to compensate.
 
 Running imaging storage on ephemeral infrastructure risks losing both DICOM
 objects and the Orthanc index on every redeploy/restart. PostgreSQL would keep

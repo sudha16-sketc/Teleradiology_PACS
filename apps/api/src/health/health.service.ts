@@ -19,6 +19,10 @@ function orthancHealthTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
 }
 
+function dicomwebProbeUrl(): string {
+  return `${orthancBaseUrl()}/dicom-web/studies?limit=1`;
+}
+
 @Injectable()
 export class HealthService {
   constructor(
@@ -81,12 +85,37 @@ export class HealthService {
       latencyMs: Math.round(orthMs),
     });
 
+    const dicomwebStart = process.hrtime.bigint();
+    let dicomwebUp = true;
+    try {
+      const res = await fetch(dicomwebProbeUrl(), {
+        headers: { ...orthancAuthHeader(), Accept: 'application/dicom+json' },
+        signal: AbortSignal.timeout(orthancHealthTimeoutMs()),
+      });
+      dicomwebUp = res.ok;
+      await res.body?.cancel();
+      if (!dicomwebUp) {
+        log('warn', 'orthanc_dicomweb_health_unexpected_status', { upstreamStatus: res.status });
+      }
+    } catch (err) {
+      dicomwebUp = false;
+      log('warn', 'orthanc_dicomweb_health_unreachable', {
+        errorName: (err as Error)?.name ?? 'UnknownError',
+      });
+    }
+    const dicomwebMs = Number(process.hrtime.bigint() - dicomwebStart) / 1e6;
+    components.push({
+      name: 'dicomweb',
+      status: dicomwebUp ? 'up' : 'down',
+      latencyMs: Math.round(dicomwebMs),
+    });
+
     // Sessions cannot be validated without Redis, so an API instance with no
     // Redis connection must not receive protected traffic. Liveness stays
     // independent to avoid restart loops during a Redis outage.
     const ready = pgUp && redisProbe.up;
     return {
-      status: ready && orthUp ? 'ok' : 'degraded',
+      status: ready && orthUp && dicomwebUp ? 'ok' : 'degraded',
       ready,
       components,
       timestamp: new Date().toISOString(),

@@ -7,9 +7,9 @@
   "HttpPort": 8042,
   "StorageDirectory": "/var/lib/orthanc/db",
   "IndexDirectory": "/var/lib/orthanc/db",
-  "AuthenticationEnabled": ${ORTHANC_AUTH_ENABLED:-false},
+  "AuthenticationEnabled": ${ORTHANC_AUTH_ENABLED},
   "RegisteredUsers": {
-    "${ORTHANC_USERNAME:-orthanc}": "${ORTHANC_PASSWORD:-orthanc}"
+    "${ORTHANC_USERNAME}": "${ORTHANC_PASSWORD}"
   },
   "RemoteAccessAllowed": true,
   "Plugins": [

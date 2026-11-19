@@ -38,11 +38,42 @@ Both are public (no auth) so load balancers can probe them without credentials.
 | Endpoint | Purpose | Response |
 | --- | --- | --- |
 | `GET /api/health/live` | Liveness — process is up | `200 { status: 'ok', timestamp }` |
-| `GET /api/health/ready` | Readiness — dependencies reachable | `200` if Postgres **and** Orthanc are up; `503` otherwise. Body has a `components[]` list with per-dependency `status` (`up`/`down`) and `latencyMs`. |
+| `GET /api/health/ready` | Readiness — dependencies reachable | `200` if Postgres and Redis are reachable; `503` otherwise. Body has a `components[]` list with `postgresql`, `redis`, `orthanc` and `dicomweb` `status` (`up`/`down`) and `latencyMs`. |
 
 Configure L4/L7 health checks against `/api/health/ready` and alert when it is
 not `200`. Wire `ready` into your orchestration/load-balancer drain logic so a
-box is taken out of rotation when Postgres or Orthanc is unreachable.
+box is taken out of rotation when Postgres or Redis is unreachable. Alert when
+any component is down; `dicomweb` down means the Orthanc DICOMweb plugin or
+`/dicom-web` route is unavailable even if raw Orthanc `/system` is healthy.
+
+### Orthanc deployment
+
+Orthanc runs on the existing public Render web service; do not create a new paid
+private service. Configure the service Build settings with Runtime `Docker`,
+Dockerfile Path `infra/orthanc/Dockerfile.prod`, and Docker Context
+`infra/orthanc`. Keep its existing disk mounted at `/var/lib/orthanc/db` and
+leave the Render HTTP health check path unset so the default TCP probe on `8042`
+is used.
+
+Set these values on the Orthanc service:
+
+```text
+PORT=8042
+ORTHANC_AUTH_ENABLED=true
+ORTHANC_USERNAME=<generated non-default username>
+ORTHANC_PASSWORD=<generated strong secret>
+```
+
+`infra/orthanc/orthanc.prod.json` requires all three `ORTHANC_*` auth variables;
+missing values stop startup. Set the same credentials on the API plus
+`ORTHANC_URL=https://<public-orthanc-origin>` with no `/dicom-web` suffix. Never
+put these credentials in the frontend or OHIF configuration.
+
+After deployment, unauthenticated `/system`, `/studies`, `/patients`, `/plugins`
+and `/dicom-web/studies` must return `401`. With credentials, `/system` must
+report `Axis Orthanc 1.13.1`, `/plugins` must include `dicom-web`, and
+`/dicom-web/studies` must return `200`. Compare the authenticated `/studies`
+count before and after the rebuild to confirm no DICOM data was lost.
 
 ## Authentication recovery and abuse protection
 

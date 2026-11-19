@@ -72,7 +72,7 @@ services:
       - ./infra/orthanc/orthanc.json:/etc/orthanc/orthanc.json:ro
       - orthanc_data:/var/lib/orthanc/db
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8042/system || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -H 'Accept: application/dicom+json' http://localhost:8042/dicom-web/studies || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

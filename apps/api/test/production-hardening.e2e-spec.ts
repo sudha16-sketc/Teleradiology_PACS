@@ -91,6 +91,30 @@ describe('Phase 7 -- health & unauthenticated access', () => {
     expect(Array.isArray(res.body.components)).toBe(true);
   });
 
+  it('P7-HEALTH-3: readiness reports a missing DICOMweb plugin as degraded', async () => {
+    const probeResponse = (status: number) =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        body: { cancel: async () => undefined },
+      }) as unknown as globalThis.Response;
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/system')) return probeResponse(200);
+      if (url.includes('/dicom-web/studies')) return probeResponse(404);
+      return probeResponse(200);
+    });
+
+    try {
+      const res = await request(server).get('/api/health/ready');
+      const dicomweb = res.body.components.find((component: { name: string }) => component.name === 'dicomweb');
+      expect(dicomweb).toMatchObject({ name: 'dicomweb', status: 'down' });
+      expect(res.body.status).toBe('degraded');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('P7-AUTH-1: unauthenticated access to admin endpoints returns 401', async () => {
     await request(server).get('/api/sla/overview').expect(401);
     await request(server).get('/api/audit').expect(401);
