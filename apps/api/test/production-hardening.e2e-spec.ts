@@ -15,9 +15,9 @@ const h_cgh = USERS.H_CGH;
 const UID = () =>
   `1.2.826.0.1.3680043.8.498.ph7.${Date.now()}.${randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
-let createdStudyIds: string[] = [];
-let createdBackupIds: string[] = [];
-let createdReportIds: string[] = [];
+const createdStudyIds: string[] = [];
+const createdBackupIds: string[] = [];
+const createdReportIds: string[] = [];
 
 async function createStudy(agent: any): Promise<{ studyUid: string; studyId: string }> {
   const studyUid = UID();

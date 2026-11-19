@@ -36,18 +36,18 @@ function uploadDiskStorage(): multer.StorageEngine {
         const request = req as UploadRequest;
         if (!request.axisUploadDir) {
           request.axisUploadDir = await mkdtemp(join(tmpdir(), 'axis-upload-'));
-          // Safety net: if multer aborts mid-stream (per-file size limit,
-          // connection drop) our handler's `finally` never runs, so sweep the
-          // staging dir when the request stream closes. Idempotent with the
-          // controller finally (which also removes it after success).
-          request.on('close', () => {
-            if (request.axisUploadDir) {
-              void rm(request.axisUploadDir, {
-                recursive: true,
-                force: true,
-              }).catch(() => undefined);
-            }
-          });
+          // Safety net: if multer aborts mid-stream the handler's `finally`
+          // never runs, so sweep the staging dir once the response completes.
+          // Request 'close' fires when the body has been read, which can delete
+          // files before ingestDicom has finished reading them.
+          const cleanup = () => {
+            const dir = request.axisUploadDir;
+            if (!dir) return;
+            request.axisUploadDir = undefined;
+            void rm(dir, { recursive: true, force: true }).catch(() => undefined);
+          };
+          request.res?.once('finish', cleanup);
+          request.res?.once('close', cleanup);
         }
         cb(null, request.axisUploadDir);
       } catch (err) {

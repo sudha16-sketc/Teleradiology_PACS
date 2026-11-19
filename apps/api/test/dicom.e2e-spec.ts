@@ -4,7 +4,11 @@ import { createTestApp } from './app-bootstrap.js';
 import { loginAgent, USERS, prisma } from './helpers.js';
 import type { INestApplication } from '@nestjs/common';
 import AdmZip from 'adm-zip';
-import { readFileSync } from 'fs';
+import {
+  REAL_DICOM_FIXTURE,
+  buildP10Dicom,
+  realDicomFixture,
+} from './dicom-fixture.js';
 
 let app: INestApplication;
 let server: any;
@@ -12,7 +16,6 @@ let server: any;
 const h_cgh = USERS.H_CGH;
 const h_mmc = USERS.H_MMC;
 
-const REAL_DICOM = '/tmp/opencode/emri_small.dcm';
 const CGH_HOSPITAL_ID = 'hosp-001';
 
 // ---------------------------------------------------------------------------
@@ -84,61 +87,13 @@ function rawZip(
   return Buffer.concat([...parts, cd, eocd]);
 }
 
-/** Explicit-VR little-endian DICOM element. */
-function el(group: number, elem: number, vr: string, value: string): Buffer {
-  const v = Buffer.from(value.length % 2 ? value + '\u0000' : value, 'latin1');
-  const head = Buffer.from([group & 255, (group >> 8) & 255, elem & 255, (elem >> 8) & 255]);
-  const vrB = Buffer.from(vr, 'ascii');
-  let tail: Buffer;
-  if (['OB', 'OW', 'OF', 'SQ', 'UT', 'UN'].includes(vr)) {
-    const len = Buffer.alloc(4);
-    len.writeUInt32LE(v.length, 0);
-    tail = Buffer.concat([vrB, Buffer.alloc(2), len]);
-  } else {
-    const len = Buffer.alloc(2);
-    len.writeUInt16LE(v.length, 0);
-    tail = Buffer.concat([vrB, len]);
-  }
-  return Buffer.concat([head, tail, v]);
-}
-
-/** Minimal Part-10 DICOM with configurable presence + values of required UIDs. */
-function buildP10(opts: {
-  study?: boolean;
-  series?: boolean;
-  sop?: boolean;
-  sopClass?: boolean;
-  studyUid?: string;
-  sopUid?: string;
-} = {}): Buffer {
-  const all = { study: true, series: true, sop: true, sopClass: true, ...opts };
-  const studyUid = opts.studyUid ?? '1.2.826.0.1.3680043.2.1143.5';
-  const sopUid = opts.sopUid ?? '1.2.826.0.1.3680043.2.1143.9';
-  const parts: Buffer[] = [Buffer.alloc(128), Buffer.from('DICM')];
-  const meta: Array<[number, number, string, string]> = [
-    [0x0002, 0x0001, 'OB', '\x00\x01'],
-    [0x0002, 0x0002, 'UI', '1.2.840.10008.5.1.4.1.1.4.1'],
-    [0x0002, 0x0003, 'UI', sopUid],
-    [0x0002, 0x0010, 'UI', '1.2.840.10008.1.2.1'],
-  ];
-  for (const m of meta) {
-    parts.push(el(m[0], m[1], m[2], m[3]));
-  }
-  if (all.sopClass) parts.push(el(0x0008, 0x0016, 'UI', '1.2.840.10008.5.1.4.1.1.4.1'));
-  if (all.sop) parts.push(el(0x0008, 0x0018, 'UI', sopUid));
-  parts.push(el(0x0008, 0x0060, 'CS', 'MR'));
-  if (all.study) parts.push(el(0x0020, 0x000d, 'UI', studyUid));
-  if (all.series) parts.push(el(0x0020, 0x000e, 'UI', '1.2.826.0.1.3680043.2.1143.6'));
-  return Buffer.concat(parts);
-}
-
 function zipAround(file: Buffer, name = 'study.dcm'): Buffer {
   const z = new AdmZip();
   z.addFile(name, file);
   return z.toBuffer();
 }
 
-let createdStudyIds: string[] = [];
+const createdStudyIds: string[] = [];
 
 async function ingest(agent: any, buf: Buffer, filename: string): Promise<request.Response> {
   return agent
@@ -190,7 +145,7 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
   });
 
   it('DICOM-ZIP-2: rejects a Zip Slip archive (../ in entry path)', async () => {
-    const slip = rawZip([{ name: '../evil.dcm', data: buildP10() }]);
+    const slip = rawZip([{ name: '../evil.dcm', data: buildP10Dicom() }]);
     const res = await ingest(cghAgent, slip, 'slip.zip');
     expect(res.status).toBe(400);
     expect(res.body.message).toContain('Zip Slip');
@@ -198,7 +153,7 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
 
   it('DICOM-ZIP-3: rejects a nested ZIP archive', async () => {
     const inner = new AdmZip();
-    inner.addFile('a.dcm', buildP10());
+    inner.addFile('a.dcm', buildP10Dicom());
     const outer = new AdmZip();
     outer.addFile('inner.zip', inner.toBuffer());
     const res = await ingest(cghAgent, outer.toBuffer(), 'nested.zip');
@@ -217,7 +172,7 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
     // AdmZip deflates entries, keeping the 4001-entry archive under the 1MiB
     // upload limit so the entry-count guard (MAX_ENTRY_COUNT=4000) is hit.
     const z = new AdmZip();
-    for (let i = 0; i < 4001; i++) z.addFile(`f${i}.dcm`, buildP10());
+    for (let i = 0; i < 4001; i++) z.addFile(`f${i}.dcm`, Buffer.from('x'));
     const res = await ingest(cghAgent, z.toBuffer(), 'many.zip');
     expect(res.status).toBe(400);
     expect(res.body.message).toContain('too many entries');
@@ -226,7 +181,7 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
   it('DICOM-ZIP-6: rejects an entry that exceeds the per-file size limit', async () => {
     // Declared uncompressed size > 1MiB test limit (the guard checks the
     // declared size before decompressing, so no huge buffer is allocated).
-    const res = await ingest(cghAgent, rawZip([{ name: 'big.dcm', data: buildP10(), declaredSize: 2 * 1024 * 1024 }]), 'big.zip');
+    const res = await ingest(cghAgent, rawZip([{ name: 'big.dcm', data: buildP10Dicom(), declaredSize: 2 * 1024 * 1024 }]), 'big.zip');
     expect(res.status).toBe(400);
     expect(res.body.message).toContain('per-file size limit');
   });
@@ -257,26 +212,26 @@ describe('Phase 2 -- ZIP hardening & DICOM validation (no Orthanc, no DB writes)
   });
 
   it('DICOM-VAL-2: rejects a DICOM instance missing StudyInstanceUID', async () => {
-    const res = await ingest(cghAgent, zipAround(buildP10({ study: false }), 'm.dcm'), 'm1.zip');
+    const res = await ingest(cghAgent, zipAround(buildP10Dicom({ study: false }), 'm.dcm'), 'm1.zip');
     expect(res.status).toBe(400);
     expect(res.body.message).toContain('Study Instance UID');
   });
 
   it('DICOM-VAL-3: rejects a DICOM instance missing SeriesInstanceUID', async () => {
-    const res = await ingest(cghAgent, zipAround(buildP10({ series: false }), 'm.dcm'), 'm2.zip');
+    const res = await ingest(cghAgent, zipAround(buildP10Dicom({ series: false }), 'm.dcm'), 'm2.zip');
     expect(res.status).toBe(400);
     expect(res.body.message).toContain('Series Instance UID');
   });
 
   it('DICOM-VAL-4: rejects a DICOM instance missing SOPInstanceUID', async () => {
-    const res = await ingest(cghAgent, zipAround(buildP10({ sop: false }), 'm.dcm'), 'm3.zip');
+    const res = await ingest(cghAgent, zipAround(buildP10Dicom({ sop: false }), 'm.dcm'), 'm3.zip');
     expect(res.status).toBe(400);
     expect(res.body.message).toContain('SOP Instance UID');
   });
 
   it('DICOM-VAL-5: rejects an archive containing instances from multiple studies', async () => {
-    const a = buildP10();
-    const b = buildP10({ studyUid: '1.2.826.0.1.3680043.2.1143.77' });
+    const a = buildP10Dicom();
+    const b = buildP10Dicom({ studyUid: '1.2.826.0.1.3680043.2.1143.77' });
     const z = new AdmZip();
     z.addFile('a.dcm', a);
     z.addFile('b2.dcm', b);
@@ -296,10 +251,9 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
   });
 
   it('DICOM-ING-1: uploads a real DICOM, persists hierarchy, keys ownership from auth, audits events', async () => {
-    const real = readFileSync(REAL_DICOM);
-    const studyUid = '1.2.826.0.1.3680043.2.1143.3365540476747857567072393009509418480';
-    const seriesUid = '1.2.826.0.1.3680043.2.1143.3712364435022872412969836992152438492';
-    const sopUid = '1.2.826.0.1.3680043.2.1143.6455556726214900995651753669640998622';
+    const real = realDicomFixture();
+    const { studyInstanceUid: studyUid, seriesInstanceUid: seriesUid, sopInstanceUid: sopUid } =
+      REAL_DICOM_FIXTURE;
 
     const res = await ingest(cghAgent, zipAround(real, 'emri_small.dcm'), 'emri.zip');
     expect(res.status).toBe(201);
@@ -354,13 +308,13 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
   });
 
   it('DICOM-ING-2: hospital ownership is enforced by auth -- another hospital cannot access it', async () => {
-    const uid = '1.2.826.0.1.3680043.2.1143.3365540476747857567072393009509418480';
+    const uid = REAL_DICOM_FIXTURE.studyInstanceUid;
     const res = await mmcAgent.get(`/api/studies/${uid}`).expect(403);
     expect(res.body.message).toContain('access');
   });
 
   it('DICOM-ING-3: a different hospital cannot re-upload a DICOM whose StudyInstanceUID exists (A5 study takeover)', async () => {
-    const real = readFileSync(REAL_DICOM);
+    const real = realDicomFixture();
     const res = await ingest(mmcAgent, zipAround(real, 'emri_small.dcm'), 'emri-mmc.zip');
     expect(res.status).toBe(403);
     expect(res.body.message).toContain('another hospital');
@@ -377,7 +331,7 @@ describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => 
   it('DICOM-ING-4: a single raw .dcm upload ingests and persists hierarchy like the zipped path', async () => {
     const studyUid = `1.2.826.0.1.3680043.98.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
     const sopUid = `1.2.826.0.1.3680043.98.9.${Date.now()}`;
-    const raw = buildP10({ studyUid, sopUid });
+    const raw = buildP10Dicom({ studyUid, seriesUid: `${studyUid}.1`, sopUid });
 
     const res = await cghAgent
       .post('/api/dicom/ingest')

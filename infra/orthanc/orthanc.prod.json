@@ -13,7 +13,7 @@
   },
   "RemoteAccessAllowed": true,
   "Plugins": [
-    "/usr/share/orthanc/plugins/"
+    "/usr/local/share/orthanc/plugins/"
   ],
   "DicomWeb": {
     "Enable": true,

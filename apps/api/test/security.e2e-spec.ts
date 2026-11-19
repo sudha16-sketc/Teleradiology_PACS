@@ -59,7 +59,7 @@ function transition(agent: any, studyUid: string, status: string): Test {
   return agent.patch(`/api/studies/${studyUid}/status`).send({ status });
 }
 
-let createdStudyIds: string[] = [];
+const createdStudyIds: string[] = [];
 const createdHospitalIds: string[] = [];
 
 beforeAll(async () => {
@@ -101,6 +101,7 @@ afterAll(async () => {
 describe('Hospital management', () => {
   it('allows only administrators to add hospitals and rejects duplicate codes', async () => {
     const code = `TEST-${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+    const normalizedCode = code.toUpperCase();
     const hospitalData = {
       name: 'Temporary Hospital',
       code,
@@ -119,7 +120,7 @@ describe('Hospital management', () => {
     createdHospitalIds.push(created.body.data.id);
     expect(created.body.data).toMatchObject({
       name: hospitalData.name,
-      code,
+      code: normalizedCode,
       address: hospitalData.address,
       timezone: hospitalData.timezone,
       isActive: true,

@@ -22,7 +22,8 @@ export class AuditService {
     to?: string;
     user?: { id: string; role: string; hospitalId?: string };
   }) {
-    let { page = 1, pageSize = 50, user } = filters;
+    let { page = 1, pageSize = 50 } = filters;
+    const { user } = filters;
     if (pageSize > 200) pageSize = 200;
     page = page < 1 ? 1 : page;
     const skip = (page - 1) * pageSize;

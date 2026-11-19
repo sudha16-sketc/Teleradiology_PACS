@@ -4,8 +4,7 @@ import { createTestApp } from './app-bootstrap.js';
 import { loginAgent, USERS, prisma } from './helpers.js';
 import type { INestApplication } from '@nestjs/common';
 import { StudyStatus } from '@prisma/client';
-import AdmZip from 'adm-zip';
-import { readFileSync } from 'fs';
+import { buildP10Dicom } from './dicom-fixture.js';
 
 let app: INestApplication;
 let server: any;
@@ -17,7 +16,6 @@ const rad2 = USERS.RAD2;
 const h_cgh = USERS.H_CGH;
 const h_mmc = USERS.H_MMC;
 
-const REAL_DICOM = '/tmp/opencode/emri_small.dcm';
 const CGH_HOSPITAL_ID = 'hosp-001';
 const MMC_HOSPITAL_ID = 'hosp-002';
 
@@ -64,7 +62,12 @@ async function seedStudy(opts: {
 
 /** Inserts a real DICOM through the full pipeline -> returns UNASSIGNED study. */
 async function ingestReal(agent: any, filename = 'emri.zip'): Promise<request.Response> {
-  const real = readFileSync(REAL_DICOM);
+  const uid = `1.2.826.0.1.3680043.98.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+  const real = buildP10Dicom({
+    studyUid: uid,
+    seriesUid: `${uid}.1`,
+    sopUid: `${uid}.2`,
+  });
   return agent
     .post('/api/dicom/ingest')
     .attach('file', real, { filename, contentType: 'application/octet-stream' });
