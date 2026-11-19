@@ -127,12 +127,15 @@ expire by time window and do not permanently lock accounts.
 
 ### Deployment
 
-Apply the additive Prisma migration with the normal migration deployment
-procedure (`pnpm --filter @axis/api exec prisma migrate deploy`), then deploy
-the API and frontend. The migration adds reset-token and shared limiter tables
-plus a user authentication-version column; it does not delete or rewrite user,
-audit, or clinical data. Set the email and rate-limit variables before rollout,
-verify API readiness, and test a reset end to end using a non-production account.
+The API start command applies pending additive migrations with
+`prisma migrate deploy` before Nest listens, using the API's `DATABASE_URL`.
+For a migration-only step, run `pnpm db:migrate:deploy` from the repo root, then
+deploy the API and frontend. The migration adds reset-token and shared limiter
+tables plus a user authentication-version column; it does not delete or rewrite
+user, audit, or clinical data. Set the email and rate-limit variables before
+rollout, verify API readiness, and test a reset end to end using a
+non-production account. Never use `prisma migrate dev` or `db push` in
+production.
 
 A fresh-database migration-chain check currently stops at the pre-existing
 `20261029000000_report_study_version_unique` migration because the

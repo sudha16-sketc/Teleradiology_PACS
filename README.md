@@ -364,9 +364,12 @@ Deploy the API from the monorepo root so pnpm can resolve workspace packages:
 - **Start Command:** `pnpm --filter @axis/api start:prod`
 
 The root build generates Prisma Client from `apps/api/prisma/schema.prisma`,
-builds `@axis/types`, and compiles the API. To build the web app separately,
-run `pnpm run build:web`; its deployment also requires the web upstream settings
-documented above.
+builds `@axis/types`, and compiles the API. The start command runs
+`prisma migrate deploy` before Nest listens, so the deployed API uses the same
+`DATABASE_URL` for schema and queries. For a migration-only step, run
+`pnpm db:migrate:deploy`; never use `prisma migrate dev` or `db push` in
+production. To build the web app separately, run `pnpm run build:web`; its
+deployment also requires the web upstream settings documented above.
 
 Set the API's production environment variables in Render: `DATABASE_URL`,
 `AUTH_SECRET`, `CORS_ORIGIN`, `TRUST_PROXY=1`, `ORTHANC_URL`, `REDIS_URL`,
