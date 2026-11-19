@@ -83,6 +83,16 @@ describe('single-login OHIF DICOMweb access', () => {
     await agent.get(path()).expect(401);
   });
 
+  it('rotates the Redis session on refresh without losing access', async () => {
+    const agent = await loginAgent(server, USERS.RAD1);
+    const refreshed = await agent.post('/api/auth/refresh').expect(201);
+    expect(refreshed.body.data.success).toBe(true);
+    await agent.get('/api/auth/me').expect(200);
+    const res = await agent.get(path());
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(403);
+  });
+
   it('lets the assigned radiologist through the authorization gate', async () => {
     const agent = await loginAgent(server, USERS.RAD1);
     const res = await agent.get(path());

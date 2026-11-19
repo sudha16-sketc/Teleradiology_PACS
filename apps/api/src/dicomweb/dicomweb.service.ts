@@ -16,6 +16,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { isValidDicomUid } from '../dicom/dicom.constants.js';
 import type { ImagingAvailability, ImagingAvailabilityResult } from '@axis/types';
 import type { Request, Response } from 'express';
+import type { StoredSession } from '../redis/redis-session.service.js';
 
 /**
  * Explicit allow-list for DICOMweb operations that are NOT scoped to a study.
@@ -93,7 +94,7 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export type DicomWebUser = { id: string; role: UserRole };
+export type DicomWebUser = { id: string; role: UserRole; hospitalId?: string | null };
 
 type DicomJsonElement = { Value?: unknown[] };
 
@@ -629,6 +630,21 @@ export class DicomWebService {
     );
   }
 
+  /** Defense in depth for the imaging gateway: the route is already protected
+   * by AuthGuard, and the DICOMweb path must belong to the same live session
+   * and tenant as the PostgreSQL user used for study-level authorization. */
+  assertGatewaySession(request: Request, user: DicomWebUser): void {
+    const session = (request as Request & { session?: StoredSession }).session;
+    if (
+      !session ||
+      session.userId !== user.id ||
+      session.role !== user.role ||
+      session.tenantId !== (user.hospitalId ?? null)
+    ) {
+      throw new UnauthorizedException('Session expired or invalid');
+    }
+  }
+
   async proxy(request: Request, method: string, response: Response) {
     const rawPath = this.extractDicomwebPath(request);
     const { pathname, query } = this.assertSafePath(rawPath);
@@ -639,6 +655,7 @@ export class DicomWebService {
     if (!authenticated.user) {
       throw new UnauthorizedException('Authentication required for DICOMweb');
     }
+    this.assertGatewaySession(request, authenticated.user);
     if (method !== 'GET' && method !== 'HEAD') {
       throw new MethodNotAllowedException(
         'Only read DICOMweb operations are supported through this proxy',

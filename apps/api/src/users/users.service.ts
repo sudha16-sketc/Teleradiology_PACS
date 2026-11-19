@@ -4,6 +4,9 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { sanitizeUser } from '../common/sanitize-user.js';
 import { UserRole, UserStatus } from '@prisma/client';
 import { normalizePhoneOrThrow } from '../common/validators/phone.js';
+import { RedisSessionService } from '../redis/redis-session.service.js';
+import { RedisCacheService } from '../redis/redis-cache.service.js';
+import { logger } from '../common/observability/structured-logger.js';
 
 interface ListUsersParams {
   search?: string;
@@ -15,7 +18,11 @@ interface ListUsersParams {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessions: RedisSessionService,
+    private readonly cache: RedisCacheService,
+  ) {}
 
   async list(params: ListUsersParams = {}) {
     const users = await this.prisma.user.findMany({
@@ -263,8 +270,30 @@ export class UsersService {
         ...(dto.subspecialty !== undefined ? { subspecialty: dto.subspecialty || null } : {}),
         isActive: effectiveIsActive,
         status: effectiveStatus,
+        // Any authorization-relevant change invalidates existing JWTs even if
+        // Redis is down; Redis sessions are revoked alongside it.
+        ...(dto.role !== undefined ||
+        dto.hospitalId !== undefined ||
+        dto.isActive !== undefined ||
+        dto.status !== undefined
+          ? { authVersion: { increment: 1 } }
+          : {}),
       },
     });
+
+    if (
+      dto.role !== undefined ||
+      dto.hospitalId !== undefined ||
+      dto.isActive !== undefined ||
+      dto.status !== undefined
+    ) {
+      try {
+        await this.sessions.revokeAllForUser(id);
+      } catch {
+        logger.error('redis_session_revocation_failed', { reason: 'user_update' });
+      }
+    }
+    await this.cache.invalidateUser(id);
 
     return { data: sanitizeUser(updated) };
   }
@@ -274,6 +303,12 @@ export class UsersService {
     if (!user) throw new NotFoundException(`User ${id} not found`);
 
     await this.prisma.user.delete({ where: { id } });
+    try {
+      await this.sessions.revokeAllForUser(id);
+    } catch {
+      logger.error('redis_session_revocation_failed', { reason: 'user_delete' });
+    }
+    await this.cache.invalidateUser(id);
     return { data: { success: true } };
   }
 }

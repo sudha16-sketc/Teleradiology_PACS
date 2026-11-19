@@ -1,0 +1,7 @@
+# Render translates service env vars into build args. Never reference secret
+# values here; the Redis password is rendered into a root-only runtime file by
+# the entrypoint, never baked into the image.
+*
+!Dockerfile
+!redis.conf
+!docker-entrypoint.sh

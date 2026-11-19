@@ -1,6 +1,12 @@
 import type { Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { SESSION_COOKIE, JWT_ISSUER, JWT_AUDIENCE, JWT_ALGORITHM } from './auth.constants.js';
+import {
+  SESSION_COOKIE,
+  JWT_ISSUER,
+  JWT_AUDIENCE,
+  JWT_ALGORITHM,
+  sessionSecret,
+} from './auth.constants.js';
 
 const REVOCATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -70,6 +76,31 @@ export class SessionRevocationStore {
 }
 
 export const sessionRevocationStore = new SessionRevocationStore();
+
+/** Verify a cookie before using its jti for revocation/rotation. Revocation is
+ * deliberately public, so an unverified token must never be able to revoke a
+ * session belonging to another user. */
+export function decodeVerifiedSession(
+  token?: string,
+): { jti?: string; sub?: string; authVersion?: number } | undefined {
+  if (!token) return undefined;
+  try {
+    const payload = jwt.verify(token, sessionSecret(), jwtVerifyOptions());
+    if (!payload || typeof payload !== 'object') return undefined;
+    const { jti, sub, authVersion } = payload as {
+      jti?: unknown;
+      sub?: unknown;
+      authVersion?: unknown;
+    };
+    return {
+      jti: typeof jti === 'string' ? jti : undefined,
+      sub: typeof sub === 'string' ? sub : undefined,
+      authVersion: typeof authVersion === 'number' ? authVersion : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 /** Pinned verification options: exact algorithm and trustable issuer/audience. */
 export function jwtVerifyOptions(): jwt.VerifyOptions {

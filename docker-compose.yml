@@ -17,16 +17,35 @@ services:
       timeout: 3s
       retries: 5
 
+  # Centralized session/cache store. Built from infra/redis so local and Render
+  # run the same configuration. The host port is bound to loopback only; the
+  # container port is otherwise reachable solely on the private compose network.
   redis:
-    image: redis:7-alpine
+    build:
+      context: ./infra/redis
+      dockerfile: Dockerfile
+    image: axis-redis:7.4
     container_name: axis-redis
+    environment:
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (see .env.example)}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env (see .env.example)}
+      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-axis}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+      REDIS_MAXMEMORY_POLICY: ${REDIS_MAXMEMORY_POLICY:-volatile-lru}
+      REDIS_APPENDONLY: ${REDIS_APPENDONLY:-yes}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 10s
 
   rabbitmq:
     image: rabbitmq:3-management-alpine
@@ -106,6 +125,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   orthanc_data:
   keycloak_data:
   minio_data:

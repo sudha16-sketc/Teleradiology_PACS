@@ -78,6 +78,13 @@ export class AuthController {
     return this.authService.me(user);
   }
 
+  // Rotates the Redis session and refreshes the same httpOnly cookie. No
+  // credentials are re-sent and no second login authority is introduced.
+  @Post('refresh')
+  refresh(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    return this.authService.refresh(request, response);
+  }
+
   @Roles(UserRole.ADMIN)
   @Get('registration-requests')
   registrationRequests(@Query('status') status?: string) {

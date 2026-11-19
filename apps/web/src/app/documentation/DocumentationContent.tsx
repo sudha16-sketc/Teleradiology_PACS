@@ -311,7 +311,7 @@ export default function DocumentationContent() {
               <SectionHeading number="06" title="Security & Privacy" lead="These controls are verifiable in source. They are implementation details, not a certification or guarantee of regulatory compliance." />
               <div className="grid gap-4 sm:grid-cols-2">
                 {[
-                  ["Authentication", "Local email/password login; bcrypt password hashes; signed axis_session JWT in an HttpOnly, SameSite=Lax cookie. Secure is enabled in production."],
+                  ["Authentication", "Local email/password login; bcrypt password hashes; signed axis_session JWT in an HttpOnly, SameSite=Lax cookie. Redis holds the authoritative session record so it works across API replicas; Secure is enabled in production."],
                   ["Account approval", "Self-registration cannot select ADMIN. New accounts remain pending until an administrator approves and assigns a role; hospital accounts are linked to a hospital."],
                   ["Authorization", "Global API guards require an approved account and enforce role metadata. Study and DICOM operations apply hospital and radiologist-assignment scope."],
                   ["DICOM proxy", "Client cookies and authorization headers are not forwarded upstream. Traversal paths and unknown study UIDs are rejected."],
@@ -319,7 +319,7 @@ export default function DocumentationContent() {
                   ["Audit and data", "Workflow actions create audit events. Notifications carry minimal metadata, not report text. PostgreSQL holds workflow records; Orthanc holds DICOM objects."],
                 ].map(([title, detail]) => <div key={title} className="border-t border-slate-300 pt-3"><h3 className="flex items-center gap-2 font-semibold"><ShieldCheck size={16} className="text-teal-700" />{title}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p></div>)}
               </div>
-              <div className="mt-7 border-l-4 border-red-600 bg-red-50 px-5 py-4 text-sm leading-6 text-slate-700"><strong className="text-navy-900">Deployment caution:</strong> bundled Orthanc authentication is disabled for local development. Session revocation and rate limiting use in-process stores and assume one API replica. Production needs operator-managed secrets, HTTPS, protected storage, policy controls, and an independent compliance review. The project makes no HIPAA-compliance claim. Do not use development fixtures or unsecured local environments for real patient data.</div>
+              <div className="mt-7 border-l-4 border-red-600 bg-red-50 px-5 py-4 text-sm leading-6 text-slate-700"><strong className="text-navy-900">Deployment caution:</strong> bundled Orthanc authentication is disabled for local development. Sessions are shared through a password-protected private Redis service; authentication abuse counters and the general rate limiter remain in-process/PostgreSQL. Production needs operator-managed secrets, HTTPS, protected storage, policy controls, and an independent compliance review. The project makes no HIPAA-compliance claim. Do not use development fixtures or unsecured local environments for real patient data.</div>
             </section>
 
             <section id="desktop" className="scroll-mt-24 border-b border-slate-200 py-10 sm:py-12">

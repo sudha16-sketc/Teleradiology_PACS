@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { RedisModule } from './redis/redis.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { AuthGuard } from './auth/auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
@@ -28,6 +29,7 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module.js'
 @Module({
   imports: [
     PrismaModule,
+    RedisModule,
     AuthModule,
     StudiesModule,
     WorklistModule,

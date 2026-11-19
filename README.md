@@ -221,7 +221,8 @@ cp .env.example .env
 ```
 
 Review and edit `.env` as needed. The defaults work with the Docker Compose
-services out of the box.
+services out of the box; set `REDIS_PASSWORD` to a local random value before
+starting Redis (the compose file refuses to start without it).
 
 ### 3. Start Infrastructure
 
@@ -313,7 +314,13 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `OIDC_ISSUER`              | `http://localhost:8180/realms/axis`                  | OIDC issuer URL                         |
 | `OIDC_CLIENT_ID`           | `axis-web`                                           | OIDC client ID                          |
 | `OIDC_CLIENT_SECRET`       | `change-me-in-production`                            | OIDC client secret                      |
-| `REDIS_URL`                | `redis://localhost:6379`                              | Redis connection URL                    |
+| `REDIS_URL`                | `redis://127.0.0.1:6379`                              | Redis private-network connection URL    |
+| `REDIS_PASSWORD`           | _(required locally)_                                  | Redis `requirepass` value               |
+| `REDIS_KEY_PREFIX`         | `axis`                                                | Redis key namespace                     |
+| `REDIS_CONNECT_TIMEOUT_MS` | `3000`                                                | Redis connect timeout                   |
+| `REDIS_COMMAND_TIMEOUT_MS` | `2000`                                                | Redis command timeout                   |
+| `REDIS_RETRY_MAX_DELAY_MS` | `2000`                                                | Redis reconnect backoff ceiling         |
+| `SESSION_TTL_SECONDS`      | `3600`                                                | Session TTL in seconds (alias of `SESSION_EXPIRY`) |
 | `RABBITMQ_URL`             | `amqp://axis:axis_dev@localhost:5672`                 | RabbitMQ AMQP URL                       |
 | `MINIO_ENDPOINT`           | `localhost`                                           | MinIO endpoint hostname                 |
 | `MINIO_PORT`               | `9000`                                               | MinIO API port                          |
@@ -364,10 +371,18 @@ run `pnpm run build:web`; its deployment also requires the web upstream settings
 documented above.
 
 Set the API's production environment variables in Render: `DATABASE_URL`,
-`AUTH_SECRET`, `CORS_ORIGIN`, `TRUST_PROXY=1`, `ORTHANC_URL`, and the Resend
-settings. Render supplies `PORT`; the API listens on it. Configure additional
-integrations such as Redis, RabbitMQ, Keycloak, or object storage only when
-enabled for that deployment.
+`AUTH_SECRET`, `CORS_ORIGIN`, `TRUST_PROXY=1`, `ORTHANC_URL`, `REDIS_URL`,
+`REDIS_PASSWORD`, and the Resend settings. Render supplies `PORT`; the API
+listens on it. Configure RabbitMQ, Keycloak, or object storage only when enabled
+for that deployment; Redis is no longer optional.
+
+Deploy Redis as a private service alongside the API. `render.yaml` contains
+`axis-redis`, built from `infra/redis` with `requirepass`, AOF persistence and a
+1 GB disk. Connect with `REDIS_URL=redis://axis-redis:6379` from the same Render
+region/private network; copy the generated `REDIS_PASSWORD` from the Redis
+service into the API's secret store (or use `fromService` in the Blueprint).
+Never publish port 6379 or expose the Redis URL to the browser. See
+`infra/redis/README.md`.
 
 Deploy Orthanc as a private service alongside the API. `render.yaml` contains a
 starter service (`axis-orthanc`) using `infra/orthanc/Dockerfile.prod` with a
@@ -376,11 +391,13 @@ persistent disk; set `ORTHANC_URL` on the API to that service's internal
 loopback URLs unless `AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a
 local production-mode test.
 
-`/api/health/ready` returns `200` when PostgreSQL is reachable and includes an
-`orthanc` component diagnostic. If Orthanc is down, the response includes
-`"status":"degraded"` but reports/worklists remain available; viewer requests
-return a sanitized `503`/`504` with a correlation ID instead of failing the
-whole API. Verify the deployed service with `curl https://<api-host>/api/health/ready`.
+`/api/health/ready` returns `200` only when PostgreSQL **and** Redis are
+reachable, and includes `postgres`, `redis` and `orthanc` component diagnostics.
+If Orthanc is down, the response reports `"status":"degraded"` but
+reports/worklists remain available; viewer requests return a sanitized
+`503`/`504` with a correlation ID instead of failing the whole API. If Redis is
+down, readiness fails and protected requests return `503` rather than allowing
+unauthenticated access. Verify with `curl https://<api-host>/api/health/ready`.
 
 ### Orthanc persistent storage and imaging recovery
 
@@ -439,7 +456,7 @@ All services are defined in `docker-compose.yml` and can be started with
 | Service      | Image                                    | Ports                      | Purpose                                  |
 | ------------ | ---------------------------------------- | -------------------------- | ---------------------------------------- |
 | **postgres** | `postgres:16-alpine`                     | `5432`                     | Primary relational database              |
-| **redis**    | `redis:7-alpine`                         | `6379`                     | Session cache, rate limiting, pub/sub    |
+| **redis**    | `docker.io/library/redis:7.4-alpine` (built from `infra/redis`) | `127.0.0.1:6379` | Authenticated centralized sessions and reference-data cache |
 | **rabbitmq** | `rabbitmq:3-management-alpine`           | `5672`, `15672` (console)  | Async event messaging / job queues       |
 | **orthanc**  | `jodogne/orthanc-plugins:latest`         | `8042` (HTTP), `4242` (DICOM) | DICOM archive & DICOMweb server      |
 | **keycloak** | `quay.io/keycloak/keycloak:24.0`        | `8180`                     | OpenID Connect identity provider         |
@@ -831,7 +848,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 ### Infrastructure
 
 - [ ] Use a managed PostgreSQL service (RDS, Cloud SQL, Azure Database)
-- [ ] Deploy Redis with persistence and authentication enabled
+- [ ] Verify the Render `axis-redis-data` disk is attached to the live Redis service
 - [ ] Use a managed RabbitMQ service or deploy with clustering
 - [ ] Configure Orthanc with TLS and proper DICOM TLS for receiving
 - [ ] Set up MinIO with erasure coding for production durability
@@ -842,7 +859,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 
 - [ ] Enable Next.js ISR/caching for static-heavy pages
 - [ ] Configure connection pooling for PostgreSQL (PgBouncer)
-- [ ] Add Redis caching for frequently accessed study metadata
+- [ ] Add Redis caching for frequently accessed study metadata (currently only non-PHI hospital configuration is cached; study metadata stays authoritative in PostgreSQL)
 - [ ] Use CDN for Orthanc WADO-RS image delivery
 - [ ] Optimize Orthanc database settings for expected study volume
 
@@ -862,7 +879,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 | ------------------ | ---------------------------------------------------------------------- |
 | **OHIF Viewer**    | Embedded from the authorized Reading Page using the main Axis session; no independent OHIF login. |
 | **Mock Data**      | All data is seeded synthetic data prefixed with `AX-SYN`. No real clinical data is included. |
-| **Authentication** | Signed cookie sessions (`axis_session`) are enforced by the NestJS API. Keycloak/OIDC is provisioned but intentionally not used by the embedded viewer. |
+| **Authentication** | Signed cookie sessions (`axis_session`) are enforced by the NestJS API; Redis holds the authoritative session record and rotates it on login/refresh. Keycloak/OIDC is provisioned but intentionally not used by the embedded viewer. |
 | **Authorization**  | Global `AuthGuard`/`RolesGuard` plus DICOMweb study, hospital and assignment checks are enforced server-side. |
 | **AI Integration** | AI job model and endpoints exist as placeholders. No actual ML inference pipelines are connected. |
 | **Report Delivery**| DeliveryAttempt model exists. Actual delivery mechanisms (HL7, FHIR, email, fax) are not implemented. |

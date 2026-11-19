@@ -19,6 +19,7 @@ export const DEV_DEFAULT_SECRET = 'axis-dev-secret-change-in-production';
 
 const PRODUCTION_REQUIRED: Array<{ key: string; why: string }> = [
   { key: 'DATABASE_URL', why: 'PostgreSQL connection string' },
+  { key: 'REDIS_URL', why: 'Redis URL for centralized sessions and cache' },
   { key: 'AUTH_SECRET', why: 'session/JWT signing secret' },
   { key: 'CORS_ORIGIN', why: 'allow-listed frontend origin(s)' },
   { key: 'ORTHANC_URL', why: 'Orthanc service URL for DICOM storage/proxy' },
@@ -66,6 +67,11 @@ export function assertRequiredEnv(): void {
     { key: 'AXIS_ORTHANC_TIMEOUT_MS', min: 1000, max: 600000 },
     { key: 'AXIS_ORTHANC_STREAM_IDLE_TIMEOUT_MS', min: 1000, max: 600000 },
     { key: 'AXIS_ORTHANC_HEALTH_TIMEOUT_MS', min: 500, max: 60000 },
+    { key: 'REDIS_CONNECT_TIMEOUT_MS', min: 100, max: 60000 },
+    { key: 'REDIS_COMMAND_TIMEOUT_MS', min: 100, max: 60000 },
+    { key: 'REDIS_RETRY_MAX_DELAY_MS', min: 100, max: 30000 },
+    { key: 'SESSION_EXPIRY', min: 60, max: 86400 },
+    { key: 'SESSION_TTL_SECONDS', min: 60, max: 86400 },
   ];
   for (const { key, min, max } of boundedIntegers) {
     const raw = process.env[key];
@@ -78,6 +84,23 @@ export function assertRequiredEnv(): void {
   }
 
   if (isProduction()) {
+    const rawRedisUrl = process.env.REDIS_URL;
+    if (rawRedisUrl) {
+      try {
+        const parsed = new URL(rawRedisUrl);
+        if (!['redis:', 'rediss:'].includes(parsed.protocol)) {
+          missing.push('REDIS_URL (must use redis:// or rediss://)');
+        }
+        if (!parsed.password && !process.env.REDIS_PASSWORD) {
+          missing.push(
+            'REDIS_URL (must embed a password or set REDIS_PASSWORD; Redis must require authentication)',
+          );
+        }
+      } catch {
+        missing.push('REDIS_URL (must be a valid redis:// URL)');
+      }
+    }
+
     const rawOrthancUrl = process.env.ORTHANC_URL;
     if (rawOrthancUrl) {
       const candidate = /^https?:\/\//i.test(rawOrthancUrl)

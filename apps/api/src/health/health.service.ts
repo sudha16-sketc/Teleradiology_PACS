@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { orthancBaseUrl } from '../common/config/orthanc-url.js';
 import { log } from '../common/observability/structured-logger.js';
+import { RedisService } from '../redis/redis.service.js';
 import type { HealthComponent, HealthReport } from '@axis/types';
 
 function orthancAuthHeader(): Record<string, string> {
@@ -20,7 +21,10 @@ function orthancHealthTimeoutMs(): number {
 
 @Injectable()
 export class HealthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+  ) {}
 
   liveness() {
     return {
@@ -44,6 +48,13 @@ export class HealthService {
       name: 'postgresql',
       status: pgUp ? 'up' : 'down',
       latencyMs: Math.round(pgMs),
+    });
+
+    const redisProbe = await this.redis.probe();
+    components.push({
+      name: 'redis',
+      status: redisProbe.up ? 'up' : 'down',
+      latencyMs: redisProbe.latencyMs,
     });
 
     const orthStart = process.hrtime.bigint();
@@ -70,11 +81,10 @@ export class HealthService {
       latencyMs: Math.round(orthMs),
     });
 
-    // Imaging is a dependency, not a prerequisite for the rest of the PACS.
-    // A failed Orthanc probe must not make the platform drain the API and take
-    // reports/worklists down with it. Readiness tracks the database only;
-    // Orthanc remains visible as a degraded component for diagnostics.
-    const ready = pgUp;
+    // Sessions cannot be validated without Redis, so an API instance with no
+    // Redis connection must not receive protected traffic. Liveness stays
+    // independent to avoid restart loops during a Redis outage.
+    const ready = pgUp && redisProbe.up;
     return {
       status: ready && orthUp ? 'ok' : 'degraded',
       ready,

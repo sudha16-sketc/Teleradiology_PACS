@@ -80,8 +80,10 @@ export function sessionSecret(): string {
   return ephemeral;
 }
 
+/** Session lifetime. SESSION_TTL_SECONDS is accepted as a descriptive alias;
+ * SESSION_EXPIRY remains the canonical name used by existing deployments. */
 export function sessionExpirySeconds(): number {
-  const raw = Number(process.env.SESSION_EXPIRY ?? '3600');
+  const raw = Number(process.env.SESSION_TTL_SECONDS ?? process.env.SESSION_EXPIRY ?? '3600');
   return Number.isFinite(raw) && raw > 0 ? raw : 3600;
 }
 

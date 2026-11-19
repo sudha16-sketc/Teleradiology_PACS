@@ -972,7 +972,7 @@ because Docker needs to pull the images.
 | Service | URL | Credentials |
 |---|---|---|
 | PostgreSQL | `localhost:5432` | axis / axis_dev / axis_pacs |
-| Redis | `localhost:6379` | (none) |
+| Redis | `127.0.0.1:6379` | password from `REDIS_PASSWORD` in `.env` |
 | RabbitMQ | `localhost:5672` (AMQP), `localhost:15672` (console) | axis / axis_dev |
 | Orthanc | `localhost:8042` (HTTP), `localhost:4242` (DICOM) | orthanc / orthanc |
 | Keycloak | `localhost:8180/auth` | admin / admin |
@@ -1077,7 +1077,7 @@ Then access OHIF at **http://localhost:3001**.
 | Service | Image | Ports | Purpose | Volume | Healthcheck |
 |---|---|---|---|---|---|
 | **postgres** | `postgres:16-alpine` | 5432 | Primary database | `postgres_data` | `pg_isready` every 5s |
-| **redis** | `redis:7-alpine` | 6379 | Cache, sessions, pub/sub | — | `redis-cli ping` every 5s |
+| **redis** | `redis:7.4-alpine` (built from `infra/redis`) | 127.0.0.1:6379 | Authenticated sessions + reference-data cache | `redis_data` | authenticated `redis-cli ping` every 5s |
 | **rabbitmq** | `rabbitmq:3-management-alpine` | 5672, 15672 | Async messaging, job queues | — | `rabbitmq-diagnostics` every 10s |
 | **orthanc** | `jodogne/orthanc-plugins:latest` | 8042, 4242 | DICOM archive + DICOMweb | `orthanc_data` | `curl /is-alive` every 10s |
 | **keycloak** | `quay.io/keycloak/keycloak:24.0` | 8180 | OIDC identity provider | `keycloak_data` | — |
@@ -1088,6 +1088,7 @@ Then access OHIF at **http://localhost:3001**.
 | Service | Username | Password | Database |
 |---|---|---|---|
 | PostgreSQL | `axis` | `axis_dev` | `axis_pacs` |
+| Redis | — | `REDIS_PASSWORD` from `.env` | — |
 | Orthanc | `orthanc` | `orthanc` | — |
 | RabbitMQ | `axis` | `axis_dev` | — |
 | Keycloak | `admin` | `admin` | — |
@@ -1262,7 +1263,7 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 ### Infrastructure
 
 - Use managed PostgreSQL (RDS, Cloud SQL, Azure Database)
-- Use managed Redis with authentication
+- Verify the private Redis service has authentication, a persistent disk and no public endpoint
 - Use managed RabbitMQ or deploy with clustering
 - Configure Orthanc with TLS for DICOM TLS receiving
 - Set up MinIO with erasure coding
@@ -1271,7 +1272,7 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 
 - Enable Next.js ISR/caching for static-heavy pages
 - Configure PostgreSQL connection pooling (PgBouncer)
-- Add Redis caching for frequently accessed study metadata
+- Add Redis caching for frequently accessed study metadata (only non-PHI hospital configuration is cached today)
 - Use CDN for Orthanc WADO-RS image delivery
 - Optimize Orthanc database for expected volume
 

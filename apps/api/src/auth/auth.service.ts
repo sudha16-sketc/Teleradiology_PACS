@@ -19,7 +19,10 @@ import {
   DUMMY_PASSWORD_HASH,
   type AuthenticatedUser,
 } from './auth.constants.js';
-import { sessionRevocationStore } from './session-store.js';
+import { decodeVerifiedSession, sessionRevocationStore } from './session-store.js';
+import { RedisSessionService } from '../redis/redis-session.service.js';
+import { RedisCacheService } from '../redis/redis-cache.service.js';
+import { RedisUnavailableError } from '../redis/redis-client.interface.js';
 import { AuthRateLimitService } from './auth-rate-limit.service.js';
 import { PasswordResetEmailService } from './password-reset-email.service.js';
 import { normalizePhoneOrThrow } from '../common/validators/phone.js';
@@ -33,6 +36,8 @@ export class AuthService {
     private readonly audit: AuditService,
     private readonly rateLimit: AuthRateLimitService,
     private readonly resetEmail: PasswordResetEmailService,
+    private readonly sessions: RedisSessionService,
+    private readonly cache: RedisCacheService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -143,16 +148,31 @@ export class AuthService {
         jwtid: jti,
       },
     );
+    // Rotate any session presented at login so a pre-authentication session id
+    // can never be promoted (session fixation). Redis is the shared authority.
+    const previous = decodeVerifiedSession(
+      (request.cookies as Record<string, string | undefined> | undefined)?.[SESSION_COOKIE],
+    );
+    try {
+      await this.sessions.rotate(previous?.jti, {
+        sessionId: jti,
+        userId: user.id,
+        role: user.role,
+        tenantId: user.hospitalId ?? null,
+        authVersion: user.authVersion,
+      });
+    } catch (error) {
+      if (error instanceof RedisUnavailableError) {
+        throw new ServiceUnavailableException(
+          'Session store temporarily unavailable. Please try again.',
+        );
+      }
+      throw error;
+    }
     sessionRevocationStore.register(jti, user.id);
     await this.rateLimit.resetLoginAccountCounter(email);
 
-    response.cookie(SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: isProduction(),
-      maxAge: sessionExpirySeconds() * 1000,
-      path: '/',
-    });
+    this.setSessionCookie(response, token);
 
     await this.audit
       .create({
@@ -257,9 +277,22 @@ export class AuthService {
       });
     });
     sessionRevocationStore.revokeAllForUser(resetToken.userId);
+    // authVersion was incremented in the same transaction, so all existing
+    // tokens are already invalid even if Redis is temporarily unreachable.
+    await this.invalidateUserState(resetToken.userId, 'password_reset');
     await this.rateLimit.resetLoginAccountCounter(resetToken.user.email);
 
     return { data: { success: true } };
+  }
+
+  private async invalidateUserState(userId: string, reason: string): Promise<void> {
+    try {
+      await this.sessions.revokeAllForUser(userId);
+    } catch {
+      // PostgreSQL-side checks (authVersion/status) remain authoritative.
+      logger.error('redis_session_revocation_failed', { reason });
+    }
+    await this.cache.invalidateUser(userId);
   }
 
   private passwordResetTtlMs(): number {
@@ -280,9 +313,93 @@ export class AuthService {
   }
 
   async logout(response: Response) {
-    sessionRevocationStore.revokeFromResponse(response);
+    const token = (response.req.cookies as Record<string, string | undefined> | undefined)?.[
+      SESSION_COOKIE
+    ];
+    const payload = decodeVerifiedSession(token);
+    sessionRevocationStore.revoke(payload?.jti);
+    if (payload?.jti) {
+      try {
+        await this.sessions.revoke(payload.jti);
+      } catch {
+        // Always clear the browser cookie; the in-process revocation above and
+        // the TTL keep the session from being reused on this instance.
+        logger.error('redis_session_revocation_failed', { reason: 'logout' });
+      }
+    }
     response.clearCookie(SESSION_COOKIE, { path: '/' });
     return { data: { success: true } };
+  }
+
+  /** Rotate the current session without a second login. Same authority, same
+   * cookie, new cryptographically random session identifier. */
+  async refresh(request: Request, response: Response) {
+    const token = (request.cookies as Record<string, string | undefined> | undefined)?.[
+      SESSION_COOKIE
+    ];
+    const payload = decodeVerifiedSession(token);
+    if (!payload?.jti || !payload.sub) {
+      throw new UnauthorizedException('Not authenticated');
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        role: true,
+        status: true,
+        isActive: true,
+        hospitalId: true,
+        authVersion: true,
+      },
+    });
+    if (!user || user.status !== UserStatus.APPROVED || !user.isActive) {
+      throw new UnauthorizedException('Account is not active');
+    }
+    if (payload.authVersion !== user.authVersion) {
+      throw new UnauthorizedException('Session expired or invalid');
+    }
+
+    const jti = randomUUID();
+    const nextToken = jwt.sign(
+      { sub: user.id, email: user.email, authVersion: user.authVersion },
+      sessionSecret(),
+      {
+        algorithm: JWT_ALGORITHM,
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        expiresIn: sessionExpirySeconds(),
+        jwtid: jti,
+      },
+    );
+    try {
+      await this.sessions.rotate(payload.jti, {
+        sessionId: jti,
+        userId: user.id,
+        role: user.role,
+        tenantId: user.hospitalId ?? null,
+        authVersion: user.authVersion,
+      });
+    } catch (error) {
+      if (error instanceof RedisUnavailableError) {
+        throw new ServiceUnavailableException('Session store temporarily unavailable');
+      }
+      throw error;
+    }
+    sessionRevocationStore.register(jti, user.id);
+    this.setSessionCookie(response, nextToken);
+    return { data: { success: true } };
+  }
+
+  private setSessionCookie(response: Response, token: string): void {
+    response.cookie(SESSION_COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: isProduction(),
+      maxAge: sessionExpirySeconds() * 1000,
+      path: '/',
+    });
   }
 
   async listRegistrationRequests(status?: string) {
@@ -353,6 +470,8 @@ export class AuthService {
       },
     });
 
+    await this.invalidateUserState(id, 'registration_approved');
+
     await this.audit
       .create({
         actorId: admin.id,
@@ -417,6 +536,8 @@ export class AuthService {
         rejectionReason: dto.reason?.trim() || null,
       },
     });
+
+    await this.invalidateUserState(id, 'registration_rejected');
 
     await this.audit
       .create({

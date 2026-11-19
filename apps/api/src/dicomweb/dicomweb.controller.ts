@@ -21,9 +21,11 @@ export class DicomWebController {
 
   @Get('availability/:studyUid')
   async availability(
+    @Req() request: Request,
     @Param('studyUid') studyUid: string,
     @CurrentUser() user: DicomWebUser,
   ) {
+    this.dicomwebService.assertGatewaySession(request, user);
     return {
       data: await this.dicomwebService.verifyStudyAvailability(user, studyUid),
     };

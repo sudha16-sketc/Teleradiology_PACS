@@ -81,9 +81,10 @@ ensure the replacement values are never committed.
 
 ## Failure behavior without optional dependencies
 
-Phase 7 intentionally avoids introducing infrastructure (no Redis/RabbitMQ/
-Keycloak/MinIO/Kafka/ES/Prometheus/Grafana/WebSockets/K8s). Where a dependency is
-defined but unused, the application falls back gracefully:
+RabbitMQ, Keycloak, MinIO, Kafka, ES, Prometheus, Grafana, WebSockets and K8s are
+not used by the API. Redis is required: protected requests fail closed with
+`503` when it is unavailable, and `/ready` reports `down`. Where a truly
+optional dependency is defined but unused, the application falls back gracefully:
 
 - **Backups**: if `podman` or the Postgres/Orthanc container is unavailable, the
   backup run transitions to `FAILED` with a recorded reason and a `BACKUP_FAILED`
