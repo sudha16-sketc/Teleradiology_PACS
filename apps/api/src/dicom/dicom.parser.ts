@@ -62,6 +62,12 @@ function tagKey(group: number, element: number): string {
   return `x${group.toString(16).padStart(4, '0')}${element.toString(16).padStart(4, '0')}`;
 }
 
+function normalizeDicomUid(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.replace(/[\u0000\s]+$/g, '');
+  return normalized.length ? normalized : undefined;
+}
+
 /**
  * Parses the Part-10 DICOM meta header (group 0002), which is always encoded
  * using explicit VR little endian.
@@ -91,12 +97,12 @@ function readMetaHeader(buffer: Buffer): MetaHeader | undefined {
     }
 
     if (off + len > end) break;
-    const value = buffer.subarray(off, off + len).toString('latin1').replace(/\u0000+$/, '');
+    const value = buffer.subarray(off, off + len).toString('latin1');
 
     if (group === 0x0002) {
-      if (elem === 0x0010) meta.transferSyntaxUid = value;
-      else if (elem === 0x0002) meta.mediaSopClassUid = value;
-      else if (elem === 0x0003) meta.mediaSopInstanceUid = value;
+      if (elem === 0x0010) meta.transferSyntaxUid = normalizeDicomUid(value);
+      else if (elem === 0x0002) meta.mediaSopClassUid = normalizeDicomUid(value);
+      else if (elem === 0x0003) meta.mediaSopInstanceUid = normalizeDicomUid(value);
     }
 
     off += len;
@@ -123,6 +129,10 @@ function readString(dataSet: dicomParser.DataSet, tag: number): string | undefin
   const s = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('latin1');
   const trimmed = s.replace(/\u0000+$/g, '');
   return trimmed.length ? trimmed : undefined;
+}
+
+function readUid(dataSet: dicomParser.DataSet, tag: number): string | undefined {
+  return normalizeDicomUid(readString(dataSet, tag));
 }
 
 function readNumber(dataSet: dicomParser.DataSet, tag: number): number | undefined {
@@ -165,10 +175,10 @@ function parseRawDataset(buffer: Buffer): { dataSet: dicomParser.DataSet; explic
 
 function extract(dataSet: dicomParser.DataSet): Omit<ParsedDicom, 'valid' | 'error'> {
   return {
-    studyInstanceUid: readString(dataSet, TAGS.studyInstanceUid),
-    seriesInstanceUid: readString(dataSet, TAGS.seriesInstanceUid),
-    sopInstanceUid: readString(dataSet, TAGS.sopInstanceUid),
-    sopClassUid: readString(dataSet, TAGS.sopClassUid),
+    studyInstanceUid: readUid(dataSet, TAGS.studyInstanceUid),
+    seriesInstanceUid: readUid(dataSet, TAGS.seriesInstanceUid),
+    sopInstanceUid: readUid(dataSet, TAGS.sopInstanceUid),
+    sopClassUid: readUid(dataSet, TAGS.sopClassUid),
     patientId: readString(dataSet, TAGS.patientId),
     patientName: readString(dataSet, TAGS.patientName),
     patientSex: readString(dataSet, TAGS.patientSex),

@@ -198,6 +198,7 @@ function mockOrthanc(opts: {
   qido?: unknown[];
   series?: unknown[];
   instances?: unknown[];
+  storedUids?: { studyUid: string; seriesUid: string; sopUid: string };
   fail?: boolean;
 }) {
   return jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -211,6 +212,15 @@ function mockOrthanc(opts: {
         ParentStudy: 'orth-study',
         ParentPatient: 'orth-patient',
       });
+    }
+    if (!url.includes('/dicom-web') && url.includes('/studies/orth-study')) {
+      return jsonResponse({ MainDicomTags: { StudyInstanceUID: opts.storedUids?.studyUid } });
+    }
+    if (!url.includes('/dicom-web') && url.includes('/series/orth-series')) {
+      return jsonResponse({ MainDicomTags: { SeriesInstanceUID: opts.storedUids?.seriesUid } });
+    }
+    if (!url.includes('/dicom-web') && url.includes('/instances/orth-instance')) {
+      return jsonResponse({ MainDicomTags: { SOPInstanceUID: opts.storedUids?.sopUid } });
     }
     if (url.includes('/dicom-web/studies?StudyInstanceUID=')) {
       return jsonResponse(opts.qido ?? []);
@@ -350,6 +360,11 @@ describe('Verified DICOM recovery', () => {
       qido: [{ '0020000D': { Value: [item.studyUid] } }],
       series: [{ '0020000E': { Value: [item.seriesUid] } }],
       instances: [{ '00080018': { Value: [item.sopUid] } }],
+      storedUids: {
+        studyUid: item.studyUid,
+        seriesUid: item.seriesUid,
+        sopUid: item.sopUid,
+      },
     });
 
     const first = await adminAgent

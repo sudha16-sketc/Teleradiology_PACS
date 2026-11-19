@@ -201,6 +201,31 @@ export class DicomService {
     };
   }
 
+  private async assertOrthancHierarchy(stored: OrthancStored, studyUid: string): Promise<void> {
+    const expectedStudyUid = normalizeUid(studyUid);
+    const expectedSeriesUid = normalizeUid(stored.parsed.seriesInstanceUid);
+    const expectedInstanceUid = normalizeUid(stored.parsed.sopInstanceUid);
+
+    const [studyRes, seriesRes, instanceRes] = await Promise.all([
+      this.orthancFetch(`/studies/${encodeURIComponent(stored.orthancStudyId)}`),
+      this.orthancFetch(`/series/${encodeURIComponent(stored.orthancSeriesId)}`),
+      this.orthancFetch(`/instances/${encodeURIComponent(stored.orthancInstanceId)}`),
+    ]);
+    const [study, series, instance] = await Promise.all([
+      studyRes.json() as Promise<any>,
+      seriesRes.json() as Promise<any>,
+      instanceRes.json() as Promise<any>,
+    ]);
+
+    if (normalizeUid(study?.MainDicomTags?.StudyInstanceUID) !== expectedStudyUid ||
+        normalizeUid(series?.MainDicomTags?.SeriesInstanceUID) !== expectedSeriesUid ||
+        normalizeUid(instance?.MainDicomTags?.SOPInstanceUID) !== expectedInstanceUid) {
+      throw new ServiceUnavailableException(
+        'DICOM instance did not map to the expected PACS study, series, and instance',
+      );
+    }
+  }
+
   private async auditEntry(
     user: IngestUser,
     action: 'STUDY_UPLOADED' | 'DICOM_IMPORTED' | 'DICOM_IMPORT_FAILED' | 'DICOM_REINGEST',
@@ -425,6 +450,7 @@ export class DicomService {
       if (stored.some((s) => s.orthancStudyId !== orthancStudyId)) {
         throw new ServiceUnavailableException('DICOM instances did not map to a single PACS study');
       }
+      await this.assertOrthancHierarchy(stored[0], studyUid);
 
       // 7. Persist the complete Patient > Study > Series > Instance hierarchy,
       //    mapping real PACS identifiers back to PostgreSQL rows.
@@ -482,6 +508,21 @@ export class DicomService {
         }
       }
 
+      const availability = await this.dicomweb.verifyStudyAvailability(
+        user,
+        studyUid,
+        { persist: true, audit: false },
+      );
+      if (availability.state !== 'AVAILABLE') {
+        throw availability.state === 'UNAVAILABLE'
+          ? new ServiceUnavailableException(
+              'The imaging backend could not verify the imported DICOM study',
+            )
+          : new BadRequestException(
+              `Imported DICOM study verification returned ${availability.state}: ${availability.reason}`,
+            );
+      }
+
       // 8. Finalize the study as an UNASSIGNED case for the manager worklist.
       study = await this.prisma.study.update({
         where: { id: study.id },
@@ -509,6 +550,7 @@ export class DicomService {
         seriesCount: seriesGroups.size,
         instanceCount: stored.length,
         transferSyntax: first.transferSyntaxName,
+        availability: availability.state,
       });
 
       return {
@@ -663,6 +705,7 @@ export class DicomService {
           'The recovered instances did not map to a single Orthanc study',
         );
       }
+      await this.assertOrthancHierarchy(stored[0], studyInstanceUid);
 
       const seriesByUid = new Map(
         study.series.map((row) => [normalizeUid(row.seriesInstanceUid), row]),

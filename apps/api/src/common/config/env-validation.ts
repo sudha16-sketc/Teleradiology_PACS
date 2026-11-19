@@ -1,5 +1,6 @@
 import { logger } from '../observability/structured-logger.js';
 import { isWeakSecret, MIN_AUTH_SECRET_LENGTH } from '../../auth/auth.constants.js';
+import { isLoopbackOrthancUrl, parseOrthancUrl } from './orthanc-url.js';
 
 /**
  * fail-fast startup validation for mandatory configuration.
@@ -103,25 +104,19 @@ export function assertRequiredEnv(): void {
 
     const rawOrthancUrl = process.env.ORTHANC_URL;
     if (rawOrthancUrl) {
-      const candidate = /^https?:\/\//i.test(rawOrthancUrl)
-        ? rawOrthancUrl
-        : `http://${rawOrthancUrl}`;
       try {
-        const parsed = new URL(candidate);
-        if (!['http:', 'https:'].includes(parsed.protocol)) {
-          missing.push('ORTHANC_URL (must use http or https)');
-        }
-        if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-          missing.push('ORTHANC_URL (must not contain credentials, query or fragment)');
-        }
-        const loopback = /^(localhost|127\.|::1|\[::1\])$/i.test(parsed.hostname);
+        const parsed = parseOrthancUrl(rawOrthancUrl);
+        const loopback = isLoopbackOrthancUrl(parsed);
         if (loopback && process.env.AXIS_ALLOW_LOOPBACK_ORTHANC !== '1') {
           missing.push(
             'ORTHANC_URL (loopback is not reachable from a deployed API; set a real Orthanc host or AXIS_ALLOW_LOOPBACK_ORTHANC=1 for local production testing)',
           );
         }
-      } catch {
-        missing.push('ORTHANC_URL (must be a valid URL or host:port)');
+        if (!loopback && parsed.protocol !== 'https:') {
+          missing.push('ORTHANC_URL (must use https in production)');
+        }
+      } catch (err) {
+        missing.push(`ORTHANC_URL (${(err as Error).message})`);
       }
     }
   }

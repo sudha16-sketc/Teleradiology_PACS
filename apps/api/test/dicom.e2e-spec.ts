@@ -353,3 +353,77 @@ describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => 
     expect(study.instanceCount).toBe(1);
   });
 });
+
+describe('Phase 2 -- post-ingest DICOMweb verification', () => {
+  let cghAgent: any;
+
+  beforeAll(async () => {
+    cghAgent = await loginAgent(server, h_cgh);
+  });
+
+  it('DICOM-ING-5: refuses to finalize an import that QIDO cannot find', async () => {
+    const suffix = `${Date.now()}${Math.floor(Math.random() * 1e9)}`;
+    const studyUid = `1.2.826.0.1.3680043.97.${suffix}.1`;
+    const seriesUid = `${studyUid}.2`;
+    const sopUid = `${studyUid}.3`;
+    const raw = buildP10Dicom({ studyUid, seriesUid, sopUid });
+
+    const jsonResponse = (body: unknown): globalThis.Response =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => body,
+        body: { cancel: async () => undefined },
+      }) as unknown as globalThis.Response;
+
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (init?.method === 'POST' && url.endsWith('/instances')) {
+        return jsonResponse({
+          Status: 'Success',
+          ID: 'verify-instance',
+          ParentSeries: 'verify-series',
+          ParentStudy: 'verify-study',
+          ParentPatient: 'verify-patient',
+        });
+      }
+      if (url.includes('/studies/verify-study')) {
+        return jsonResponse({ MainDicomTags: { StudyInstanceUID: studyUid } });
+      }
+      if (url.includes('/series/verify-series')) {
+        return jsonResponse({ MainDicomTags: { SeriesInstanceUID: seriesUid } });
+      }
+      if (url.includes('/instances/verify-instance')) {
+        return jsonResponse({ MainDicomTags: { SOPInstanceUID: sopUid } });
+      }
+      if (url.includes('/dicom-web/studies?StudyInstanceUID=')) {
+        return jsonResponse([]);
+      }
+      throw new Error(`Unexpected Orthanc request: ${url}`);
+    });
+
+    try {
+      const res = await ingest(cghAgent, raw, 'verify-missing.dcm');
+      expect(res.status).toBe(400);
+      expect(res.body.message).toContain('MISSING');
+    } finally {
+      fetchMock.mockRestore();
+    }
+
+    const failed = await prisma.study.findUniqueOrThrow({
+      where: { studyInstanceUid: studyUid },
+    });
+    createdStudyIds.push(failed.id);
+    expect(failed.status).toBe('CANCELLED');
+    expect(failed.imagingAvailability).toBe('MISSING');
+
+    const actions = (
+      await prisma.auditLog.findMany({
+        where: { resourceId: failed.id },
+        select: { action: true },
+      })
+    ).map((entry) => entry.action);
+    expect(actions).toContain('STUDY_UPLOADED');
+    expect(actions).not.toContain('DICOM_IMPORTED');
+  });
+});

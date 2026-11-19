@@ -117,4 +117,29 @@ describe('single-login OHIF DICOMweb access', () => {
     await agent.put(path()).expect(405);
     await agent.delete(path()).expect(405);
   });
+
+  it('does not forward accept-encoding or upstream compression headers', async () => {
+    const agent = await loginAgent(server, USERS.RAD1);
+    const upstream = new Response('[]', {
+      status: 200,
+      headers: {
+        'content-type': 'application/dicom+json',
+        'content-encoding': 'gzip',
+        'content-length': '2',
+      },
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(upstream);
+
+    try {
+      const res = await agent.get(path()).set('Accept-Encoding', 'gzip').expect(200);
+      expect(res.headers['content-encoding']).toBeUndefined();
+      expect(res.headers['content-length']).toBeUndefined();
+
+      const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+      const forwarded = (init?.headers ?? {}) as Record<string, string>;
+      expect(forwarded['accept-encoding']).toBeUndefined();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
 });

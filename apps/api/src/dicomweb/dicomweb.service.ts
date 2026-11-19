@@ -45,7 +45,6 @@ const SCOPE_FROM_QUERY_METHODS = new Set(['GET', 'HEAD']);
 // referer, ...) is never forwarded to Orthanc (D6).
 const FORWARD_REQUEST_HEADERS = [
   'accept',
-  'accept-encoding',
   'accept-language',
   'content-type',
   'content-length',
@@ -62,8 +61,6 @@ const FORWARD_REQUEST_HEADERS = [
 // is never echoed, and hop-by-hop headers are always stripped (D6).
 const FORWARD_RESPONSE_HEADERS = [
   'content-type',
-  'content-length',
-  'content-encoding',
   'transfer-syntax',
   'content-disposition',
   'accept-ranges',

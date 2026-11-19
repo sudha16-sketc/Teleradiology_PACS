@@ -591,10 +591,13 @@ permissions and forwards to Orthanc using the API's `ORTHANC_URL`.
 For production, deploy the Dockerfile as its own Render Web Service and set the
 Vercel web app's `OHIF_URL` to that service's HTTPS origin. The existing
 same-origin Vercel rewrites serve the viewer at `/ohif` and DICOMweb at `/api`,
-so the browser keeps the first-party Axis session cookie. Do not configure the
-viewer to call Orthanc directly or use a localhost URL in production. If the
-QIDO preflight fails, the viewer shows an actionable imaging error instead of a
-blank viewer; the message and logs contain only a safe route and correlation ID.
+so the browser keeps the first-party Axis session cookie. Launch the viewer from
+the Reading Page; opening the OHIF service origin directly does not have the
+same-origin `/api` rewrite and cannot authenticate or load studies. Do not
+configure the viewer to call Orthanc directly or use a localhost URL in
+production. If the QIDO preflight fails, the viewer shows an actionable imaging
+error instead of a blank viewer; the message and logs contain only a safe route
+and correlation ID.
 
 There is no second OHIF login. `window.config` deliberately has no `oidc` block,
 and `/ohif/*` is excluded from the frontend middleware redirect so an iframe can
