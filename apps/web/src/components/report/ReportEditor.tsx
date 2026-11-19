@@ -20,7 +20,10 @@ import {
   canAmendReport,
   canEditReportContent,
 } from "@/lib/report-access";
-import { legacyFieldsToHtml } from "@/lib/report-html";
+import {
+  hasReportBodyContent,
+  legacyFieldsToHtml,
+} from "@/lib/report-html";
 
 interface ReportEditorProps {
   study: Study;
@@ -82,7 +85,7 @@ export function ReportEditor({
     recommendations: initialRecommendations,
   });
   const [contentHtml, setContentHtml] = useState(
-    initialContentHtml?.trim() ? initialContentHtml : fallbackHtml,
+    hasReportBodyContent(initialContentHtml) ? initialContentHtml ?? "" : fallbackHtml,
   );
   const [criticalFinding, setCriticalFinding] = useState(initialCriticalFinding);
   const [templates, setTemplates] = useState<TemplateOption[]>([]);
@@ -165,20 +168,28 @@ export function ReportEditor({
     );
   }, [templates, templateSearch]);
 
-  const saveDraft = async () => {
-    setSaving(true);
-    setNotice(null);
+  const persistDraft = async (announceSaved: boolean) => {
     try {
       await apiClient.post(`/reports/${encodeURIComponent(studyInstanceUid)}`, {
         contentHtml,
         criticalFinding,
       });
-      setNotice("Draft saved.");
+      if (announceSaved) setNotice("Draft saved.");
       onSaved?.();
+      return true;
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : (e as ApiError)?.message;
       setNotice(message ?? "Failed to save draft.");
+      return false;
+    }
+  };
+
+  const saveDraft = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      await persistDraft(true);
     } finally {
       setSaving(false);
     }
@@ -188,6 +199,8 @@ export function ReportEditor({
     setSaving(true);
     setNotice(null);
     try {
+      const saved = await persistDraft(false);
+      if (!saved) return;
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/sign`,
         {},

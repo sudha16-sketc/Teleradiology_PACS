@@ -65,6 +65,7 @@ async function seedSigned(opts: {
   managerApprovedAt?: boolean;
   deliveredAt?: boolean;
   hospitalAcceptedAt?: boolean;
+  contentHtml?: string;
 }): Promise<{ id: string; studyInstanceUid: string; patientId: string; reportId: string }> {
   const s = await seedStudy({
     hospitalId: opts.hospitalId,
@@ -84,6 +85,7 @@ async function seedSigned(opts: {
       technique: 'CT chest',
       comparison: 'None',
       recommendations: 'Follow up',
+      contentHtml: opts.contentHtml,
       signedOffBy: opts.signedBy ?? opts.assignedRadiologist,
       signedOffAt: new Date(),
       contentHash: FAKE_HASH,
@@ -465,6 +467,34 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       await cghAgent
         .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
         .expect(200);
+
+      await cleanupStudy(s.id, s.patientId);
+    });
+
+    it('WORKFLOW-6b: delivered PDF contains the same signed rich content as the report preview', async () => {
+      const token = `pdf-sync-${Date.now()}`;
+      const contentHtml = `<h2>Findings</h2><p>${token}</p><h2>Impression</h2><p>${token}-impression</p>`;
+      const s = await seedSigned({
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.MANAGER_APPROVED,
+        assignedRadiologist: rad1Id,
+        managerApprovedAt: true,
+        contentHtml,
+      });
+
+      await managerAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(201);
+
+      const detail = await cghAgent.get(`/api/reports/${s.studyInstanceUid}`).expect(200);
+      expect(detail.body.data.contentHtml).toContain(token);
+
+      const pdf = await cghAgent
+        .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
+        .expect(200);
+      const pdfText = Buffer.isBuffer(pdf.body)
+        ? pdf.body.toString('latin1')
+        : pdf.text;
+      expect(pdfText).toContain(token);
+      expect(pdfText).toContain(`${token}-impression`);
 
       await cleanupStudy(s.id, s.patientId);
     });

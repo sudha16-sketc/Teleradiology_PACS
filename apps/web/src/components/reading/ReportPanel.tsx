@@ -25,7 +25,7 @@ import {
   canEditReportContent,
   isSignedReportStatus,
 } from "@/lib/report-access";
-import { legacyFieldsToHtml } from "@/lib/report-html";
+import { reportBodyHtml } from "@/lib/report-html";
 import { CriticalFindingToggle } from "@/components/report/CriticalFindingToggle";
 import { ReportPreview } from "@/components/report/ReportPreview";
 import { RichReportEditor } from "@/components/report/RichReportEditor";
@@ -36,6 +36,7 @@ interface ReportPanelProps {
   study?: Study;
   onReportSaved?: () => void;
   onAmend?: () => void;
+  registerSaveFlush?: (flush: (() => Promise<boolean>) | null) => void;
 }
 
 type SaveStatus = "idle" | "unsaved" | "saving" | "saved" | "error";
@@ -69,8 +70,7 @@ const AUTOSAVE_DELAY_MS = 500;
 
 function reportBody(report: Report | null): string {
   if (!report) return "";
-  if (report.contentHtml?.trim()) return report.contentHtml;
-  return legacyFieldsToHtml(report);
+  return reportBodyHtml(report);
 }
 
 export function ReportPanel({
@@ -79,6 +79,7 @@ export function ReportPanel({
   study,
   onReportSaved,
   onAmend,
+  registerSaveFlush,
 }: ReportPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
   const [isAmending, setIsAmending] = useState(false);
@@ -112,6 +113,11 @@ export function ReportPanel({
   const dirtyRef = useRef(false);
   const editVersionRef = useRef(0);
   const lastReportKeyRef = useRef<string | null>(reportKey);
+  const latestFieldsRef = useRef<ReportFormFields>({
+    contentHtml: reportBody(report),
+    criticalFinding: report?.criticalFinding ?? false,
+  });
+  const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
 
   // Sync form state when the report identity/version changes. Background
   // refreshes must not clobber edits the radiologist is still typing.
@@ -121,9 +127,14 @@ export function ReportPanel({
     const keyChanged = key !== lastReportKeyRef.current;
     if (!keyChanged && dirtyRef.current) return;
 
+    const body = reportBody(report);
     lastReportKeyRef.current = key;
-    setContentHtml(reportBody(report));
+    setContentHtml(body);
     setCriticalFinding(report.criticalFinding ?? false);
+    latestFieldsRef.current = {
+      contentHtml: body,
+      criticalFinding: report.criticalFinding ?? false,
+    };
     if (!isSignedReportStatus(report.status)) {
       setIsAmending(false);
     }
@@ -179,7 +190,7 @@ export function ReportPanel({
 
   const saveDraft = useCallback(
     async (fields: ReportFormFields) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) return false;
       const editVersion = editVersionRef.current;
       setSaveStatus("saving");
       setErrorMessage(null);
@@ -188,7 +199,7 @@ export function ReportPanel({
           `/reports/${encodeURIComponent(studyInstanceUid)}/draft`,
           fields,
         );
-        if (!mountedRef.current) return;
+        if (!mountedRef.current) return false;
         const now = new Date();
         const hh = String(now.getUTCHours()).padStart(2, "0");
         const mm = String(now.getUTCMinutes()).padStart(2, "0");
@@ -199,27 +210,54 @@ export function ReportPanel({
           dirtyRef.current = false;
         }
         onReportSaved?.();
+        return true;
       } catch (e) {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current) return false;
         setSaveStatus("error");
         setErrorMessage(
           (e as { message?: string }).message ?? "Failed to save draft.",
         );
+        return false;
       }
     },
     [studyInstanceUid, onReportSaved],
   );
 
+  const enqueueSave = useCallback(() => {
+    const task = saveChainRef.current.then(() => {
+      const fields = latestFieldsRef.current;
+      return saveDraft(fields);
+    });
+    saveChainRef.current = task.catch(() => false);
+    return task;
+  }, [saveDraft]);
+
+  const flushPendingSave = useCallback(async () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    return enqueueSave();
+  }, [enqueueSave]);
+
+  useEffect(() => {
+    if (!registerSaveFlush) return;
+    registerSaveFlush(() => flushPendingSave());
+    return () => registerSaveFlush(null);
+  }, [registerSaveFlush, flushPendingSave]);
+
   const scheduleAutoSave = useCallback(
     (fields: ReportFormFields) => {
+      latestFieldsRef.current = fields;
       if (timerRef.current) clearTimeout(timerRef.current);
       setSaveStatus("unsaved");
       setErrorMessage(null);
       timerRef.current = setTimeout(() => {
-        void saveDraft(fields);
+        timerRef.current = null;
+        void enqueueSave();
       }, AUTOSAVE_DELAY_MS);
     },
-    [saveDraft],
+    [enqueueSave],
   );
 
   useEffect(() => {

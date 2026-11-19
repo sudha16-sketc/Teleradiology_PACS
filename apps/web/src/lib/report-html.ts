@@ -41,6 +41,39 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+const REPORT_SECTION_HEADINGS = new Set([
+  'clinical history',
+  'technique',
+  'comparison',
+  'comparison / priors',
+  'findings',
+  'impression',
+  'recommendations',
+]);
+
+export function hasReportBodyContent(html?: string | null): boolean {
+  return htmlToPlainText(html)
+    .split('\n')
+    .some((line) => {
+      const value = line.trim().toLowerCase();
+      return value.length > 0 && !REPORT_SECTION_HEADINGS.has(value);
+    });
+}
+
+export function reportBodyHtml(report: {
+  contentHtml?: string | null;
+  clinicalHistory?: string;
+  technique?: string;
+  comparison?: string;
+  findings?: string;
+  impression?: string;
+  recommendations?: string;
+}): string {
+  return hasReportBodyContent(report.contentHtml)
+    ? report.contentHtml ?? ''
+    : legacyFieldsToHtml(report);
+}
+
 /**
  * Convert the legacy structured report fields into rich HTML so existing drafts
  * and templates open in the new editor without losing any content.

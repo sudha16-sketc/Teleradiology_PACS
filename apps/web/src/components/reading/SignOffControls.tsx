@@ -16,6 +16,7 @@ interface SignOffControlsProps {
   studyInstanceUid: string;
   status: StudyStatus;
   reportHasContent?: boolean;
+  beforeSign?: () => Promise<boolean>;
   onChanged?: () => void;
 }
 
@@ -23,6 +24,7 @@ export function SignOffControls({
   studyInstanceUid,
   status,
   reportHasContent = false,
+  beforeSign,
   onChanged,
 }: SignOffControlsProps) {
   const [isOpen, setIsOpen] = useState(true);
@@ -38,6 +40,11 @@ export function SignOffControls({
     setNotice(null);
     setConfirmOpen(false);
     try {
+      const ready = beforeSign ? await beforeSign() : true;
+      if (!ready) {
+        setNotice("The latest edits could not be saved. Sign-off was not submitted.");
+        return;
+      }
       // Server derives signer identity from session; no signedOffBy in body.
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/sign`,

@@ -12,7 +12,8 @@ interface ReportPreviewProps {
   reportVersion: number;
   contentHtml: string;
   company?: CompanySettings | null;
-  onClose: () => void;
+  inline?: boolean;
+  onClose?: () => void;
 }
 
 function formatStudyDate(value?: string) {
@@ -36,9 +37,11 @@ export function ReportPreview({
   reportVersion,
   contentHtml,
   company,
+  inline = false,
   onClose,
 }: ReportPreviewProps) {
   useEffect(() => {
+    if (!onClose) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
@@ -50,35 +53,41 @@ export function ReportPreview({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:p-8"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Report preview"
+      className={
+        inline
+          ? "w-full"
+          : "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:p-8"
+      }
+      role={inline ? undefined : "dialog"}
+      aria-modal={inline ? undefined : true}
+      aria-label={inline ? undefined : "Report preview"}
     >
-      <div className="w-full max-w-[820px]">
-        <div className="no-print mb-3 flex items-center justify-between rounded-md bg-surface px-4 py-2 shadow-lg">
-          <span className="text-sm font-semibold text-text-primary">
-            Report preview
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => window.print()}
-              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-background transition-colors hover:bg-accent/90"
-            >
-              <Printer size={14} />
-              Print / Save PDF
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close preview"
-              className="rounded-md border border-border p-1.5 text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary"
-            >
-              <X size={16} />
-            </button>
+      <div className={inline ? "w-full" : "w-full max-w-[820px]"}>
+        {!inline && (
+          <div className="no-print mb-3 flex items-center justify-between rounded-md bg-surface px-4 py-2 shadow-lg">
+            <span className="text-sm font-semibold text-text-primary">
+              Report preview
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-background transition-colors hover:bg-accent/90"
+              >
+                <Printer size={14} />
+                Print / Save PDF
+              </button>
+              <button
+                type="button"
+                onClick={() => onClose?.()}
+                aria-label="Close preview"
+                className="rounded-md border border-border p-1.5 text-text-muted transition-colors hover:bg-surface-raised hover:text-text-primary"
+              >
+                <X size={16} />
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         <div
           id="report-print-root"

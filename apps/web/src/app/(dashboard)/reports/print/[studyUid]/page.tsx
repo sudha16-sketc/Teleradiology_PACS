@@ -7,6 +7,11 @@ import type { Report, Study } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
 import { failureOf } from "@/lib/api-client";
 import { printCurrentView } from "@/lib/desktop-bridge";
+import {
+  hasReportBodyContent,
+  reportBodyHtml,
+  sanitizeReportHtml,
+} from "@/lib/report-html";
 import { ErrorPanel } from "@/components/ErrorPanel";
 
 /**
@@ -110,6 +115,9 @@ export default function PrintReportPage() {
     );
   }
 
+  const hasRichBody = hasReportBodyContent(report.contentHtml);
+  const safeBodyHtml = sanitizeReportHtml(reportBodyHtml(report));
+
   return (
     <div className="min-h-screen bg-background">
       {/*
@@ -173,23 +181,37 @@ export default function PrintReportPage() {
           </dl>
         </Section>
 
-        <Section title="Clinical History">
-          {report.clinicalHistory || study?.clinicalHistory || "N/A"}
-        </Section>
+        {hasRichBody ? (
+          <section className="mt-4">
+            <h2 className="border-b border-black pb-0.5 text-[13px] font-bold tracking-wide uppercase">
+              Report
+            </h2>
+            <div
+              className="report-paper-content mt-1 text-[13px] leading-relaxed"
+              dangerouslySetInnerHTML={{ __html: safeBodyHtml }}
+            />
+          </section>
+        ) : (
+          <>
+            <Section title="Clinical History">
+              {report.clinicalHistory || study?.clinicalHistory || "N/A"}
+            </Section>
 
-        <Section title="Technique">{report.technique || "N/A"}</Section>
+            <Section title="Technique">{report.technique || "N/A"}</Section>
 
-        <Section title="Comparison / Priors">
-          {report.comparison || "N/A"}
-        </Section>
+            <Section title="Comparison / Priors">
+              {report.comparison || "N/A"}
+            </Section>
 
-        <Section title="Findings">{report.findings || "N/A"}</Section>
+            <Section title="Findings">{report.findings || "N/A"}</Section>
 
-        <Section title="Impression">{report.impression || "N/A"}</Section>
+            <Section title="Impression">{report.impression || "N/A"}</Section>
 
-        {report.recommendations ? (
-          <Section title="Recommendations">{report.recommendations}</Section>
-        ) : null}
+            {report.recommendations ? (
+              <Section title="Recommendations">{report.recommendations}</Section>
+            ) : null}
+          </>
+        )}
 
         {report.criticalFinding ? (
           <p className="mt-4 border-2 border-black py-2 text-center text-sm font-bold">

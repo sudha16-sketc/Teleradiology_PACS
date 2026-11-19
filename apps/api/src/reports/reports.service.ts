@@ -23,7 +23,7 @@ import {
 import type { AuditAction, AuditResource } from '@axis/types';
 import type { Response } from 'express';
 import type { UserRole } from '@prisma/client';
-import { Prisma, StudyStatus } from '@prisma/client';
+import { Prisma, ReportStatus, StudyStatus } from '@prisma/client';
 
 export type { ReportContent } from '../common/reports/report-content.js';
 export { contentHash } from '../common/reports/report-content.js';
@@ -281,11 +281,30 @@ export class ReportsService {
       this.assertHospitalReportVisibility(study, user);
     }
 
-    const report = await this.prisma.report.findFirst({
-      where: { studyId: study.id },
-      include: { author: true, versions: true, changeRequests: true },
-      orderBy: { version: 'desc' },
-    });
+    const include = { author: true, versions: true, changeRequests: true };
+
+    // Radiologists need the newest active row for editing (including a fresh
+    // amendment draft). Reviewers and hospital users must never be shown that
+    // draft as the current report, so prefer the newest signed/approved row.
+    const finalReport =
+      user?.role === 'RADIOLOGIST'
+        ? null
+        : await this.prisma.report.findFirst({
+            where: {
+              studyId: study.id,
+              status: { in: [ReportStatus.SIGNED, ReportStatus.MANAGER_APPROVED] },
+            },
+            include,
+            orderBy: { version: 'desc' },
+          });
+
+    const report =
+      finalReport ??
+      (await this.prisma.report.findFirst({
+        where: { studyId: study.id },
+        include,
+        orderBy: { version: 'desc' },
+      }));
     if (user?.role === 'HOSPITAL' && report) {
       await assertSuccessfulDelivery(this.prisma, study.id, user.hospitalId, report.id);
     }

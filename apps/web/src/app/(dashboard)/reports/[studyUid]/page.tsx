@@ -6,11 +6,13 @@ import type { CompanySettings, Study, Report } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
 import { ReportEditor } from "@/components/report/ReportEditor";
 import { ReportCreationOptions } from "@/components/report/ReportCreationOptions";
+import { ReportPreview } from "@/components/report/ReportPreview";
 import { ReportSidebar } from "@/components/report/ReportSidebar";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAppStore } from "@/lib/store";
+import { reportBodyHtml } from "@/lib/report-html";
 
 export default function ReportEditorPage() {
   const params = useParams();
@@ -116,11 +118,28 @@ export default function ReportEditorPage() {
   if (!isRadiologist) {
     return (
       <div className="flex h-full gap-4">
-        <div className="flex flex-1 items-center justify-center rounded-md border border-border">
-          <EmptyState
-            title="Report editing is restricted"
-            description="Only the assigned radiologist can create or edit report content. Review and release are performed from the reading view."
-          />
+        <div className="flex flex-1 flex-col overflow-y-auto rounded-md border border-border">
+          <div className="no-print flex items-center justify-between gap-3 border-b border-border bg-surface-raised px-4 py-2">
+            <span className="text-xs font-medium uppercase tracking-wider text-text-muted">
+              Read-only report · {report.status.replace(/_/g, " ")}
+            </span>
+            <a
+              href={`/reports/print/${encodeURIComponent(studyUid)}`}
+              className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-text-primary transition-colors hover:bg-surface"
+            >
+              Print / PDF
+            </a>
+          </div>
+          <div className="overflow-y-auto p-4">
+            <ReportPreview
+              inline
+              study={study}
+              reportId={report.id}
+              reportVersion={report.version}
+              contentHtml={reportBodyHtml(report)}
+              company={company}
+            />
+          </div>
         </div>
         {sidebar}
       </div>

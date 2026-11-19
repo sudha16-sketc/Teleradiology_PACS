@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { apiClient } from "@/lib/api-client";
 import { StudyContextBar } from "@/components/reading/StudyContextBar";
@@ -15,7 +15,7 @@ import { CorrectionWorkflow } from "@/components/reading/CorrectionWorkflow";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAppStore } from "@/lib/store";
-import { htmlToPlainText } from "@/lib/report-html";
+import { hasReportBodyContent } from "@/lib/report-html";
 import {
   IMAGING_AVAILABILITY_BADGE_CLASSES,
   IMAGING_AVAILABILITY_LABELS,
@@ -46,6 +46,17 @@ export default function ReadingPage() {
     useState<ImagingAvailabilityResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const saveFlushRef = useRef<(() => Promise<boolean>) | null>(null);
+  const registerSaveFlush = useCallback(
+    (flush: (() => Promise<boolean>) | null) => {
+      saveFlushRef.current = flush;
+    },
+    [],
+  );
+  const beforeSign = useCallback(async () => {
+    if (!saveFlushRef.current) return true;
+    return saveFlushRef.current();
+  }, []);
 
   const currentUser = useAppStore((s) => s.currentUser);
   const isRadiologist = currentUser?.role === "RADIOLOGIST";
@@ -120,7 +131,7 @@ export default function ReadingPage() {
   }
 
   const reportHasContent =
-    htmlToPlainText(report?.contentHtml).length > 0 ||
+    hasReportBodyContent(report?.contentHtml) ||
     !!(report?.findings?.trim() && report?.impression?.trim());
 
   return (
@@ -176,6 +187,7 @@ export default function ReadingPage() {
                 report={report}
                 study={study}
                 onReportSaved={() => void load({ background: true })}
+                registerSaveFlush={registerSaveFlush}
               />
               {report && <CriticalFindingBanner report={report} />}
               <CorrectionWorkflow
@@ -187,6 +199,7 @@ export default function ReadingPage() {
                 studyInstanceUid={studyUid}
                 status={study.status}
                 reportHasContent={reportHasContent}
+                beforeSign={beforeSign}
                 onChanged={() => void load({ background: true })}
               />
             </>

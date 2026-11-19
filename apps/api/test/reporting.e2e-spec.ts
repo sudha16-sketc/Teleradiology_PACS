@@ -859,4 +859,187 @@ describe('Phase 4 — Reporting', () => {
     expect(res.status).toBe(404);
     await cleanupStudy(study.id, study.patientId);
   });
+
+  // ---- REPORT-23: admin receives the latest signed report content ----
+  describe('REPORT-23: signed report synchronization', () => {
+    let study: { id: string; studyInstanceUid: string; patientId: string };
+    const token = `sync-${Date.now()}`;
+    const first = {
+      clinicalHistory: `${token}-clinical-history`,
+      technique: `${token}-technique`,
+      comparison: `${token}-comparison`,
+      findings: `${token}-findings`,
+      impression: `${token}-impression`,
+      recommendations: `${token}-recommendations`,
+    };
+    const second = {
+      clinicalHistory: `${token}-new-clinical-history`,
+      technique: `${token}-new-technique`,
+      comparison: `${token}-new-comparison`,
+      findings: `${token}-new-findings`,
+      impression: `${token}-new-impression`,
+      recommendations: `${token}-new-recommendations`,
+    };
+    const richFirst = `<h2>Clinical History</h2><p>${first.clinicalHistory}</p>` +
+      `<h2>Technique</h2><p>${first.technique}</p>` +
+      `<h2>Comparison</h2><p>${first.comparison}</p>` +
+      `<h2>Findings</h2><p>${first.findings}</p>` +
+      `<h2>Impression</h2><p>${first.impression}</p>` +
+      `<h2>Recommendations</h2><p>${first.recommendations}</p>`;
+    const richSecond = `<h2>Clinical History</h2><p>${second.clinicalHistory}</p>` +
+      `<h2>Technique</h2><p>${second.technique}</p>` +
+      `<h2>Comparison</h2><p>${second.comparison}</p>` +
+      `<h2>Findings</h2><p>${second.findings}</p>` +
+      `<h2>Impression</h2><p>${second.impression}</p>` +
+      `<h2>Recommendations</h2><p>${second.recommendations}</p>`;
+
+    beforeAll(async () => {
+      study = await seedStudy({
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.ASSIGNED,
+        assignedRadiologist: rad1Id,
+      });
+    });
+
+    afterAll(async () => {
+      await cleanupStudy(study.id, study.patientId);
+    });
+
+    const expectAllFields = (body: any, values: typeof first) => {
+      expect(body.clinicalHistory).toBe(values.clinicalHistory);
+      expect(body.technique).toBe(values.technique);
+      expect(body.comparison).toBe(values.comparison);
+      expect(body.findings).toBe(values.findings);
+      expect(body.impression).toBe(values.impression);
+      expect(body.recommendations).toBe(values.recommendations);
+    };
+
+    const expectAllInHtml = (html: string, values: typeof first) => {
+      for (const value of Object.values(values)) expect(html).toContain(value);
+    };
+
+    it('REPORT-23a: doctor edits are persisted and signed from the saved draft', async () => {
+      const saved = await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ ...first, contentHtml: richFirst, criticalFinding: false })
+        .expect(200);
+      expectAllFields(saved.body.data, first);
+      expect(saved.body.data.contentHtml).toBe(richFirst);
+
+      const signed = await rad1Agent
+        .post(`/api/reports/${study.studyInstanceUid}/sign`)
+        .send({})
+        .expect(201);
+      expectAllFields(signed.body.data, first);
+      expect(signed.body.data.status).toBe('SIGNED');
+      expect(signed.body.data.signedOffBy).toBe(rad1Id);
+      expect(signed.body.data.signedOffAt).toBeTruthy();
+
+      const dbReport = await prisma.report.findFirstOrThrow({
+        where: { studyId: study.id, version: 1 },
+      });
+      expectAllFields(dbReport, first);
+      expect(dbReport.contentHtml).toBe(richFirst);
+      expect(dbReport.status).toBe('SIGNED');
+    });
+
+    it('REPORT-23b: admin retrieves the signed content and immutable snapshot', async () => {
+      const detail = await adminAgent
+        .get(`/api/reports/${study.studyInstanceUid}`)
+        .expect(200);
+      expectAllFields(detail.body.data, first);
+      expect(detail.body.data.status).toBe('SIGNED');
+      expectAllInHtml(detail.body.data.contentHtml, first);
+
+      const versions = await adminAgent
+        .get(`/api/reports/${study.studyInstanceUid}/versions`)
+        .expect(200);
+      const v1 = versions.body.data.find((v: any) => v.version === 1);
+      expect(v1).toBeTruthy();
+      expect(v1.status).toBe('SIGNED');
+      expectAllFields(v1, first);
+      expectAllInHtml(v1.contentHtml, first);
+    });
+
+    it('REPORT-23c: an amendment draft is not presented as the admin report', async () => {
+      await rad1Agent
+        .post(`/api/reports/${study.studyInstanceUid}/amend`)
+        .send({ reason: 'Update signed content' })
+        .expect(201);
+
+      const adminDetail = await adminAgent
+        .get(`/api/reports/${study.studyInstanceUid}`)
+        .expect(200);
+      expect(adminDetail.body.data.status).toBe('SIGNED');
+      expectAllFields(adminDetail.body.data, first);
+      expect(adminDetail.body.data.findings).not.toContain(token + '-new-');
+
+      const radDetail = await rad1Agent
+        .get(`/api/reports/${study.studyInstanceUid}`)
+        .expect(200);
+      expect(radDetail.body.data.status).toBe('DRAFT');
+      expect(radDetail.body.data.version).toBe(2);
+    });
+
+    it('REPORT-23d: admin sees the newest signed content after the amendment signs', async () => {
+      const saved = await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ ...second, contentHtml: richSecond, criticalFinding: false })
+        .expect(200);
+      expectAllFields(saved.body.data, second);
+
+      const signed = await rad1Agent
+        .post(`/api/reports/${study.studyInstanceUid}/sign`)
+        .send({})
+        .expect(201);
+      expectAllFields(signed.body.data, second);
+      expect(signed.body.data.version).toBe(2);
+
+      const adminDetail = await adminAgent
+        .get(`/api/reports/${study.studyInstanceUid}`)
+        .expect(200);
+      expect(adminDetail.body.data.version).toBe(2);
+      expectAllFields(adminDetail.body.data, second);
+      expectAllInHtml(adminDetail.body.data.contentHtml, second);
+      expect(adminDetail.body.data.contentHtml).not.toContain(first.findings);
+
+      const versions = await adminAgent
+        .get(`/api/reports/${study.studyInstanceUid}/versions`)
+        .expect(200);
+      expect(versions.body.data).toHaveLength(2);
+      const v1 = versions.body.data.find((v: any) => v.version === 1);
+      const v2 = versions.body.data.find((v: any) => v.version === 2);
+      expectAllFields(v1, first);
+      expectAllInHtml(v1.contentHtml, first);
+      expectAllFields(v2, second);
+      expectAllInHtml(v2.contentHtml, second);
+      expect(v2.status).toBe('SIGNED');
+    });
+
+    it('REPORT-23e: unauthorized radiologist cannot read another doctor\'s report', async () => {
+      await rad2Agent.get(`/api/reports/${study.studyInstanceUid}`).expect(403);
+    });
+
+    it('REPORT-23f: failed save and duplicate sign-off cannot alter the signed version', async () => {
+      await rad1Agent
+        .patch(`/api/reports/${study.studyInstanceUid}/draft`)
+        .send({ contentHtml: 'tampered after signature' })
+        .expect(409);
+      await rad1Agent
+        .post(`/api/reports/${study.studyInstanceUid}/sign`)
+        .send({})
+        .expect(409);
+
+      const versions = await prisma.reportVersion.count({
+        where: { report: { studyId: study.id } },
+      });
+      expect(versions).toBe(2);
+
+      const adminDetail = await adminAgent
+        .get(`/api/reports/${study.studyInstanceUid}`)
+        .expect(200);
+      expectAllFields(adminDetail.body.data, second);
+      expect(adminDetail.body.data.contentHtml).not.toContain('tampered after signature');
+    });
+  });
 });
