@@ -16,6 +16,8 @@ export default function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const scrolledRef = useRef(false);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -29,6 +31,24 @@ export default function Navbar() {
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    menuRef.current?.querySelector<HTMLElement>("a")?.focus();
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+        toggleRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [isOpen]);
 
   return (
     <header
@@ -72,9 +92,11 @@ export default function Navbar() {
         </div>
 
         <button
+          ref={toggleRef}
           type="button"
           aria-label={isOpen ? "Close menu" : "Open menu"}
           aria-expanded={isOpen}
+          aria-controls="mobile-menu"
           onClick={() => setIsOpen((open) => !open)}
           className="relative flex h-10 w-10 items-center justify-center rounded-md lg:hidden"
         >
@@ -96,44 +118,42 @@ export default function Navbar() {
         </button>
       </nav>
 
-      <div
-        className={`grid overflow-hidden transition-[grid-template-rows] duration-300 ease-in-out lg:hidden ${
-          isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-        }`}
-      >
-        <div className="min-h-0">
-          <div className="border-t border-border bg-white px-4 pb-6 pt-2 sm:px-6">
-            <nav className="flex flex-col divide-y divide-border">
-              {NAV_LINKS.map((link) => (
-                <Link
-                  key={link.href}
-                  href={link.href}
-                  onClick={() => setIsOpen(false)}
-                  className="py-3 text-base font-medium text-navy-900 transition-colors hover:text-primary"
-                >
-                  {link.label}
-                </Link>
-              ))}
-            </nav>
-            <div className="mt-4 flex flex-col gap-3 sm:mt-6">
+      {isOpen && (
+        <div
+          ref={menuRef}
+          id="mobile-menu"
+          className="border-t border-border bg-white px-4 pb-6 pt-2 sm:px-6 lg:hidden"
+        >
+          <nav aria-label="Mobile" className="flex flex-col divide-y divide-border">
+            {NAV_LINKS.map((link) => (
               <Link
-                href="/login"
+                key={link.href}
+                href={link.href}
                 onClick={() => setIsOpen(false)}
-                className="rounded-lg border border-border px-5 py-2.5 text-center text-sm font-medium text-navy-900 transition-colors hover:border-primary hover:text-primary"
+                className="py-3 text-base font-medium text-navy-900 transition-colors hover:text-primary"
               >
-                Sign In
+                {link.label}
               </Link>
-              <Link
-                href="/register"
-                onClick={() => setIsOpen(false)}
-                className="rounded-lg bg-primary px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-primary-dark"
-              >
-                Get Started
-              </Link>
-            </div>
+            ))}
+          </nav>
+          <div className="mt-4 flex flex-col gap-3 sm:mt-6">
+            <Link
+              href="/login"
+              onClick={() => setIsOpen(false)}
+              className="rounded-lg border border-border px-5 py-2.5 text-center text-sm font-medium text-navy-900 transition-colors hover:border-primary hover:text-primary"
+            >
+              Sign In
+            </Link>
+            <Link
+              href="/register"
+              onClick={() => setIsOpen(false)}
+              className="rounded-lg bg-primary px-5 py-2.5 text-center text-sm font-semibold text-white transition-colors hover:bg-primary-dark"
+            >
+              Get Started
+            </Link>
           </div>
         </div>
-      </div>
+      )}
     </header>
   );
 }

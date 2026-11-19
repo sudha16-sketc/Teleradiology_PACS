@@ -202,7 +202,7 @@ async function main() {
     role: UserRole.MANAGER,
     passwordHash: seedHash,
     organization: 'Axis Radiology',
-    phone: '+15550100001',
+    phone: '5550100001',
   });
 
   await upsertUser({
@@ -213,7 +213,7 @@ async function main() {
     subspecialty: 'NEURO',
     licenseNumber: 'MCI-778899',
     organization: 'Axis Radiology',
-    phone: '+15550100101',
+    phone: '5550100101',
   });
 
   await upsertUser({
@@ -224,7 +224,7 @@ async function main() {
     subspecialty: 'CHEST',
     licenseNumber: 'MCI-885522',
     organization: 'Axis Radiology',
-    phone: '+15550100102',
+    phone: '5550100102',
   });
 
   await upsertUser({
@@ -234,7 +234,7 @@ async function main() {
     passwordHash: seedHash,
     hospitalId: hospitals.cgh.id,
     organization: hospitals.cgh.name,
-    phone: '+15550100201',
+    phone: '5550100201',
   });
 
   await upsertUser({
@@ -244,7 +244,7 @@ async function main() {
     passwordHash: seedHash,
     hospitalId: hospitals.mmc.id,
     organization: hospitals.mmc.name,
-    phone: '+15550100202',
+    phone: '5550100202',
   });
 
   await upsertUser({
@@ -254,7 +254,7 @@ async function main() {
     passwordHash: seedHash,
     hospitalId: hospitals.rtc.id,
     organization: hospitals.rtc.name,
-    phone: '+15550100203',
+    phone: '5550100203',
   });
 
   // Get admin user for template creation

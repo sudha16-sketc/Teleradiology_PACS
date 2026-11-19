@@ -6,6 +6,7 @@ import type { ApiError, CompanySettings } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
 import {
   normalizePhone,
+  phoneInputValue,
   PHONE_VALIDATION_MESSAGE,
 } from "@/lib/phone";
 import { PhoneField } from "@/components/PhoneField";
@@ -46,7 +47,7 @@ export default function CompanySettingsPage() {
       if (res.data) {
         setForm({
           name: res.data.name ?? "",
-          phone: res.data.phone ?? "",
+          phone: phoneInputValue(res.data.phone),
           email: res.data.email ?? "",
           description: res.data.description ?? "",
           disclaimer: res.data.disclaimer ?? "",

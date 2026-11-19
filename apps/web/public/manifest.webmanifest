@@ -1,0 +1,17 @@
+{
+  "name": "Axis Teleradiology PACS",
+  "short_name": "Axis",
+  "description": "Secure radiology workflow, reporting, and hospital delivery.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1a2f",
+  "theme_color": "#0b1a2f",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

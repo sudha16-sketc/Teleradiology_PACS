@@ -1,5 +1,4 @@
-import { applyDecorators, BadRequestException } from '@nestjs/common';
-import { Transform } from 'class-transformer';
+import { BadRequestException } from '@nestjs/common';
 import {
   registerDecorator,
   type ValidationArguments,
@@ -9,26 +8,22 @@ import {
 } from 'class-validator';
 
 export const PHONE_VALIDATION_MESSAGE =
-  'Enter digits only with an optional leading +. Indian numbers: 10 digits, or +91 followed by 10 digits.';
+  'Phone number must contain exactly 10 digits.';
 
+export const PHONE_INPUT_PATTERN = /^[0-9]{10}$/;
+
+/**
+ * Accepts exactly ten numeric digits and stores them in the canonical form
+ * used by `tel:+91...` links. No country code, separators or truncation are
+ * accepted from the client.
+ */
 export function normalizePhone(value: unknown): string | null {
   if (value === undefined || value === null) return '';
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (trimmed === '') return '';
-  if (!/^\+?\d+$/.test(trimmed)) return null;
-
-  const hasCountryCode = trimmed.startsWith('+');
-  const digits = hasCountryCode ? trimmed.slice(1) : trimmed;
-  if (/^0/.test(digits)) return null;
-
-  if (!hasCountryCode) {
-    return digits.length === 10 ? `+91${digits}` : null;
-  }
-  if (digits.startsWith('91')) {
-    return digits.length === 12 ? `+${digits}` : null;
-  }
-  return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
+  if (!PHONE_INPUT_PATTERN.test(trimmed) || trimmed.startsWith('0')) return null;
+  return `+91${trimmed}`;
 }
 
 export function normalizePhoneOrThrow(value: unknown): string | null {
@@ -63,12 +58,5 @@ export function IsPhone(validationOptions?: ValidationOptions): PropertyDecorato
 }
 
 export function IsPhoneInput(): PropertyDecorator {
-  return applyDecorators(
-    Transform(({ value }) => {
-      if (value === undefined || value === null) return value;
-      const normalized = normalizePhone(value);
-      return normalized === null ? value : normalized;
-    }),
-    IsPhone(),
-  );
+  return IsPhone();
 }

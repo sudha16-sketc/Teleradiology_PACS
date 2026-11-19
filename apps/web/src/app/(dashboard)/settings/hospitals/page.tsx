@@ -5,6 +5,8 @@ import { Building2, Loader2, Plus } from "lucide-react";
 import type { ApiError, Hospital } from "@axis/types";
 import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
+import { normalizePhone, phoneHref, PHONE_VALIDATION_MESSAGE } from "@/lib/phone";
+import { PhoneField } from "@/components/PhoneField";
 
 interface HospitalsEnvelope {
   data: Hospital[];
@@ -18,6 +20,7 @@ interface HospitalForm {
   name: string;
   code: string;
   address: string;
+  phone: string;
   timezone: string;
 }
 
@@ -25,6 +28,7 @@ const EMPTY_FORM: HospitalForm = {
   name: "",
   code: "",
   address: "",
+  phone: "",
   timezone: "UTC",
 };
 
@@ -68,13 +72,19 @@ export default function HospitalManagementPage() {
     event.preventDefault();
     if (!canManage) return;
 
+    const phone = normalizePhone(form.phone);
+    if (phone === null) {
+      setError(PHONE_VALIDATION_MESSAGE);
+      return;
+    }
+
     setSaving(true);
     setError(null);
     setNotice(null);
     try {
       const response = await apiClient.post<HospitalEnvelope>(
         "/hospitals",
-        form,
+        { ...form, phone },
       );
       setHospitals((current) =>
         [...current, response.data].sort((a, b) =>
@@ -180,6 +190,16 @@ export default function HospitalManagementPage() {
             </label>
             <label className="block">
               <span className="mb-1.5 block text-xs font-semibold text-text-muted">
+                Phone
+              </span>
+              <PhoneField
+                value={form.phone}
+                onChange={(value) => update("phone", value)}
+                disabled={saving}
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-semibold text-text-muted">
                 Time zone
               </span>
               <input
@@ -239,6 +259,7 @@ export default function HospitalManagementPage() {
                   <th className="px-4 py-3 font-medium">Name</th>
                   <th className="px-4 py-3 font-medium">Code</th>
                   <th className="px-4 py-3 font-medium">Address</th>
+                  <th className="px-4 py-3 font-medium">Phone</th>
                   <th className="px-4 py-3 font-medium">Time zone</th>
                   <th className="px-4 py-3 font-medium">Status</th>
                 </tr>
@@ -257,6 +278,18 @@ export default function HospitalManagementPage() {
                     </td>
                     <td className="px-4 py-3 text-text-muted">
                       {hospital.address || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-text-muted">
+                      {phoneHref(hospital.phone) ? (
+                        <a
+                          href={phoneHref(hospital.phone) ?? undefined}
+                          className="text-accent hover:underline"
+                        >
+                          {hospital.phone}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
                     </td>
                     <td className="px-4 py-3 text-text-muted">
                       {hospital.timezone}

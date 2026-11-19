@@ -48,6 +48,7 @@ export default function ForgotPasswordPage() {
         {submitted ? (
           <div
             role="status"
+            aria-live="polite"
             className="mt-5 rounded-md border border-success/30 bg-success/10 px-3 py-3 text-sm text-text-primary"
           >
             If an account exists for that email, password reset instructions will be sent.
@@ -55,7 +56,7 @@ export default function ForgotPasswordPage() {
         ) : (
           <form onSubmit={handleSubmit} className="mt-5 space-y-4">
             {error && (
-              <div role="alert" className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+              <div role="alert" aria-live="assertive" className="rounded-md border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
                 {error}
               </div>
             )}

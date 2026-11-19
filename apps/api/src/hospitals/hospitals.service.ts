@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateHospitalDto } from './dto/create-hospital.dto.js';
 import { RedisCacheService, CACHE_NAMESPACES } from '../redis/redis-cache.service.js';
+import { normalizePhoneOrThrow } from '../common/validators/phone.js';
 import { HOSPITAL_CONFIG_TTL_SECONDS } from '../redis/redis.config.js';
 
 @Injectable()
@@ -30,6 +31,7 @@ export class HospitalsService {
           name: dto.name.trim(),
           code: dto.code.trim().toUpperCase(),
           address: dto.address?.trim() || null,
+          phone: normalizePhoneOrThrow(dto.phone),
           timezone: dto.timezone?.trim() || 'UTC',
         },
       });

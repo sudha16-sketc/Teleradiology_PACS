@@ -40,6 +40,16 @@ function setIp(agent: any, ip: string) {
   return agent.set('X-Forwarded-For', ip);
 }
 
+function expectSameErrorPayload(actual: any, expected: any) {
+  const stable = (body: any) => ({
+    statusCode: body.statusCode,
+    error: body.error,
+    message: body.message,
+    path: body.path,
+  });
+  expect(stable(actual.body)).toEqual(stable(expected.body));
+}
+
 beforeAll(async () => {
   for (const [key, value] of Object.entries(authEnv)) {
     originalEnv.set(key, process.env[key]);
@@ -133,9 +143,45 @@ describe('Authentication recovery and abuse controls', () => {
         .send({ email })
         .expect(503);
       expect(response.body.message).toContain('not configured');
+      const unknown = await setIp(request.agent(server), testIp(58))
+        .post('/api/auth/forgot-password')
+        .send({ email: `unknown-${randomUUID()}@example.test` })
+        .expect(503);
+      expectSameErrorPayload(unknown, response);
     } finally {
       if (originalKey === undefined) delete process.env.RESEND_API_KEY;
       else process.env.RESEND_API_KEY = originalKey;
+    }
+  });
+
+  it('rejects an invalid email without creating a reset token', async () => {
+    const before = await prisma.passwordResetToken.count({ where: { userId } });
+    const response = await setIp(request.agent(server), testIp(54))
+      .post('/api/auth/forgot-password')
+      .send({ email: 'not-an-email' })
+      .expect(400);
+    expect(response.body.message).toBeTruthy();
+    const after = await prisma.passwordResetToken.count({ where: { userId } });
+    expect(after).toBe(before);
+  });
+
+  it('reports an incorrectly configured sender instead of pretending delivery succeeded', async () => {
+    const originalFrom = process.env.EMAIL_FROM;
+    process.env.EMAIL_FROM = 'not-a-sender';
+    try {
+      const response = await setIp(request.agent(server), testIp(55))
+        .post('/api/auth/forgot-password')
+        .send({ email })
+        .expect(503);
+      expect(response.body.message).toMatch(/sender address is not configured correctly/);
+      const unknown = await setIp(request.agent(server), testIp(59))
+        .post('/api/auth/forgot-password')
+        .send({ email: `unknown-${randomUUID()}@example.test` })
+        .expect(503);
+      expectSameErrorPayload(unknown, response);
+    } finally {
+      if (originalFrom === undefined) delete process.env.EMAIL_FROM;
+      else process.env.EMAIL_FROM = originalFrom;
     }
   });
 
@@ -346,17 +392,28 @@ describe('Authentication recovery and abuse controls', () => {
     await adminAgent.get('/api/users').expect(200);
   });
 
-  it('cleans up the reset token and reports provider failures instead of fake success', async () => {
+  it('cleans up the reset token and keeps provider failures generic', async () => {
     await prisma.passwordResetToken.deleteMany({ where: { userId } });
     fetchMock.mockImplementation(async () => new Response(null, { status: 500 }));
 
     const response = await setIp(request.agent(server), testIp(52))
       .post('/api/auth/forgot-password')
       .send({ email })
-      .expect(503);
-    expect(response.body.message).toMatch(/could not be delivered|temporarily unavailable/);
+      .expect(201);
+    expect(response.body.data.message).toMatch(/If an account exists/);
+    expect(response.body.data.message).not.toMatch(/sent|delivered/i);
 
     const tokenCount = await prisma.passwordResetToken.count({ where: { userId } });
     expect(tokenCount).toBe(0);
+
+    const unknown = await setIp(request.agent(server), testIp(56))
+      .post('/api/auth/forgot-password')
+      .send({ email: `unknown-${randomUUID()}@example.test` })
+      .expect(503);
+    const existing = await setIp(request.agent(server), testIp(57))
+      .post('/api/auth/forgot-password')
+      .send({ email })
+      .expect(503);
+    expectSameErrorPayload(unknown, existing);
   });
 });

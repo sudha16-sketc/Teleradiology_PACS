@@ -4,6 +4,7 @@ import { createTestApp } from './app-bootstrap.js';
 import { loginAgent, USERS, prisma } from './helpers.js';
 import type { INestApplication } from '@nestjs/common';
 import { StudyStatus } from '@prisma/client';
+import { orthancBaseUrl } from '../src/common/config/orthanc-url.js';
 
 let app: INestApplication;
 let server: any;
@@ -138,6 +139,36 @@ describe('single-login OHIF DICOMweb access', () => {
       const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
       const forwarded = (init?.headers ?? {}) as Record<string, string>;
       expect(forwarded['accept-encoding']).toBeUndefined();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('streams WADO frames through the authenticated same-origin proxy', async () => {
+    const agent = await loginAgent(server, USERS.RAD1);
+    const wadoPath = `/api/dicom-web/studies/${studyInstanceUid}/series/1.2.826.0.1.3680043.9.series/instances/1.2.826.0.1.3680043.9.instance/frames/1`;
+    const upstream = new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(upstream);
+
+    try {
+      const res = await agent
+        .get(wadoPath)
+        .set('Accept', 'application/octet-stream')
+        .set('Range', 'bytes=0-2')
+        .set('Authorization', 'Bearer client-token')
+        .expect(200);
+      expect(res.headers['content-type']).toContain('application/octet-stream');
+
+      const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(target).toBe(`${orthancBaseUrl()}/dicom-web/studies/${studyInstanceUid}/series/1.2.826.0.1.3680043.9.series/instances/1.2.826.0.1.3680043.9.instance/frames/1`);
+      const forwarded = (init.headers ?? {}) as Record<string, string>;
+      expect(forwarded.accept).toBe('application/octet-stream');
+      expect(forwarded.range).toBe('bytes=0-2');
+      expect(forwarded.authorization).not.toBe('Bearer client-token');
+      expect(forwarded.cookie).toBeUndefined();
     } finally {
       fetchMock.mockRestore();
     }

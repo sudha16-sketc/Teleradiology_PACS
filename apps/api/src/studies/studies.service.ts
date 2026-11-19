@@ -8,6 +8,8 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { runSerializable } from '../common/db/serializable.js';
 import { isHospitalReportVisible } from '../common/visibility/hospital-visible.js';
+import { assertSignedReportReady } from '../common/reports/report-content.js';
+import { resolveStudyUid } from './study-identifier.js';
 import { ListStudiesDto } from './dto/list-studies.dto.js';
 import { UpdateStudyStatusDto } from './dto/update-study-status.dto.js';
 import { CreateStudyDto } from './dto/create-study.dto.js';
@@ -42,7 +44,7 @@ export const TRANSITION_ACTORS: Record<string, UserRole[]> = {
   ASSIGNED: ['ADMIN', 'MANAGER'],
   IN_READING: ['ADMIN', 'MANAGER', 'RADIOLOGIST'],
   REPORT_DRAFT: ['RADIOLOGIST'],
-  RADIOLOGIST_SIGNED: ['RADIOLOGIST', 'ADMIN', 'MANAGER'],
+  RADIOLOGIST_SIGNED: ['RADIOLOGIST'],
   MANAGER_REVIEW: ['ADMIN', 'MANAGER'],
   MANAGER_APPROVED: ['ADMIN', 'MANAGER'],
   DELIVERED_TO_HOSPITAL: ['ADMIN', 'MANAGER'],
@@ -118,8 +120,9 @@ export class StudiesService {
   }
 
   async getByUid(studyUid: string, user?: { id: string; role: UserRole; hospitalId?: string }) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
       include: {
         patient: true,
         hospital: true,
@@ -133,7 +136,7 @@ export class StudiesService {
     });
 
     if (!study) {
-      throw new NotFoundException(`Study ${studyUid} not found`);
+      throw new NotFoundException(`Study ${uid} not found`);
     }
 
     this.assertCanView(study, user);
@@ -146,12 +149,13 @@ export class StudiesService {
   }
 
   async getSeries(studyUid: string, user?: { id: string; role: UserRole; hospitalId?: string }) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
     });
 
     if (!study) {
-      throw new NotFoundException(`Study ${studyUid} not found`);
+      throw new NotFoundException(`Study ${uid} not found`);
     }
 
     this.assertCanView(study, user);
@@ -165,10 +169,11 @@ export class StudiesService {
   }
 
   async priors(studyUid: string, user?: { id: string; role: UserRole; hospitalId?: string }) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
     });
-    if (!study) throw new NotFoundException(`Study ${studyUid} not found`);
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
 
     this.assertCanView(study, user);
 
@@ -176,7 +181,7 @@ export class StudiesService {
       where: {
         patientId: study.patientId,
         status: { in: ['MANAGER_APPROVED', 'DELIVERED_TO_HOSPITAL', 'COMPLETED'] },
-        studyInstanceUid: { not: studyUid },
+        studyInstanceUid: { not: uid },
       },
       include: { patient: true, hospital: true },
       orderBy: { studyDate: 'desc' },
@@ -253,15 +258,16 @@ export class StudiesService {
     dto: UpdateStudyStatusDto,
     user: { id: string; role: UserRole; hospitalId?: string },
   ) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     // Authorization pre-check on the current row (kept outside the transaction
     // so scope rejection is immediate and cheap).
     const pre = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
       select: { id: true, hospitalId: true, assignedRadiologistId: true },
     });
 
     if (!pre) {
-      throw new NotFoundException(`Study ${studyUid} not found`);
+      throw new NotFoundException(`Study ${uid} not found`);
     }
 
     if (user.role === UserRole.HOSPITAL && pre.hospitalId !== user.hospitalId) {
@@ -302,10 +308,10 @@ export class StudiesService {
     // -------------------------------------------------------------------------
     const updated = await runSerializable(this.prisma, async (tx) => {
       const study = await tx.study.findUnique({
-        where: { studyInstanceUid: studyUid },
+        where: { studyInstanceUid: uid },
       });
       if (!study) {
-        throw new NotFoundException(`Study ${studyUid} not found`);
+        throw new NotFoundException(`Study ${uid} not found`);
       }
 
       const allowed = ALLOWED_TRANSITIONS[study.status] || [];
@@ -348,14 +354,10 @@ export class StudiesService {
       ];
       if (requiresSignedReport.includes(dto.status)) {
         const signedReport = await tx.report.findFirst({
-          where: { studyId: study.id, status: 'SIGNED' },
+          where: { studyId: study.id },
           orderBy: { version: 'desc' },
         });
-        if (!signedReport) {
-          throw new BadRequestException(
-            `A signed clinical report is required before the study can be moved to ${dto.status}.`,
-          );
-        }
+        assertSignedReportReady(signedReport);
       }
 
       if (
@@ -393,7 +395,7 @@ export class StudiesService {
       if (dto.status === 'COMPLETED') data.completedAt = now;
 
       const updated = await tx.study.update({
-        where: { studyInstanceUid: studyUid },
+        where: { studyInstanceUid: uid },
         data,
         include: {
           patient: true,
@@ -409,7 +411,7 @@ export class StudiesService {
         action: 'STUDY_STATUS_CHANGED',
         resource: 'STUDY',
         resourceId: study.id,
-        metadata: { from: study.status, to: dto.status, studyUid },
+        metadata: { from: study.status, to: dto.status, studyUid: uid },
       });
 
       return updated;

@@ -30,7 +30,11 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setToken(new URLSearchParams(window.location.search).get("token") ?? "");
+    const resetToken = new URLSearchParams(window.location.search).get("token") ?? "";
+    setToken(resetToken);
+    if (resetToken) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
   }, []);
 
   async function handleSubmit(event: React.FormEvent) {
@@ -71,7 +75,7 @@ export default function ResetPasswordPage() {
         </p>
 
         {complete ? (
-          <div role="status" className="mt-5 rounded-md border border-success/30 bg-success/10 px-3 py-3 text-sm text-text-primary">
+          <div role="status" aria-live="polite" className="mt-5 rounded-md border border-success/30 bg-success/10 px-3 py-3 text-sm text-text-primary">
             Your password has been reset. You can now sign in with your new password.
           </div>
         ) : (

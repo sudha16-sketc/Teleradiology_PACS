@@ -15,6 +15,7 @@
     "db:seed-demo": "tsx prisma/seed-demo.ts",
     "db:create-admin": "tsx prisma/create-admin.ts",
     "db:backup": "tsx prisma/backup-cli.ts",
+    "test": "pnpm test:e2e",
     "test:e2e": "jest --runInBand"
   },
   "dependencies": {

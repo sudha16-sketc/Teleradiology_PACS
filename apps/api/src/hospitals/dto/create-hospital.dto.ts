@@ -6,6 +6,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { IsPhoneInput } from '../../common/validators/phone.js';
 
 export class CreateHospitalDto {
   @Transform(({ value }) =>
@@ -32,6 +33,10 @@ export class CreateHospitalDto {
   @IsString()
   @MaxLength(500)
   address?: string;
+
+  @IsOptional()
+  @IsPhoneInput()
+  phone?: string;
 
   @IsOptional()
   @IsString()

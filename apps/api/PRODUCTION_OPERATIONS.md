@@ -44,7 +44,8 @@ Configure L4/L7 health checks against `/api/health/ready` and alert when it is
 not `200`. Wire `ready` into your orchestration/load-balancer drain logic so a
 box is taken out of rotation when Postgres or Redis is unreachable. Alert when
 any component is down; `dicomweb` down means the Orthanc DICOMweb plugin or
-`/dicom-web` route is unavailable even if raw Orthanc `/system` is healthy.
+`/dicom-web` route is unavailable even if raw Orthanc `/system` is healthy. The
+probe verifies both the QIDO endpoint and that `/plugins` contains `dicom-web`.
 
 ### Orthanc deployment
 
@@ -66,8 +67,13 @@ ORTHANC_PASSWORD=<generated strong secret>
 
 `infra/orthanc/orthanc.prod.json` requires all three `ORTHANC_*` auth variables;
 missing values stop startup. Set the same credentials on the API plus
-`ORTHANC_URL=https://<public-orthanc-origin>` with no `/dicom-web` suffix. Never
-put these credentials in the frontend or OHIF configuration.
+`ORTHANC_URL=https://<public-orthanc-origin>` with no `/dicom-web` suffix. If the
+API and a private `axis-orthanc` service share a Render private network, use
+`ORTHANC_URL=http://axis-orthanc:8042` instead; startup validation allows that
+exact private hostname. Never put these credentials in the frontend or OHIF
+configuration. Never point a health check at DICOM port `4242`; non-DICOM probes
+there cause repeated `Unrecognized PDU type` log entries. Probe port `8042` or
+`/api/health/ready`.
 
 After deployment, unauthenticated `/system`, `/studies`, `/patients`, `/plugins`
 and `/dicom-web/studies` must return `401`. With credentials, `/system` must

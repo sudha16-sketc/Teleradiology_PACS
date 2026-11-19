@@ -5,7 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { resolveStudyUid } from '../studies/study-identifier.js';
 import { HOSPITAL_VISIBLE_STATES } from '../reviews/reviews.service.js';
+import { assertSuccessfulDelivery } from '../common/visibility/hospital-delivery.js';
 import { createReadStream } from 'fs';
 import { mkdir, unlink, writeFile } from 'fs/promises';
 import path from 'path';
@@ -91,8 +93,9 @@ export class ReportImagesService {
     if (actor.role !== 'RADIOLOGIST') {
       throw new ForbiddenException('Only the assigned radiologist can upload report images');
     }
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
       select: {
         id: true,
         assignedRadiologistId: true,
@@ -103,7 +106,7 @@ export class ReportImagesService {
         },
       },
     });
-    if (!study) throw new NotFoundException(`Study ${studyUid} not found`);
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
     if (study.assignedRadiologistId !== actor.id) {
       throw new ForbiddenException('Only the assigned radiologist can upload images to this report');
     }
@@ -191,6 +194,12 @@ export class ReportImagesService {
       if (!HOSPITAL_VISIBLE_STATES.includes(image.study.status)) {
         throw new ForbiddenException('The final report is not yet available for this study.');
       }
+      await assertSuccessfulDelivery(
+        this.prisma,
+        image.studyId,
+        actor.hospitalId,
+        image.reportId,
+      );
       return image;
     }
     if (actor.role === 'RADIOLOGIST') {

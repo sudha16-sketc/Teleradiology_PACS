@@ -5,6 +5,7 @@ import {
   Body,
   Param,
   Query,
+  Patch,
   Res,
   Req,
 } from '@nestjs/common';
@@ -23,6 +24,7 @@ import {
   LoginDto,
   ForgotPasswordDto,
   ResetPasswordDto,
+  UpdateProfileDto,
   ApproveRequestDto,
   RejectRequestDto,
 } from './auth.dto.js';
@@ -76,6 +78,11 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return this.authService.me(user);
+  }
+
+  @Patch('me')
+  updateMe(@CurrentUser() user: AuthenticatedUser, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(user, dto);
   }
 
   // Rotates the Redis session and refreshes the same httpOnly cookie. No

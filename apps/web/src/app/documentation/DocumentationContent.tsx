@@ -327,10 +327,10 @@ export default function DocumentationContent() {
               <div className="border border-navy-800 bg-navy-950 p-5 text-white sm:p-7">
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
                   <div className="max-w-2xl"><p className="font-mono text-xs uppercase text-teal-300">Desktop release</p><h3 className="mt-2 font-heading text-xl font-bold">A desktop download is not available yet.</h3><p className="mt-2 text-sm leading-6 text-slate-300">Use the Axis website in a supported browser. OHIF is a separate web service, not a packaged desktop client.</p></div>
-                  {desktopDownloadUrl ? <a href={desktopDownloadUrl} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded bg-white px-4 text-sm font-semibold text-navy-900 hover:bg-teal-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300">Download desktop app</a> : <div className="max-w-full border border-dashed border-slate-500 px-4 py-3 font-mono text-xs leading-5 text-slate-200 sm:text-sm">[ DESKTOP APPLICATION DOWNLOAD LINK — COMING SOON ]</div>}
+                  {desktopDownloadUrl ? <a href={desktopDownloadUrl} className="inline-flex min-h-11 shrink-0 items-center justify-center rounded bg-white px-4 text-sm font-semibold text-navy-900 hover:bg-teal-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-300">Download desktop app</a> : <p className="max-w-full border border-dashed border-slate-500 px-4 py-3 text-xs leading-5 text-slate-200 sm:text-sm">Desktop download is not available in this release.</p>}
                 </div>
               </div>
-              <p className="mt-3 text-sm leading-6 text-slate-500">When a release URL exists, set <code className="font-mono text-xs">NEXT_PUBLIC_DESKTOP_DOWNLOAD_URL</code> at build time. When it is unset, the placeholder remains plain text and cannot be clicked.</p>
+              <p className="mt-3 text-sm leading-6 text-slate-500">When a release URL exists, set <code className="font-mono text-xs">NEXT_PUBLIC_DESKTOP_DOWNLOAD_URL</code> at build time. When it is unset, no download link is shown.</p>
             </section>
 
             <section id="faq" className="scroll-mt-24 border-b border-slate-200 py-10 sm:py-12">

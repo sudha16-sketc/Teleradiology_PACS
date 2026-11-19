@@ -30,6 +30,7 @@ export default function HospitalReportsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [busyUid, setBusyUid] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   const router = useRouter();
 
@@ -74,12 +75,16 @@ export default function HospitalReportsPage() {
   const acceptReport = async (studyUid: string) => {
     if (busyUid) return;
     setBusyUid(studyUid);
+    setNotice(null);
     try {
       await apiClient.post(`/studies/${encodeURIComponent(studyUid)}/accept`);
+      setNotice({ kind: "success", text: "Report accepted." });
       await load();
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("Accept failed", e);
+      setNotice({
+        kind: "error",
+        text: (e as { message?: string }).message ?? "Unable to accept this report.",
+      });
     } finally {
       setBusyUid(null);
     }
@@ -100,10 +105,10 @@ export default function HospitalReportsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-2xl font-bold text-text-primary">
-            Reports Library
+            Received Reports
           </h1>
           <p className="text-sm text-text-muted">
-            View and download finalized radiology reports
+            View and download radiology reports delivered to your hospital
           </p>
         </div>
         <button
@@ -114,6 +119,19 @@ export default function HospitalReportsPage() {
           Refresh
         </button>
       </div>
+
+      {notice && (
+        <div
+          role={notice.kind === "error" ? "alert" : "status"}
+          className={`rounded-md border px-3 py-2 text-sm ${
+            notice.kind === "error"
+              ? "border-error/30 bg-error/10 text-error"
+              : "border-success/30 bg-success/10 text-success"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
 
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
@@ -135,13 +153,13 @@ export default function HospitalReportsPage() {
         <SkeletonTable rows={6} />
       ) : filtered.length === 0 ? (
         <EmptyState
-          title="No finalized reports"
-          description="Finalized radiology reports for your hospital will appear here."
+          title="No received reports"
+          description="Radiology reports delivered to your hospital will appear here."
         />
       ) : (
         <div className="rounded-md border border-border">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full min-w-[960px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border text-xs text-text-muted">
                   <th className="px-4 py-2.5 font-medium">Patient</th>

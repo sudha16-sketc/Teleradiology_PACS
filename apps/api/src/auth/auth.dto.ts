@@ -72,6 +72,12 @@ export class ResetPasswordDto {
   confirmPassword!: string;
 }
 
+export class UpdateProfileDto {
+  @IsOptional()
+  @IsPhoneInput()
+  phone?: string;
+}
+
 export class ApproveRequestDto {
   @IsIn([UserRole.MANAGER, UserRole.RADIOLOGIST, UserRole.HOSPITAL])
   role!: UserRole;

@@ -126,7 +126,7 @@ export default function AIQueuePage() {
       ) : (
         <div className="rounded-md border border-border">
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="w-full min-w-[760px]">
               <thead>
                 <tr className="border-b border-border text-left">
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-text-muted">

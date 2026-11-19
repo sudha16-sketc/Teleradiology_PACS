@@ -30,8 +30,29 @@ const sourceSerif4 = Source_Serif_4({
 });
 
 export const metadata: Metadata = {
-  title: "Axis",
-  description: "Teleradiology PACS Workflow Platform",
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
+  title: {
+    default: "Axis — Teleradiology PACS & Clinical Reporting",
+    template: "%s | Axis",
+  },
+  applicationName: "Axis",
+  description:
+    "Axis connects hospitals, radiologists, and workflow managers with a secure teleradiology PACS, reporting, and study delivery platform.",
+  manifest: "/manifest.webmanifest",
+  icons: { icon: "/icon.svg" },
+  openGraph: {
+    type: "website",
+    siteName: "Axis",
+    title: "Axis — Teleradiology PACS & Clinical Reporting",
+    description:
+      "A secure workflow platform for study submission, radiology reporting, review, and hospital delivery.",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Axis — Teleradiology PACS & Clinical Reporting",
+    description:
+      "A secure workflow platform for study submission, radiology reporting, review, and hospital delivery.",
+  },
 };
 
 export default function RootLayout({

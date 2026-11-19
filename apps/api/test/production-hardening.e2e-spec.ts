@@ -92,15 +92,17 @@ describe('Phase 7 -- health & unauthenticated access', () => {
   });
 
   it('P7-HEALTH-3: readiness reports a missing DICOMweb plugin as degraded', async () => {
-    const probeResponse = (status: number) =>
+    const probeResponse = (status: number, body?: unknown) =>
       ({
         ok: status >= 200 && status < 300,
         status,
+        json: async () => body ?? {},
         body: { cancel: async () => undefined },
       }) as unknown as globalThis.Response;
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url.endsWith('/system')) return probeResponse(200);
+      if (url.endsWith('/plugins')) return probeResponse(200, [{ Name: 'dicom-web' }]);
       if (url.includes('/dicom-web/studies')) return probeResponse(404);
       return probeResponse(200);
     });
@@ -110,6 +112,99 @@ describe('Phase 7 -- health & unauthenticated access', () => {
       const dicomweb = res.body.components.find((component: { name: string }) => component.name === 'dicomweb');
       expect(dicomweb).toMatchObject({ name: 'dicomweb', status: 'down' });
       expect(res.body.status).toBe('degraded');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('P7-HEALTH-4: readiness reports a missing dicom-web plugin as degraded', async () => {
+    const probeResponse = (status: number, body?: unknown) =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body ?? {},
+        body: { cancel: async () => undefined },
+      }) as unknown as globalThis.Response;
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/system')) return probeResponse(200);
+      if (url.endsWith('/plugins')) return probeResponse(200, [{ Name: 'explorer.js' }]);
+      if (url.includes('/dicom-web/studies')) return probeResponse(200, []);
+      return probeResponse(200);
+    });
+
+    try {
+      const res = await request(server).get('/api/health/ready');
+      const dicomweb = res.body.components.find((component: { name: string }) => component.name === 'dicomweb');
+      expect(dicomweb).toMatchObject({ name: 'dicomweb', status: 'down' });
+      expect(res.body.status).toBe('degraded');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('P7-HEALTH-5: readiness reports an empty archive as degraded', async () => {
+    const hospitalAgent = await loginAgent(server, h_cgh);
+    const { studyId } = await createStudy(hospitalAgent);
+    await prisma.study.update({
+      where: { id: studyId },
+      data: { seriesCount: 1, instanceCount: 1 },
+    });
+
+    const probeResponse = (status: number, body?: unknown) =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body ?? {},
+        body: { cancel: async () => undefined },
+      }) as unknown as globalThis.Response;
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/system')) return probeResponse(200);
+      if (url.endsWith('/plugins')) return probeResponse(200, [{ Name: 'dicom-web' }]);
+      if (url.includes('/dicom-web/studies')) return probeResponse(200, []);
+      return probeResponse(200);
+    });
+
+    try {
+      const res = await request(server).get('/api/health/ready');
+      const dicomweb = res.body.components.find((component: { name: string }) => component.name === 'dicomweb');
+      expect(dicomweb).toMatchObject({ name: 'dicomweb', status: 'down' });
+      expect(res.body.status).toBe('degraded');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('P7-HEALTH-6: readiness stays healthy when the indexed study exists in Orthanc', async () => {
+    const hospitalAgent = await loginAgent(server, h_cgh);
+    const { studyUid, studyId } = await createStudy(hospitalAgent);
+    await prisma.study.update({
+      where: { id: studyId },
+      data: { seriesCount: 1, instanceCount: 1 },
+    });
+
+    const probeResponse = (status: number, body?: unknown) =>
+      ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body ?? {},
+        body: { cancel: async () => undefined },
+      }) as unknown as globalThis.Response;
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/system')) return probeResponse(200);
+      if (url.endsWith('/plugins')) return probeResponse(200, [{ Name: 'dicom-web' }]);
+      if (url.includes('/dicom-web/studies')) {
+        return probeResponse(200, [{ '0020000D': { Value: [studyUid] } }]);
+      }
+      return probeResponse(200);
+    });
+
+    try {
+      const res = await request(server).get('/api/health/ready');
+      const dicomweb = res.body.components.find((component: { name: string }) => component.name === 'dicomweb');
+      expect(dicomweb).toMatchObject({ name: 'dicomweb', status: 'up' });
     } finally {
       fetchSpy.mockRestore();
     }

@@ -15,6 +15,7 @@ import {
   IsString,
   IsBoolean,
   IsIn,
+  IsNotEmpty,
 } from 'class-validator';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
 import type { Response } from 'express';
@@ -66,6 +67,12 @@ class ValidateDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+class AmendDto extends ReportContentDto {
+  @IsString()
+  @IsNotEmpty()
+  reason!: string;
 }
 
 class ChangeRequestDto {
@@ -167,7 +174,7 @@ export class ReportsController {
   @Roles('RADIOLOGIST')
   amend(
     @Param('studyUid') studyUid: string,
-    @Body() dto: ReportContentDto,
+    @Body() dto: AmendDto,
     @CurrentUser() user: RequestUser,
   ) {
     return this.reportsService.amend(studyUid, dto, user);

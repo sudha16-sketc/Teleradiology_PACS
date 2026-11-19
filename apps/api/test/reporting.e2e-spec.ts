@@ -771,7 +771,7 @@ describe('Phase 4 — Reporting', () => {
     it('REPORT-19: amend creates v2 DRAFT report after signed v1', async () => {
       const res = await rad1Agent
         .post(`/api/reports/${study.studyInstanceUid}/amend`)
-        .send({ findings: 'Amended', impression: 'Amended' })
+        .send({ findings: 'Amended', impression: 'Amended', reason: 'Correct terminal report wording' })
         .expect(201);
 
       expect(res.body.data.status).toBe('DRAFT');

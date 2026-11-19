@@ -30,6 +30,30 @@ describe("API rewrite destination", () => {
     );
   });
 
+  it("rewrites bare /ohif and all viewer assets to the OHIF service", async () => {
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "https://teleradiology-pacs.onrender.com");
+    vi.stubEnv("OHIF_URL", "https://teleradiology-pacs-1.onrender.com");
+
+    const { default: config } = await import("../../next.config.mjs");
+    const rewrites = await config.rewrites?.();
+    const rewriteList = Array.isArray(rewrites)
+      ? rewrites
+      : (rewrites?.beforeFiles ?? []);
+
+    expect(
+      rewriteList.find(
+        (rewrite: { source: string }) => rewrite.source === "/ohif",
+      )?.destination,
+    ).toBe("https://teleradiology-pacs-1.onrender.com/ohif/index.html");
+    expect(
+      rewriteList.find(
+        (rewrite: { source: string }) => rewrite.source === "/ohif/:path*",
+      )?.destination,
+    ).toBe("https://teleradiology-pacs-1.onrender.com/ohif/:path*");
+  });
+
   it("rejects API URLs with an unexpected path prefix", async () => {
     vi.stubEnv("VERCEL", "1");
     vi.stubEnv("NODE_ENV", "production");

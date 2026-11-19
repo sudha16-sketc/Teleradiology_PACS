@@ -143,14 +143,14 @@ describe('Report editor and template workflow', () => {
       .put('/api/company-settings')
       .send({
         name: 'Axis Radiology E2E',
-        phone: '+15550100100',
+        phone: '5550100100',
         email: 'reports@example.test',
         disclaimer: 'Confidential diagnostic report.',
       })
       .expect(200);
 
     expect(updated.body.data.name).toBe('Axis Radiology E2E');
-    expect(updated.body.data.phone).toBe('+15550100100');
+    expect(updated.body.data.phone).toBe('+915550100100');
 
     const read = await rad1Agent.get('/api/company-settings').expect(200);
     expect(read.body.data.name).toBe('Axis Radiology E2E');

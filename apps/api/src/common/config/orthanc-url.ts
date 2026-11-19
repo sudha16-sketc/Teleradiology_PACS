@@ -34,6 +34,13 @@ export function isLoopbackOrthancUrl(parsed: URL): boolean {
   );
 }
 
+const PRIVATE_ORTHANC_HOSTNAMES = new Set(['axis-orthanc']);
+
+export function isPrivateOrthancUrl(parsed: URL): boolean {
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return PRIVATE_ORTHANC_HOSTNAMES.has(hostname);
+}
+
 export function orthancBaseUrl(): string {
   return parseOrthancUrl(process.env.ORTHANC_URL).origin;
 }

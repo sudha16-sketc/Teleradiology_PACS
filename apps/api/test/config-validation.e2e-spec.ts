@@ -50,6 +50,12 @@ describe('production Orthanc URL validation', () => {
     expect(() => assertRequiredEnv()).not.toThrow();
   });
 
+  it('accepts the private Render Orthanc hostname over http', () => {
+    productionEnv('http://axis-orthanc:8042');
+    expect(() => assertRequiredEnv()).not.toThrow();
+    expect(orthancBaseUrl()).toBe('http://axis-orthanc:8042');
+  });
+
   it('rejects a /dicom-web suffix', () => {
     productionEnv('https://orthanc.example.test/dicom-web');
     expect(() => assertRequiredEnv()).toThrow(/without \/dicom-web or any path/);

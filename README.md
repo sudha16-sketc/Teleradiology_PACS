@@ -291,9 +291,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `NEXT_PUBLIC_API_URL`      | `http://localhost:4000/api`                           | Next.js `/api` rewrite upstream         |
 | `API_PORT`                 | `4000`                                               | NestJS listen port                      |
 | `DATABASE_URL`             | `postgresql://axis:axis_dev@localhost:5432/axis_pacs` | PostgreSQL connection string            |
-| `NEXT_PUBLICORTHANC_URL`   | `http://localhost:8042`                               | Orthanc URL (browser, public)           |
-| `ORTHANC_URL`              | `http://localhost:8042`                               | Orthanc URL (server-side)               |
-| `DICOMweb_URL`             | `http://localhost:8042/dicom-web`                     | DICOMweb base URL                       |
+| `ORTHANC_URL`              | `http://localhost:8042`                               | Server-side Orthanc origin (no `/dicom-web`) |
 | `ORTHANC_USERNAME`         | `orthanc`                                            | Orthanc HTTP auth username              |
 | `ORTHANC_PASSWORD`         | `orthanc`                                            | Orthanc HTTP auth password              |
 | `TRUST_PROXY`              | `1`                                                  | Trusted proxy hops for `X-Forwarded-For` rate limits |
@@ -393,7 +391,11 @@ health check path unset so the default TCP probe on `8042` is used.
 Set `ORTHANC_AUTH_ENABLED=true` plus generated `ORTHANC_USERNAME` and
 `ORTHANC_PASSWORD` on the Orthanc service, then set the same credentials and
 `ORTHANC_URL=https://<public-orthanc-origin>` on the API. `ORTHANC_URL` must not
-include `/dicom-web`. `infra/orthanc/orthanc.prod.json` requires all three auth
+include `/dicom-web`. If Render private networking is enabled and a private
+service named `axis-orthanc` is deployed from the same Dockerfile, use
+`ORTHANC_URL=http://axis-orthanc:8042` instead; startup validation allows that
+exact private hostname over HTTP. Do not use it from services outside the same
+private network. `infra/orthanc/orthanc.prod.json` requires all three auth
 variables; the container refuses to start if any is missing. Do not point
 production at `localhost` — startup validation rejects loopback URLs unless
 `AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a local production-mode
@@ -401,12 +403,16 @@ test.
 
 `/api/health/ready` returns `200` only when PostgreSQL **and** Redis are
 reachable, and includes `postgresql`, `redis`, `orthanc` and `dicomweb` component
-diagnostics. If Orthanc or its DICOMweb plugin is down, the response reports
-`"status":"degraded"` but reports/worklists remain available; viewer requests
-return a sanitized `503`/`504` with a correlation ID instead of failing the whole
-API. If Redis is down, readiness fails and protected requests return `503` rather
-than allowing unauthenticated access. Verify with
-`curl https://<api-host>/api/health/ready`.
+diagnostics. The `dicomweb` check calls both `/dicom-web/studies?limit=1` and
+`/plugins`; a missing `dicom-web` plugin marks it down. If Orthanc or its
+DICOMweb plugin is down, the response reports `"status":"degraded"` but
+reports/worklists remain available; viewer requests return a sanitized
+`503`/`504` with a correlation ID instead of failing the whole API. If Redis is
+down, readiness fails and protected requests return `503` rather than allowing
+unauthenticated access. Verify with `curl https://<api-host>/api/health/ready`.
+Never point a health check at Orthanc's DICOM port `4242`: non-DICOM probes
+there produce repeated `Unrecognized PDU type` log entries. Probe HTTP port
+`8042` or the API readiness endpoint instead.
 
 ### Orthanc persistent storage and imaging recovery
 
@@ -417,6 +423,11 @@ is `jodogne/orthanc-plugins:1.13.1`; keep that version aligned with an existing
 Confirm in the Render dashboard (Service → Disks) that the existing disk remains
 attached at that path. Do not delete, reset, or reinitialize the disk or its
 contents.
+
+The canonical imaging identifier is `Study.studyInstanceUid`. The API also
+resolves an internal `Study.id` or `<Study.id>:<patient MRN suffix>` link to that
+UID, but OHIF is always launched with the canonical DICOM UID. Never treat an
+application ID as a DICOM UID.
 
 If the live Orthanc service has no disk:
 

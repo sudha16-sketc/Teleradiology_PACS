@@ -10,54 +10,23 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ReviewsService, HOSPITAL_VISIBLE_STATES } from '../reviews/reviews.service.js';
 import { StudiesService, ALLOWED_TRANSITIONS, TRANSITION_ACTORS } from '../studies/studies.service.js';
+import { resolveStudyUid } from '../studies/study-identifier.js';
+import { assertSuccessfulDelivery } from '../common/visibility/hospital-delivery.js';
 import { CorrectionsService } from '../corrections/corrections.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { htmlToPlainText, sanitizeReportHtml } from '../common/html.js';
+import {
+  contentHash,
+  hasRequiredReportContent,
+  type ReportContent,
+} from '../common/reports/report-content.js';
 import type { AuditAction, AuditResource } from '@axis/types';
-import { createHash } from 'crypto';
 import type { Response } from 'express';
-import type { UserRole, ReportStatus } from '@prisma/client';
-import { StudyStatus } from '@prisma/client';
+import type { UserRole } from '@prisma/client';
+import { Prisma, StudyStatus } from '@prisma/client';
 
-/**
- * Fields that make up the authoritative clinical report content. Every one of
- * these contributes to the deterministic content hash. Additional structured
- * fields can be added here in the future without changing the reporting
- * architecture.
- */
-export interface ReportContent {
-  clinicalHistory?: string;
-  findings?: string;
-  impression?: string;
-  technique?: string;
-  comparison?: string;
-  recommendations?: string;
-  contentHtml?: string;
-  criticalFinding?: boolean;
-}
-
-/**
- * Deterministic full 64-char SHA-256 content hash computed server-side over
- * every clinical content field. Never trust a client-submitted hash.
- *
- * The rich HTML body is appended only when present so legacy structured report
- * hashes remain byte-for-byte stable.
- */
-export function contentHash(c: ReportContent = {}): string {
-  const parts: string[] = [
-    c.clinicalHistory ?? '',
-    c.findings ?? '',
-    c.impression ?? '',
-    c.technique ?? '',
-    c.comparison ?? '',
-    c.recommendations ?? '',
-    c.criticalFinding ? 'critical' : 'normal',
-  ];
-  if (c.contentHtml) parts.push(c.contentHtml);
-  return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
-}
-
-
+export type { ReportContent } from '../common/reports/report-content.js';
+export { contentHash } from '../common/reports/report-content.js';
 
 // States in which a draft may be created / edited.
 const DRAFTABLE_STATES: StudyStatus[] = [
@@ -127,10 +96,11 @@ export class ReportsService {
   }
 
   private async getStudy(studyUid: string) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
     });
-    if (!study) throw new NotFoundException(`Study ${studyUid} not found`);
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
     return study;
   }
 
@@ -224,6 +194,9 @@ export class ReportsService {
       where.study = {
         hospitalId: user.hospitalId,
         status: { in: [...HOSPITAL_VISIBLE_STATES] },
+        deliveryAttempts: {
+          some: { hospitalId: user.hospitalId, status: 'COMPLETED' },
+        },
       };
     } else if (user.role === 'RADIOLOGIST') {
       where.study = { assignedRadiologistId: user.id };
@@ -266,6 +239,9 @@ export class ReportsService {
 
     const where: Record<string, unknown> = {
       status: { in: ['SIGNED', 'MANAGER_APPROVED'] },
+      deliveryAttempts: {
+        some: { hospitalId: user.hospitalId!, status: 'COMPLETED' },
+      },
       study: {
         hospitalId: user.hospitalId!,
         status: { in: HOSPITAL_VISIBLE_STATES },
@@ -310,6 +286,9 @@ export class ReportsService {
       include: { author: true, versions: true, changeRequests: true },
       orderBy: { version: 'desc' },
     });
+    if (user?.role === 'HOSPITAL' && report) {
+      await assertSuccessfulDelivery(this.prisma, study.id, user.hospitalId, report.id);
+    }
 
     return { data: report };
   }
@@ -322,6 +301,13 @@ export class ReportsService {
     const study = await this.getStudy(studyUid);
     this.assertCanAccessStudy(user, study, true);
     this.assertHospitalReportVisibility(study, user);
+
+    if (user.role === 'HOSPITAL') {
+      const signed = await this.getLatestReport(study.id);
+      if (signed) {
+        await assertSuccessfulDelivery(this.prisma, study.id, user.hospitalId, signed.id);
+      }
+    }
 
     const versions = await this.prisma.reportVersion.findMany({
       where: { report: { studyId: study.id } },
@@ -356,7 +342,7 @@ export class ReportsService {
       criticalFinding: dto.criticalFinding ?? false,
     };
     if (dto.contentHtml !== undefined) {
-      content.contentHtml = sanitizeReportHtml(dto.contentHtml);
+      content.contentHtml = sanitizeReportHtml(dto.contentHtml ?? '');
     }
     const hash = contentHash(content);
 
@@ -480,10 +466,11 @@ export class ReportsService {
    *     and writes audit rows -- all in a single Prisma transaction.
    */
   async signOff(studyUid: string, actor: Actor) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
     });
-    if (!study) throw new NotFoundException(`Study ${studyUid} not found`);
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
     this.assertAssignedRadiologist(study, actor);
 
     const report = await this.prisma.report.findFirst({
@@ -497,11 +484,7 @@ export class ReportsService {
     if (report.status !== 'DRAFT') {
       throw new BadRequestException(`Only a draft report can be signed (current status: ${report.status})`);
     }
-    const hasRichContent = htmlToPlainText(report.contentHtml).length > 0;
-    if (
-      !hasRichContent &&
-      (!report.findings.trim() || !report.impression.trim())
-    ) {
+    if (!hasRequiredReportContent(report)) {
       throw new BadRequestException(
         'The report must have findings and impression (or rich report content) before it can be signed',
       );
@@ -521,17 +504,32 @@ export class ReportsService {
 
     const now = new Date();
     const signed = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Study" WHERE id = ${study.id} FOR UPDATE`;
+      const currentStudy = await tx.study.findUnique({
+        where: { id: study.id },
+      });
+      if (!currentStudy) throw new NotFoundException(`Study ${uid} not found`);
+
       const latest = await tx.report.findFirst({
         where: { studyId: study.id },
         orderBy: { version: 'desc' },
       });
       if (!latest) throw new NotFoundException(`No report found for study ${studyUid}`);
-      // Double-sign guard inside the transaction: only the first request wins.
       if (latest.status === 'SIGNED' || latest.signedOffAt) {
         throw new ConflictException('This report has already been signed and cannot be signed again');
       }
       if (latest.status !== 'DRAFT') {
         throw new BadRequestException(`Only a draft report can be signed (current status: ${latest.status})`);
+      }
+      if (!hasRequiredReportContent(latest)) {
+        throw new BadRequestException(
+          'The report must have findings and impression (or rich report content) before it can be signed',
+        );
+      }
+      if (!ALLOWED_TRANSITIONS[currentStudy.status]?.includes(StudyStatus.RADIOLOGIST_SIGNED)) {
+        throw new BadRequestException(
+          `Cannot sign a report while the study is in ${currentStudy.status}. The study must be in REPORT_DRAFT (or a valid pre-signing state).`,
+        );
       }
 
       const updated = await tx.report.update({
@@ -544,22 +542,33 @@ export class ReportsService {
         },
       });
 
-      const createdVersion = await tx.reportVersion.create({
-        data: {
-          reportId: latest.id,
-          version: latest.version,
-          status: 'SIGNED',
-          clinicalHistory: latest.clinicalHistory,
-          findings: latest.findings,
-          impression: latest.impression,
-          technique: latest.technique,
-          comparison: latest.comparison,
-          recommendations: latest.recommendations,
-          contentHtml: latest.contentHtml,
-          authorId: latest.authorId,
-          contentHash: latest.contentHash,
-        },
-      });
+      let createdVersion;
+      try {
+        createdVersion = await tx.reportVersion.create({
+          data: {
+            reportId: latest.id,
+            version: latest.version,
+            status: 'SIGNED',
+            clinicalHistory: latest.clinicalHistory,
+            findings: latest.findings,
+            impression: latest.impression,
+            technique: latest.technique,
+            comparison: latest.comparison,
+            recommendations: latest.recommendations,
+            contentHtml: latest.contentHtml,
+            authorId: latest.authorId,
+            contentHash: latest.contentHash,
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException('This report version was already signed');
+        }
+        throw error;
+      }
 
       // If this signing finalizes an approved correction, link the new immutable
       // version as the correction's lineage (newReportVersionId) and resolve the
@@ -605,7 +614,7 @@ export class ReportsService {
           action: 'STUDY_STATUS_CHANGED',
           resource: 'STUDY',
           resourceId: study.id,
-          metadata: { from: study.status, to: 'RADIOLOGIST_SIGNED', studyUid },
+          metadata: { from: currentStudy.status, to: 'RADIOLOGIST_SIGNED', studyUid },
         },
       });
 
@@ -622,11 +631,20 @@ export class ReportsService {
 
   async amend(
     studyUid: string,
-    dto: ReportContent,
+    dto: ReportContent & { reason: string },
     actor: Actor,
   ) {
-    const study = await this.getStudy(studyUid);
+    const uid = await resolveStudyUid(this.prisma, studyUid);
+    const study = await this.prisma.study.findUnique({
+      where: { studyInstanceUid: uid },
+    });
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
     this.assertAssignedRadiologist(study, actor);
+
+    const reason = dto.reason?.trim() ?? '';
+    if (!reason) {
+      throw new BadRequestException('An amendment reason is required');
+    }
 
     if (study.status !== StudyStatus.RADIOLOGIST_SIGNED) {
       throw new BadRequestException(
@@ -634,8 +652,33 @@ export class ReportsService {
       );
     }
 
+    const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Study" WHERE id = ${study.id} FOR UPDATE`;
+      const currentStudy = await tx.study.findUnique({
+        where: { id: study.id },
+      });
+      if (!currentStudy) throw new NotFoundException(`Study ${uid} not found`);
+      if (currentStudy.status !== StudyStatus.RADIOLOGIST_SIGNED) {
+        throw new ConflictException(
+          `An amendment can only be initiated while the study is in RADIOLOGIST_SIGNED (currently ${currentStudy.status}).`,
+        );
+      }
+
+      let transitionFrom: StudyStatus = currentStudy.status;
+      for (const target of [StudyStatus.IN_READING, StudyStatus.REPORT_DRAFT]) {
+        if (!ALLOWED_TRANSITIONS[transitionFrom]?.includes(target)) {
+          throw new BadRequestException(
+            `Invalid status transition ${transitionFrom} -> ${target}`,
+          );
+        }
+        if (!TRANSITION_ACTORS[target]?.includes(actor.role)) {
+          throw new ForbiddenException(
+            `Your role (${actor.role}) is not authorized to transition to ${target}`,
+          );
+        }
+        transitionFrom = target;
+      }
 
       const previous = await tx.report.findFirst({
         where: { studyId: study.id },
@@ -646,13 +689,12 @@ export class ReportsService {
         throw new NotFoundException(`No report found for study ${studyUid}`);
       }
 
-      if (previous.status !== 'SIGNED') {
+      if (previous.status !== 'SIGNED' || !previous.signedOffBy || !previous.signedOffAt) {
         throw new BadRequestException(
           `Only a signed report can be amended (current status: ${previous.status})`,
         );
       }
 
-      // Ensure the signed version is preserved as a ReportVersion snapshot.
       const signedVersion = await tx.reportVersion.findFirst({
         where: { reportId: previous.id, version: previous.version },
       });
@@ -675,7 +717,6 @@ export class ReportsService {
         });
       }
 
-      // Seed the new draft from the signed report content.
       const content: ReportContent = {
         clinicalHistory: dto.clinicalHistory ?? previous.clinicalHistory ?? '',
         findings: dto.findings ?? previous.findings ?? '',
@@ -686,7 +727,7 @@ export class ReportsService {
         criticalFinding: dto.criticalFinding ?? previous.criticalFinding ?? false,
         contentHtml:
           dto.contentHtml !== undefined
-            ? sanitizeReportHtml(dto.contentHtml)
+            ? sanitizeReportHtml(dto.contentHtml ?? '')
             : previous.contentHtml ?? undefined,
       };
       const newVersion = previous.version + 1;
@@ -704,34 +745,55 @@ export class ReportsService {
         include: { author: true },
       });
 
+      await tx.study.update({
+        where: { id: study.id },
+        data: { status: StudyStatus.IN_READING, reportingStartedAt: now },
+      });
+      await this.audit.createTx(tx, {
+        actorId: actor.id,
+        actorName: actor.displayName ?? actor.role,
+        actorRole: actor.role,
+        action: 'STUDY_STATUS_CHANGED',
+        resource: 'STUDY',
+        resourceId: study.id,
+        metadata: { from: currentStudy.status, to: StudyStatus.IN_READING, studyUid },
+      });
+
+      await tx.study.update({
+        where: { id: study.id },
+        data: { status: StudyStatus.REPORT_DRAFT },
+      });
+      await this.audit.createTx(tx, {
+        actorId: actor.id,
+        actorName: actor.displayName ?? actor.role,
+        actorRole: actor.role,
+        action: 'STUDY_STATUS_CHANGED',
+        resource: 'STUDY',
+        resourceId: study.id,
+        metadata: { from: StudyStatus.IN_READING, to: StudyStatus.REPORT_DRAFT, studyUid },
+      });
+
+      await this.audit.createTx(tx, {
+        actorId: actor.id,
+        actorName: actor.displayName ?? actor.role,
+        actorRole: actor.role,
+        action: 'REPORT_AMENDED',
+        resource: 'REPORT',
+        resourceId: created.id,
+        metadata: {
+          studyUid,
+          amendmentReason: reason,
+          amendedBy: actor.id,
+          amendedAt: now.toISOString(),
+          previousReportId: previous.id,
+          previousVersion: previous.version,
+          newReportId: created.id,
+          newVersion: created.version,
+        },
+      });
+
       return { created, previous };
     });
-
-    // An amendment is editable immediately: RADIOLOGIST_SIGNED -> IN_READING ->
-    // REPORT_DRAFT. The final state is required for sign-off to be allowed.
-    await this.studies.updateStatus(
-      studyUid,
-      { status: StudyStatus.IN_READING },
-      actor,
-    );
-    await this.studies.updateStatus(
-      studyUid,
-      { status: StudyStatus.REPORT_DRAFT },
-      actor,
-    );
-
-    await this.auditLog(
-      actor,
-      'REPORT_AMENDED',
-      'REPORT',
-      result.created.id,
-      {
-        studyUid,
-        previousReportId: result.previous.id,
-        previousVersion: result.previous.version,
-        newVersion: result.created.version,
-      },
-    );
 
     return { data: result.created };
   }
@@ -770,22 +832,12 @@ export class ReportsService {
     if (!['ADMIN', 'MANAGER'].includes(actor.role)) {
       throw new ForbiddenException('Only admin or manager can validate reports');
     }
-    const study = await this.getStudy(studyUid);
-    const report = await this.getLatestReport(study.id);
-    if (!report) throw new NotFoundException(`No report found for study ${studyUid}`);
-
-    const updated = await this.prisma.report.update({
-      where: { id: report.id },
-      data: { status: dto.status },
-      include: { author: true },
-    });
-    if (dto.status === 'SIGNED') {
-      await this.prisma.study.update({ where: { id: study.id }, data: { status: 'MANAGER_REVIEW' } });
+    if (dto.status === 'DRAFT') {
+      throw new BadRequestException(
+        'A signed report cannot be reverted to DRAFT. Use the amendment or correction workflow.',
+      );
     }
-
-    await this.auditLog(actor, 'REPORT_VERIFIED', 'REPORT', report.id, { studyUid, reportStatus: dto.status });
-
-    return { data: updated, ...(dto.reason ? { reason: dto.reason } : {}) };
+    return this.verify(studyUid, actor);
   }
 
   async changeRequests(user: Actor) {
@@ -875,11 +927,12 @@ export class ReportsService {
   }
 
   async hospitalPdf(studyUid: string, user: Actor, res: Response) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
       include: { patient: true, hospital: true },
     });
-    if (!study) throw new NotFoundException(`Study ${studyUid} not found`);
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
 
     if (user.role === 'HOSPITAL' && study.hospitalId !== user.hospitalId) {
       throw new ForbiddenException('You do not have access to studies from this hospital');
@@ -894,6 +947,9 @@ export class ReportsService {
       include: { author: true },
     });
     if (!report) throw new NotFoundException(`No final report found for study ${studyUid}`);
+    if (user.role === 'HOSPITAL') {
+      await assertSuccessfulDelivery(this.prisma, study.id, user.hospitalId, report.id);
+    }
 
     const company = await this.prisma.companySettings.findUnique({
       where: { id: 'default' },

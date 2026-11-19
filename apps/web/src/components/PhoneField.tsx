@@ -1,8 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { clsx } from "clsx";
-import { isValidPhone, PHONE_VALIDATION_MESSAGE } from "@/lib/phone";
+import {
+  isValidPhone,
+  PHONE_INPUT_PATTERN,
+  PHONE_VALIDATION_MESSAGE,
+} from "@/lib/phone";
 
 interface PhoneFieldProps {
   value: string;
@@ -17,26 +21,28 @@ export function PhoneField({
   value,
   onChange,
   disabled,
-  placeholder = "9876543210 or +919876543210",
+  placeholder = "9876543210",
   required,
   className,
 }: PhoneFieldProps) {
   const [touched, setTouched] = useState(false);
+  const errorId = useId();
   const invalid = touched && value.trim() !== "" && !isValidPhone(value);
 
   return (
     <div>
       <input
         type="tel"
-        inputMode="tel"
-        autoComplete="tel"
+        inputMode="numeric"
+        autoComplete="tel-national"
         required={required}
         value={value}
         disabled={disabled}
-        maxLength={16}
+        maxLength={10}
+        pattern={PHONE_INPUT_PATTERN.source}
         placeholder={placeholder}
         aria-invalid={invalid}
-        aria-describedby={invalid ? "phone-field-error" : undefined}
+        aria-describedby={invalid ? errorId : undefined}
         onBlur={() => setTouched(true)}
         onChange={(event) => {
           setTouched(true);
@@ -49,7 +55,7 @@ export function PhoneField({
         )}
       />
       {invalid && (
-        <p id="phone-field-error" className="mt-1 text-xs text-error">
+        <p id={errorId} className="mt-1 text-xs text-error">
           {PHONE_VALIDATION_MESSAGE}
         </p>
       )}

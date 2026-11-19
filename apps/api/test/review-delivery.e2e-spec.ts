@@ -250,6 +250,44 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       await cleanupStudy(s.id, s.patientId);
     });
 
+    it('DELIVERY-ADMIN: admin can deliver an eligible report', async () => {
+      const s = await seedSigned({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.MANAGER_APPROVED, assignedRadiologist: rad1Id, managerApprovedAt: true });
+      await adminAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(201);
+      const attempt = await prisma.deliveryAttempt.findFirst({ where: { studyId: s.id } });
+      expect(attempt?.hospitalId).toBe(CGH_HOSPITAL_ID);
+      await cleanupStudy(s.id, s.patientId);
+    });
+
+    it('DELIVERY-DUPLICATE: a delivered report cannot be delivered twice', async () => {
+      const s = await seedSigned({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.MANAGER_APPROVED, assignedRadiologist: rad1Id, managerApprovedAt: true });
+      await managerAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(201);
+      await managerAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(409);
+      const attempts = await prisma.deliveryAttempt.count({ where: { studyId: s.id } });
+      expect(attempts).toBe(1);
+      await cleanupStudy(s.id, s.patientId);
+    });
+
+    it('DELIVERY-DRAFT: an unsigned report cannot be delivered', async () => {
+      const s = await seedStudy({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.MANAGER_APPROVED, assignedRadiologist: rad1Id });
+      await prisma.report.create({
+        data: {
+          studyId: s.id,
+          authorId: rad1Id,
+          status: 'DRAFT',
+          version: 1,
+          findings: 'draft',
+          impression: 'draft',
+          contentHash: FAKE_HASH,
+        },
+      });
+      await prisma.study.update({
+        where: { id: s.id },
+        data: { managerApprovedAt: new Date() },
+      });
+      await managerAgent.post(`/api/studies/${s.studyInstanceUid}/deliver`).send({}).expect(409);
+      await cleanupStudy(s.id, s.patientId);
+    });
+
     it('DELIVERY-4: deliver uses the authoritative study.hospitalId (no client-supplied hospital)', async () => {
       const s = await seedSigned({ hospitalId: CGH_HOSPITAL_ID, status: StudyStatus.MANAGER_APPROVED, assignedRadiologist: rad1Id, managerApprovedAt: true });
       const res = await managerAgent
@@ -430,6 +468,25 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
 
       await cleanupStudy(s.id, s.patientId);
     });
+
+    it('WORKFLOW-7: delivered status without a successful delivery record still blocks hospital access', async () => {
+      const s = await seedSigned({
+        hospitalId: CGH_HOSPITAL_ID,
+        status: StudyStatus.DELIVERED_TO_HOSPITAL,
+        assignedRadiologist: rad1Id,
+        managerApprovedAt: true,
+        deliveredAt: true,
+      });
+      await cghAgent.get(`/api/reports/${s.studyInstanceUid}`).expect(403);
+      const list = await cghAgent.get('/api/reports/hospital').expect(200);
+      expect(
+        list.body.data.map((r: any) => r.study.studyInstanceUid),
+      ).not.toContain(s.studyInstanceUid);
+      await cghAgent
+        .get(`/api/reports/hospital/${s.studyInstanceUid}/pdf`)
+        .expect(403);
+      await cleanupStudy(s.id, s.patientId);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -481,6 +538,9 @@ describe('Phase 5 — Review & Hospital Delivery', () => {
       });
       expect(deliveryAudit).toBeTruthy();
       expect((deliveryAudit!.metadata as any)?.hospitalId).toBe(CGH_HOSPITAL_ID);
+      expect((deliveryAudit!.metadata as any)?.reportId).toBe(s.reportId);
+      expect((deliveryAudit!.metadata as any)?.reportVersion).toBe(1);
+      expect((deliveryAudit!.metadata as any)?.deliveredBy).toBeTruthy();
 
       const acceptAudit = await prisma.auditLog.findFirst({
         where: { resourceId: s.id, action: 'HOSPITAL_ACCEPTED' },

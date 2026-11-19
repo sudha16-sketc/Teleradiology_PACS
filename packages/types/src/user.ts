@@ -28,6 +28,7 @@ export interface AuthUser {
   role: UserRole;
   status: UserStatus;
   hospitalId?: string | null;
+  phone?: string | null;
 }
 
 export interface RegistrationRequest {

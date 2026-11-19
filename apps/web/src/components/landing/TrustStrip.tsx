@@ -97,7 +97,7 @@ export default function TrustStrip() {
   const { ref, inView } = useInView<HTMLDivElement>({ threshold: 0.1 });
 
   return (
-    <section className="border-b border-border bg-white py-8" id="about">
+    <section className="border-b border-border bg-white py-8" id="trust">
       <div
         ref={ref}
         className={`mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 ${

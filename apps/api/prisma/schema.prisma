@@ -77,6 +77,7 @@ model Hospital {
   name             String
   code             String            @unique
   address          String?
+  phone            String?
   timezone         String            @default("UTC")
   isActive         Boolean           @default(true)
   createdAt        DateTime          @default(now())
@@ -268,6 +269,8 @@ model ReportVersion {
   parentOfCorrections ChangeRequest[] @relation("CorrectionParentVersion")
   author              User            @relation("VersionAuthor", fields: [authorId], references: [id])
   report              Report          @relation(fields: [reportId], references: [id])
+
+  @@unique([reportId, version])
 }
 
 model ReportTemplate {

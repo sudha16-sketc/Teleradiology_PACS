@@ -117,7 +117,7 @@ export default function HospitalPortalPage() {
           icon={<Clock size={16} />}
         />
         <MetricCard
-          title="Finalized"
+          title="Delivered"
           value={delivered}
           icon={<CheckCircle2 size={16} />}
         />
@@ -166,7 +166,7 @@ export default function HospitalPortalPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full min-w-[720px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border text-xs text-text-muted">
                   <th className="px-4 py-2.5 font-medium">Patient</th>

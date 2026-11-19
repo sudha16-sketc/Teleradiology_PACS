@@ -205,12 +205,14 @@ export function ReportEditor({
   };
 
   const amend = async () => {
+    const reason = window.prompt("Reason for amendment")?.trim();
+    if (!reason) return;
     setSaving(true);
     setNotice(null);
     try {
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
-        {},
+        { reason },
       );
       setIsAmending(true);
       setReportStatus("DRAFT");

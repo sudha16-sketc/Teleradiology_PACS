@@ -3,6 +3,7 @@ export interface Hospital {
   name: string;
   code: string;
   address?: string;
+  phone?: string | null;
   timezone: string;
   isActive: boolean;
   createdAt: string;

@@ -20,6 +20,9 @@ export function AppShell({
 
   useEffect(() => {
     if (!mobileNavOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") setMobileNavOpen(false);
     }
@@ -32,6 +35,8 @@ export function AppShell({
     return () => {
       window.removeEventListener("keydown", closeOnEscape);
       desktopViewport.removeEventListener("change", closeOnDesktop);
+      document.body.style.overflow = previousOverflow;
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
   }, [mobileNavOpen]);
 

@@ -155,12 +155,14 @@ export function ReportPanel({
 
   const handleAmend = useCallback(async () => {
     if (amendBusy) return;
+    const reason = window.prompt("Reason for amendment")?.trim();
+    if (!reason) return;
     setAmendBusy(true);
     setAmendError(null);
     try {
       await apiClient.post(
         `/reports/${encodeURIComponent(studyInstanceUid)}/amend`,
-        {},
+        { reason },
       );
       setIsAmending(true);
       setSaveStatus("idle");

@@ -169,7 +169,7 @@ export function RichReportEditor({
     insertHtml(
       `<figure style="margin:12px 0;text-align:center"><img src="${escapeHtml(
         url,
-      )}" alt="${escapeHtml(captionText || "Report image")}" style="width:100%;height:auto;display:inline-block" />${captionHtml}</figure><p><br /></p>`,
+      )}" alt="${escapeHtml(captionText || "Report image")}" loading="lazy" decoding="async" style="width:100%;height:auto;display:inline-block" />${captionHtml}</figure><p><br /></p>`,
     );
   };
 

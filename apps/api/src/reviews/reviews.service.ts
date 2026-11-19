@@ -11,6 +11,8 @@ import { NotificationsService } from '../notifications/notifications.service.js'
 import { StudyStatus, UserRole } from '@prisma/client';
 import type { AuditAction } from '@axis/types';
 import { runSerializable } from '../common/db/serializable.js';
+import { assertSignedReportReady } from '../common/reports/report-content.js';
+import { resolveStudyUid } from '../studies/study-identifier.js';
 
 interface Actor {
   id: string;
@@ -57,10 +59,11 @@ export class ReviewsService {
   }
 
   private async getStudy(studyUid: string) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const study = await this.prisma.study.findUnique({
-      where: { studyInstanceUid: studyUid },
+      where: { studyInstanceUid: uid },
     });
-    if (!study) throw new NotFoundException(`Study ${studyUid} not found`);
+    if (!study) throw new NotFoundException(`Study ${uid} not found`);
     return study;
   }
 
@@ -112,13 +115,15 @@ export class ReviewsService {
    */
   async deliver(studyUid: string, actor: Actor) {
     this.assertActorRole(actor, [UserRole.ADMIN, UserRole.MANAGER], 'deliver');
-    const study = await this.getStudy(studyUid);
+    const uid = await resolveStudyUid(this.prisma, studyUid);
+    const study = await this.getStudy(uid);
 
     const deliverTx = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Study" WHERE "studyInstanceUid" = ${uid} FOR UPDATE`;
       const latest = await tx.study.findUnique({
-        where: { studyInstanceUid: studyUid },
+        where: { studyInstanceUid: uid },
       });
-      if (!latest) throw new NotFoundException(`Study ${studyUid} not found`);
+      if (!latest) throw new NotFoundException(`Study ${uid} not found`);
 
       if (latest.status !== StudyStatus.MANAGER_APPROVED) {
         throw new ConflictException(
@@ -131,17 +136,22 @@ export class ReviewsService {
         );
       }
       const report = await tx.report.findFirst({
-        where: { studyId: latest.id, status: 'SIGNED' },
+        where: { studyId: latest.id },
         orderBy: { version: 'desc' },
       });
-      if (!report) {
-        throw new ConflictException(
-          'No signed report exists to deliver to the hospital.',
-        );
-      }
+      assertSignedReportReady(report);
       if (!latest.hospitalId) {
         throw new BadRequestException(
           'The study is not linked to a destination hospital.',
+        );
+      }
+      const hospital = await tx.hospital.findUnique({
+        where: { id: latest.hospitalId },
+        select: { isActive: true },
+      });
+      if (!hospital || !hospital.isActive) {
+        throw new BadRequestException(
+          'The destination hospital is not active.',
         );
       }
 
@@ -162,7 +172,14 @@ export class ReviewsService {
           status: 'COMPLETED',
           attemptNumber,
           deliveredAt: now,
-          metadata: { deliveredBy: actor.id, studyUid },
+          metadata: {
+            deliveredBy: actor.id,
+            studyUid,
+            reportId: report.id,
+            reportVersion: report.version,
+            destinationHospitalId: latest.hospitalId,
+            deliveryStatus: 'COMPLETED',
+          },
         },
       });
 
@@ -177,6 +194,7 @@ export class ReviewsService {
           studyUid,
           studyId: latest.id,
           reportId: report.id,
+          reportVersion: report.version,
           hospitalId: latest.hospitalId,
           deliveredBy: actor.id,
           attemptNumber,
@@ -231,14 +249,15 @@ export class ReviewsService {
    * The destination hospital accepts the delivered report.
    */
   async accept(studyUid: string, actor: Actor) {
-    const study = await this.getStudy(studyUid);
+    const uid = await resolveStudyUid(this.prisma, studyUid);
+    const study = await this.getStudy(uid);
     this.assertHospitalScope(study, actor);
 
     const acceptTx = await this.prisma.$transaction(async (tx) => {
       const latest = await tx.study.findUnique({
-        where: { studyInstanceUid: studyUid },
+        where: { studyInstanceUid: uid },
       });
-      if (!latest) throw new NotFoundException(`Study ${studyUid} not found`);
+      if (!latest) throw new NotFoundException(`Study ${uid} not found`);
 
       if (latest.status === StudyStatus.HOSPITAL_ACCEPTED) {
         throw new ConflictException(
@@ -261,12 +280,10 @@ export class ReviewsService {
         );
       }
       const report = await tx.report.findFirst({
-        where: { studyId: latest.id, status: 'SIGNED' },
+        where: { studyId: latest.id },
         orderBy: { version: 'desc' },
       });
-      if (!report) {
-        throw new ConflictException('No signed report exists to accept.');
-      }
+      assertSignedReportReady(report);
 
       const now = new Date();
       const updated = await tx.study.update({
@@ -371,11 +388,12 @@ export class ReviewsService {
       set: Record<string, Date>;
     },
   ) {
+    const uid = await resolveStudyUid(this.prisma, studyUid);
     const updated = await runSerializable(this.prisma, async (tx) => {
       const latest = await tx.study.findUnique({
-        where: { studyInstanceUid: studyUid },
+        where: { studyInstanceUid: uid },
       });
-      if (!latest) throw new NotFoundException(`Study ${studyUid} not found`);
+      if (!latest) throw new NotFoundException(`Study ${uid} not found`);
 
       if (latest.status === target) {
         throw new ConflictException(
@@ -409,15 +427,12 @@ export class ReviewsService {
       }
 
       const report = await tx.report.findFirst({
-        where: { studyId: latest.id, status: 'SIGNED' },
+        where: { studyId: latest.id },
         orderBy: { version: 'desc' },
       });
-      if (!report) {
-        throw new ConflictException('No signed report exists for this study.');
-      }
+      assertSignedReportReady(report);
 
-      const realReportId =
-        opts.resourceId ?? report?.id ?? (await this.reportIdFor(latest.id));
+      const realReportId = opts.resourceId ?? report!.id;
 
       const updated = await tx.study.update({
         where: { id: latest.id },

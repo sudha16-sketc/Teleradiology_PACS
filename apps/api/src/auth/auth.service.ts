@@ -27,7 +27,10 @@ import { AuthRateLimitService } from './auth-rate-limit.service.js';
 import { PasswordResetEmailService } from './password-reset-email.service.js';
 import { normalizePhoneOrThrow } from '../common/validators/phone.js';
 import { logger } from '../common/observability/structured-logger.js';
-import type { RegisterDto, ApproveRequestDto, RejectRequestDto, ResetPasswordDto } from './auth.dto.js';
+import type { RegisterDto, ApproveRequestDto, RejectRequestDto, ResetPasswordDto, UpdateProfileDto } from './auth.dto.js';
+
+const FORGOT_PASSWORD_RESPONSE_MESSAGE =
+  'If an account exists for that email, your password reset request has been received.';
 
 @Injectable()
 export class AuthService {
@@ -190,16 +193,18 @@ export class AuthService {
 
   async forgotPassword(emailInput: string, request: Request, response: Response) {
     const email = emailInput.toLowerCase().trim();
+    const genericResponse = { data: { message: FORGOT_PASSWORD_RESPONSE_MESSAGE } };
     await this.rateLimit.assertRecoveryAllowed(request, 'forgot', email, response);
 
     this.resetEmail.assertConfigured();
+    this.resetEmail.assertDeliveryAvailable();
 
     const user = await this.prisma.user.findUnique({
       where: { email },
       select: { id: true, status: true, isActive: true },
     });
     if (!user || user.status !== UserStatus.APPROVED || !user.isActive) {
-      return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };
+      return genericResponse;
     }
 
     const token = randomBytes(32).toString('base64url');
@@ -224,16 +229,14 @@ export class AuthService {
         logger.error('password_reset_token_cleanup_failed', {
           message:
             cleanupError instanceof Error
-              ? cleanupError.name
+              ? cleanupError.message
               : 'Unknown reset-token cleanup error',
         });
       }
-      throw new ServiceUnavailableException(
-        'Password reset email could not be delivered. Please try again later.',
-      );
+      return genericResponse;
     }
 
-    return { data: { message: 'If an account exists for that email, password reset instructions will be sent.' } };
+    return genericResponse;
   }
 
   async resetPassword(dto: ResetPasswordDto, request: Request, response: Response) {
@@ -310,6 +313,16 @@ export class AuthService {
       throw new UnauthorizedException('Account is not active');
     }
     return { data: sanitizeUser(full) };
+  }
+
+  async updateProfile(user: AuthenticatedUser, dto: UpdateProfileDto) {
+    const phone = dto.phone === undefined ? undefined : normalizePhoneOrThrow(dto.phone);
+    const updated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: phone === undefined ? {} : { phone },
+    });
+    await this.cache.invalidateUser(user.id);
+    return { data: sanitizeUser(updated) };
   }
 
   async logout(response: Response) {

@@ -17,7 +17,9 @@ import FaqSection from "@/components/landing/FaqSection";
 import Footer from "@/components/landing/Footer";
 
 export const metadata: Metadata = {
-  title: "Axis — Teleradiology PACS & Clinical Reporting Platform",
+  title: {
+    absolute: "Axis — Teleradiology PACS & Clinical Reporting Platform",
+  },
   description:
     "A teleradiology PACS and clinical reporting platform for connecting hospitals, radiologists and workflow managers.",
 };

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isProtectedPath,
   isPublicPath,
   isViewerPath,
   viewerDocumentNeedsLogin,
@@ -14,6 +15,12 @@ describe("web middleware public paths", () => {
   it("keeps dashboard routes protected", () => {
     expect(isPublicPath("/reading")).toBe(false);
     expect(isPublicPath("/settings/users")).toBe(false);
+  });
+
+  it("only treats known workspace prefixes as protected", () => {
+    expect(isProtectedPath("/reports")).toBe(true);
+    expect(isProtectedPath("/settings/hospitals")).toBe(true);
+    expect(isProtectedPath("/does-not-exist")).toBe(false);
   });
 
   it("identifies viewer routes that must never redirect into /login", () => {

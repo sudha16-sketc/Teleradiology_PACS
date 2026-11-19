@@ -112,6 +112,13 @@ const SERVER_AUTHORED_EXCLUSIONS: ReadonlySet<ApiFailureKind> =
   ]);
 
 /**
+ * Password-recovery failures are authored by this API and are deliberately
+ * safe to display (they never contain tokens, accounts, or provider secrets).
+ * A generic 503 from a proxy will not match this allowlist.
+ */
+const AUTH_503_MESSAGE = /^Password reset (email|link)/;
+
+/**
  * Classify an HTTP response.
  *
  * `serverMessage` is the API's `message` field, used only for the 4xx kinds
@@ -151,7 +158,8 @@ export function classifyStatus(
   const useServerMessage =
     !!serverMessage &&
     typeof serverMessage === "string" &&
-    !SERVER_AUTHORED_EXCLUSIONS.has(kind);
+    (AUTH_503_MESSAGE.test(serverMessage) ||
+      !SERVER_AUTHORED_EXCLUSIONS.has(kind));
 
   return {
     kind,

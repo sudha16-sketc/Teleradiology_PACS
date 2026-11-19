@@ -32,6 +32,7 @@ describe("API failure handling", () => {
     expect(auth.requiresSignIn).toBe(true);
     expect(imaging.message).not.toContain("upstream detail");
     expect(mailOutage.kind).toBe("server");
+    expect(mailOutage.message).toContain("Password reset email delivery failed");
     expect(isConnectivityFailure(offline)).toBe(true);
     expect(failureHint(offline)).toContain("does not work offline");
   });

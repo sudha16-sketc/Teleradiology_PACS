@@ -1,6 +1,10 @@
 import { logger } from '../observability/structured-logger.js';
 import { isWeakSecret, MIN_AUTH_SECRET_LENGTH } from '../../auth/auth.constants.js';
-import { isLoopbackOrthancUrl, parseOrthancUrl } from './orthanc-url.js';
+import {
+  isLoopbackOrthancUrl,
+  isPrivateOrthancUrl,
+  parseOrthancUrl,
+} from './orthanc-url.js';
 
 /**
  * fail-fast startup validation for mandatory configuration.
@@ -107,13 +111,16 @@ export function assertRequiredEnv(): void {
       try {
         const parsed = parseOrthancUrl(rawOrthancUrl);
         const loopback = isLoopbackOrthancUrl(parsed);
+        const privateService = isPrivateOrthancUrl(parsed);
         if (loopback && process.env.AXIS_ALLOW_LOOPBACK_ORTHANC !== '1') {
           missing.push(
             'ORTHANC_URL (loopback is not reachable from a deployed API; set a real Orthanc host or AXIS_ALLOW_LOOPBACK_ORTHANC=1 for local production testing)',
           );
         }
-        if (!loopback && parsed.protocol !== 'https:') {
-          missing.push('ORTHANC_URL (must use https in production)');
+        if (!loopback && !privateService && parsed.protocol !== 'https:') {
+          missing.push(
+            'ORTHANC_URL (must use https in production unless it points at the private axis-orthanc service)',
+          );
         }
       } catch (err) {
         missing.push(`ORTHANC_URL (${(err as Error).message})`);

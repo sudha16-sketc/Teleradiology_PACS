@@ -24,9 +24,30 @@ const PUBLIC_PATHS = [
   "/reset-password",
   "/documentation",
 ];
+const PROTECTED_PREFIXES = [
+  "/admin",
+  "/analytics",
+  "/audit",
+  "/corrections",
+  "/dashboard",
+  "/hospitals",
+  "/operations",
+  "/profile",
+  "/queue",
+  "/reading",
+  "/reports",
+  "/settings",
+  "/worklist",
+];
 
 export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
+
+export function isProtectedPath(pathname: string): boolean {
+  return PROTECTED_PREFIXES.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );
 }
@@ -70,7 +91,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (isPublicPath(pathname)) {
+  if (isPublicPath(pathname) || !isProtectedPath(pathname)) {
     return NextResponse.next();
   }
 

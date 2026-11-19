@@ -19,8 +19,47 @@ function orthancHealthTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 5000;
 }
 
-function dicomwebProbeUrl(): string {
-  return `${orthancBaseUrl()}/dicom-web/studies?limit=1`;
+function dicomwebProbeUrl(studyUid?: string): string {
+  const base = `${orthancBaseUrl()}/dicom-web/studies`;
+  return studyUid
+    ? `${base}?StudyInstanceUID=${encodeURIComponent(studyUid)}`
+    : `${base}?limit=1`;
+}
+
+function orthancPluginsProbeUrl(): string {
+  return `${orthancBaseUrl()}/plugins`;
+}
+
+function pluginName(item: unknown): string {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return '';
+  const record = item as Record<string, unknown>;
+  return [
+    record.Name,
+    record.name,
+    record.ID,
+    record.id,
+    record.Plugin,
+    record.plugin,
+  ]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+}
+
+function hasDicomWebPlugin(body: unknown): boolean {
+  const values = Array.isArray(body)
+    ? body
+    : body && typeof body === 'object' && Array.isArray((body as { plugins?: unknown }).plugins)
+      ? ((body as { plugins: unknown[] }).plugins)
+      : [];
+  return values.some((item) => /dicom-web/i.test(pluginName(item)));
+}
+
+function qidoStudyUid(item: unknown): string | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const element = (item as Record<string, { Value?: unknown[] } | undefined>)['0020000D'];
+  const value = element?.Value?.[0];
+  return typeof value === 'string' ? value : undefined;
 }
 
 @Injectable()
@@ -85,21 +124,78 @@ export class HealthService {
       latencyMs: Math.round(orthMs),
     });
 
+    let probeStudyUid: string | undefined;
+    if (pgUp) {
+      try {
+        const study = await this.prisma.study.findFirst({
+          where: {
+            OR: [
+              { seriesCount: { gt: 0 } },
+              { instanceCount: { gt: 0 } },
+              { series: { some: {} } },
+              { instances: { some: {} } },
+            ],
+          },
+          select: { studyInstanceUid: true },
+          orderBy: { createdAt: 'desc' },
+        });
+        probeStudyUid = study?.studyInstanceUid;
+      } catch (err) {
+        log('warn', 'orthanc_health_expected_study_lookup_failed', {
+          errorName: (err as Error)?.name ?? 'UnknownError',
+        });
+      }
+    }
+
     const dicomwebStart = process.hrtime.bigint();
     let dicomwebUp = true;
     try {
-      const res = await fetch(dicomwebProbeUrl(), {
+      const res = await fetch(dicomwebProbeUrl(probeStudyUid), {
         headers: { ...orthancAuthHeader(), Accept: 'application/dicom+json' },
         signal: AbortSignal.timeout(orthancHealthTimeoutMs()),
       });
       dicomwebUp = res.ok;
-      await res.body?.cancel();
       if (!dicomwebUp) {
         log('warn', 'orthanc_dicomweb_health_unexpected_status', { upstreamStatus: res.status });
+        await res.body?.cancel();
+      } else {
+        const body = await res.json().catch(() => null);
+        if (!Array.isArray(body)) {
+          dicomwebUp = false;
+          log('warn', 'orthanc_dicomweb_health_unexpected_response');
+        } else if (probeStudyUid) {
+          const matched = body.some((item) => qidoStudyUid(item) === probeStudyUid);
+          if (!matched) {
+            dicomwebUp = false;
+            log('warn', 'orthanc_dicomweb_archive_mismatch');
+          }
+        }
       }
     } catch (err) {
       dicomwebUp = false;
       log('warn', 'orthanc_dicomweb_health_unreachable', {
+        errorName: (err as Error)?.name ?? 'UnknownError',
+      });
+    }
+
+    try {
+      const res = await fetch(orthancPluginsProbeUrl(), {
+        headers: orthancAuthHeader(),
+        signal: AbortSignal.timeout(orthancHealthTimeoutMs()),
+      });
+      if (!res.ok) {
+        dicomwebUp = false;
+        log('warn', 'orthanc_plugins_health_unexpected_status', { upstreamStatus: res.status });
+      } else {
+        const body = await res.json().catch(() => null);
+        if (!hasDicomWebPlugin(body)) {
+          dicomwebUp = false;
+          log('warn', 'orthanc_dicomweb_plugin_missing');
+        }
+      }
+    } catch (err) {
+      dicomwebUp = false;
+      log('warn', 'orthanc_plugins_health_unreachable', {
         errorName: (err as Error)?.name ?? 'UnknownError',
       });
     }

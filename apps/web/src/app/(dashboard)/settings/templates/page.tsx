@@ -403,7 +403,7 @@ export default function TemplatesPage() {
               )}
             </div>
           ) : (
-            <table className="w-full">
+            <table className="w-full min-w-[900px]">
               <thead>
                 <tr className="border-b border-border bg-surface-raised">
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-text-muted">

@@ -330,6 +330,22 @@ describe('DICOM imaging availability', () => {
     expect(res.body.data.state).toBe('INCOMPLETE');
   });
 
+  it('marks an indexed study with absent instances as INCOMPLETE', async () => {
+    const item = await seedStudy({ hospitalId: CGH_HOSPITAL_ID, withHierarchy: true });
+    mockOrthanc({
+      qido: [{ '0020000D': { Value: [item.studyUid] } }],
+      series: [{ '0020000E': { Value: [item.seriesUid] } }],
+      instances: [],
+    });
+
+    const res = await adminAgent
+      .get(`/api/dicom-web/availability/${encodeURIComponent(item.studyUid)}`)
+      .expect(200);
+    expect(res.body.data.state).toBe('INCOMPLETE');
+    expect(res.body.data.actualInstanceCount).toBe(0);
+    expect(res.body.data.missingInstanceUids).toContain(item.sopUid);
+  });
+
   it('enforces hospital isolation for availability checks', async () => {
     const item = await seedStudy({ hospitalId: MMC_HOSPITAL_ID, withHierarchy: true });
     await hospitalAgent

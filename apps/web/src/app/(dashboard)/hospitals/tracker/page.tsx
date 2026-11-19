@@ -320,7 +320,7 @@ export default function HospitalTrackerPage() {
 
           <div className="rounded-md border border-border">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full min-w-[760px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-border text-xs text-text-muted">
                     <th className="px-4 py-2.5 font-medium">Patient</th>

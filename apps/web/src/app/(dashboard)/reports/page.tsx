@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Report } from "@axis/types";
-import { Search, FileText } from "lucide-react";
+import { Search, FileText, Loader2, Send } from "lucide-react";
 import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
+import { useAppStore } from "@/lib/store";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { SkeletonTable } from "@/components/ui/Skeleton";
@@ -21,11 +22,14 @@ const REPORT_STATUS_FILTERS = [
 ] as const;
 
 export default function ReportsPage() {
+  const currentUser = useAppStore((state) => state.currentUser);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [reports, setReports] = useState<Report[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [deliveringUid, setDeliveringUid] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -44,6 +48,35 @@ export default function ReportsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function deliverReport(report: Report) {
+    const studyUid = report.study?.studyInstanceUid ?? "";
+    if (!studyUid || deliveringUid) return;
+    if (
+      !window.confirm(
+        "Deliver this signed report to the hospital that submitted the study?",
+      )
+    ) {
+      return;
+    }
+    setDeliveringUid(studyUid);
+    setNotice(null);
+    try {
+      await apiClient.post(`/studies/${encodeURIComponent(studyUid)}/deliver`);
+      setNotice({ kind: "success", text: "Report delivered to the originating hospital." });
+      await load();
+    } catch (err) {
+      setNotice({
+        kind: "error",
+        text: (err as { message?: string }).message ?? "Report delivery failed.",
+      });
+    } finally {
+      setDeliveringUid(null);
+    }
+  }
+
+  const canDeliverRole =
+    currentUser?.role === "ADMIN" || currentUser?.role === "MANAGER";
 
   const filteredReports = useMemo(() => {
     let list = [...reports];
@@ -90,6 +123,19 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {notice && (
+        <div
+          role={notice.kind === "error" ? "alert" : "status"}
+          className={`rounded-md border px-3 py-2 text-sm ${
+            notice.kind === "error"
+              ? "border-error/30 bg-error/10 text-error"
+              : "border-success/30 bg-success/10 text-success"
+          }`}
+        >
+          {notice.text}
+        </div>
+      )}
+
       <div className="flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1 max-w-sm">
           <Search
@@ -128,7 +174,7 @@ export default function ReportsPage() {
       ) : (
         <div className="overflow-x-auto">
         <div className="min-w-[1100px] rounded-md border border-border">
-          <div className="grid grid-cols-[1fr_1.2fr_0.5fr_0.9fr_0.8fr_0.7fr_0.4fr_0.5fr_0.4fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
+          <div className="grid grid-cols-[1fr_1.2fr_0.5fr_0.9fr_0.8fr_0.7fr_0.4fr_0.5fr_0.5fr] gap-4 border-b border-border bg-surface-raised px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-text-muted">
             <div>Patient</div>
             <div>Study</div>
             <div>Modality</div>
@@ -138,20 +184,29 @@ export default function ReportsPage() {
             <div>Version</div>
             <div>Signed Off</div>
             <div>View</div>
+            <div>Actions</div>
           </div>
 
           {filteredReports.map((report) => {
             const studyUid = report.study?.studyInstanceUid ?? report.studyInstanceUid ?? "";
+            const canDeliver =
+              canDeliverRole &&
+              report.status === "SIGNED" &&
+              report.study?.status === "MANAGER_APPROVED" &&
+              Boolean(report.signedOffAt) &&
+              Boolean(report.study?.studyInstanceUid);
             return (
-              <Link
+              <div
                 key={report.id}
-                href={`/reports/${studyUid}`}
-                className="grid grid-cols-[1fr_1.2fr_0.5fr_0.9fr_0.8fr_0.7fr_0.4fr_0.5fr_0.4fr] items-center gap-4 border-b border-border px-4 py-3 transition-colors hover:bg-surface-raised/50"
+                className="grid grid-cols-[1fr_1.2fr_0.5fr_0.9fr_0.8fr_0.7fr_0.4fr_0.5fr_0.5fr] items-center gap-4 border-b border-border px-4 py-3 transition-colors hover:bg-surface-raised/50"
               >
                 <div className="flex flex-col">
-                  <span className="text-sm font-medium text-text-primary">
+                  <Link
+                    href={`/reports/${studyUid}`}
+                    className="text-sm font-medium text-text-primary hover:text-accent hover:underline"
+                  >
                     {report.study?.patient?.displayName ?? "—"}
-                  </span>
+                  </Link>
                   <span className="font-mono text-xs text-text-muted">
                     {report.study?.patient?.patientId ?? "—"}
                   </span>
@@ -182,10 +237,31 @@ export default function ReportsPage() {
                 <span className="text-sm text-text-muted">
                   {report.signedOffAt ? formatDate(report.signedOffAt) : "—"}
                 </span>
-                <span className="text-accent transition-colors hover:text-accent/80">
+                <Link
+                  href={`/reports/${studyUid}`}
+                  aria-label={`Open report for ${report.study?.patient?.displayName ?? "patient"}`}
+                  className="text-accent transition-colors hover:text-accent/80"
+                >
                   <FileText size={16} />
-                </span>
-              </Link>
+                </Link>
+                <div>
+                  {canDeliver && (
+                    <button
+                      type="button"
+                      onClick={() => void deliverReport(report)}
+                      disabled={deliveringUid !== null}
+                      className="inline-flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-xs font-medium text-background transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {deliveringUid === report.study?.studyInstanceUid ? (
+                        <Loader2 size={12} className="animate-spin" />
+                      ) : (
+                        <Send size={12} />
+                      )}
+                      Deliver
+                    </button>
+                  )}
+                </div>
+              </div>
             );
           })}
         </div>
@@ -193,7 +269,7 @@ export default function ReportsPage() {
       )}
 
       <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>Click a row to open report</span>
+        <span>Click a patient name or the report icon to open a report</span>
         <span>
           {filteredReports.length} of {reports.length} reports
         </span>
