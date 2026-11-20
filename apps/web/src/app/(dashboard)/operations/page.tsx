@@ -14,6 +14,7 @@ import { apiClient } from "@/lib/api-client";
 import { ErrorState } from "@/components/ui/ErrorState";
 import type {
   RetentionExecutionResult,
+  RetentionJobView,
   RetentionPreviewResult,
   RetentionSkipSummary,
 } from "@axis/types";
@@ -51,7 +52,9 @@ const MINUTES_LABEL: Record<string, string> = {
 const RETENTION_REASON_LABEL: Record<string, string> = {
   NOT_TERMINAL: "Not in terminal state",
   MISSING_COMPLETION_TIMESTAMP: "Missing completion timestamp",
+  MISSING_LIFECYCLE_ANCHOR: "Missing lifecycle anchor",
   RETENTION_NOT_ELAPSED: "Retention period not elapsed",
+  LEGAL_HOLD: "Legal hold",
   INVALID_TENANT: "Invalid hospital/tenant linkage",
   INACTIVE_HOSPITAL: "Inactive hospital",
   IMAGING_NOT_AVAILABLE: "Imaging not available",
@@ -59,8 +62,22 @@ const RETENTION_REASON_LABEL: Record<string, string> = {
   ACTIVE_REPORT_WORKFLOW: "Active report workflow",
   ACTIVE_DELIVERY: "Active delivery",
   ACTIVE_WORKLIST: "Active worklist item",
+  UNSIGNED_REPORT: "Report not signed",
+  REPORT_NOT_DELIVERED: "Report not delivered",
+  AWAITING_HOSPITAL_ACCEPTANCE: "Awaiting hospital acceptance",
+  MANDATORY_RETENTION: "Mandatory retention",
   NO_VERIFIED_FULL_BACKUP: "No verified full backup",
+  ARCHIVE_FAILED: "Archive failed",
 };
+
+const RETENTION_LOCK_REASONS = [
+  "LEGAL_HOLD",
+  "ACTIVE_DISPUTE",
+  "HOSPITAL_RETENTION_REQUEST",
+  "PENDING_REPORT_DELIVERY",
+  "MANDATORY_RETENTION",
+  "INVESTIGATION",
+];
 
 function retentionReasonLabel(reason?: string): string {
   if (!reason) return "Eligible";
@@ -91,6 +108,11 @@ export default function OperationsPage() {
     useState<RetentionExecutionResult | null>(null);
   const [retentionMessage, setRetentionMessage] = useState<string | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
+  const [retentionJobs, setRetentionJobs] = useState<RetentionJobView[]>([]);
+  const [holdStudyId, setHoldStudyId] = useState("");
+  const [holdReason, setHoldReason] = useState("LEGAL_HOLD");
+  const [holdExpiresAt, setHoldExpiresAt] = useState("");
+  const [holdBusy, setHoldBusy] = useState(false);
 
   const loadSla = async () => {
     try {
@@ -117,9 +139,20 @@ export default function OperationsPage() {
     }
   };
 
+  const loadRetentionJobs = async () => {
+    try {
+      const res = await apiClient.get<{ data: RetentionJobView[] }>(
+        "/admin/retention/jobs",
+      );
+      setRetentionJobs(res.data ?? []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const load = async () => {
     setError(false);
-    await Promise.all([loadSla(), loadBackups()]);
+    await Promise.all([loadSla(), loadBackups(), loadRetentionJobs()]);
   };
 
   useEffect(() => {
@@ -224,6 +257,59 @@ export default function OperationsPage() {
     }
   };
 
+  const retryRetentionJob = async (id: string) => {
+    try {
+      await apiClient.post(`/admin/retention/jobs/${id}/retry`);
+      await loadRetentionJobs();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const applyHold = async () => {
+    const studyId = holdStudyId.trim();
+    if (!studyId) return;
+    setHoldBusy(true);
+    setRetentionMessage(null);
+    try {
+      await apiClient.post(
+        `/admin/retention/holds/${encodeURIComponent(studyId)}`,
+        {
+          reason: holdReason,
+          ...(holdExpiresAt
+            ? { expiresAt: new Date(holdExpiresAt).toISOString() }
+            : {}),
+        },
+      );
+      setRetentionMessage(`Legal hold applied to ${studyId}.`);
+      setHoldStudyId("");
+      setHoldExpiresAt("");
+      await runRetentionPreview();
+    } catch (e) {
+      console.error(e);
+      setRetentionMessage("Could not apply the legal hold.");
+    } finally {
+      setHoldBusy(false);
+    }
+  };
+
+  const releaseHold = async (studyId: string) => {
+    setHoldBusy(true);
+    setRetentionMessage(null);
+    try {
+      await apiClient.delete(
+        `/admin/retention/holds/${encodeURIComponent(studyId)}`,
+      );
+      setRetentionMessage(`Legal hold released for ${studyId}.`);
+      await runRetentionPreview();
+    } catch (e) {
+      console.error(e);
+      setRetentionMessage("Could not release the legal hold.");
+    } finally {
+      setHoldBusy(false);
+    }
+  };
+
   if (error) {
     return (
       <ErrorState title="Failed to load operations data" description="Check that you are an administrator." onRetry={() => load()} />
@@ -233,6 +319,9 @@ export default function OperationsPage() {
   const retentionResult = retentionExecution ?? retentionPreview;
   const skippedReasons: RetentionSkipSummary[] =
     retentionResult?.skippedReasons ?? [];
+  const heldCandidates = (retentionResult?.candidates ?? []).filter(
+    (candidate) => candidate.retentionLocked,
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -491,6 +580,77 @@ export default function OperationsPage() {
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">On hold</div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.onHold}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">
+                  Awaiting response
+                </div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.awaitingUserResponse}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">
+                  Ready for archive
+                </div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.readyForArchive}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">
+                  Failed archives
+                </div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.failedArchives}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                Lifecycle policy
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm text-text-muted md:grid-cols-3">
+                <div>Initial hold: {retentionResult.policy.initialRetentionDays}d</div>
+                <div>
+                  CANCEL: {retentionResult.policy.cancelReminderDays}d ×{" "}
+                  {retentionResult.policy.cancelMaxCount}
+                </div>
+                <div>
+                  IGNORE: {retentionResult.policy.ignoreResponseHours}h /{" "}
+                  {retentionResult.policy.ignoreReminderDays}d ×{" "}
+                  {retentionResult.policy.ignoreMaxCount}
+                </div>
+                <div>
+                  Archive expiry: {retentionResult.policy.dicomBackupRetentionDays}d DICOM /{" "}
+                  {retentionResult.policy.metadataBackupRetentionDays}d metadata
+                </div>
+                <div>Dry-run: {retentionResult.policy.dryRun ? "on" : "off"}</div>
+                <div>
+                  Scheduler: {retentionResult.policy.schedulerEnabled ? "enabled" : "disabled"}
+                </div>
+              </div>
+              {retentionResult.upcomingActions.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {retentionResult.upcomingActions.map((action, index) => (
+                    <span
+                      key={`${action.type}-${action.studyId ?? "global"}-${index}`}
+                      className="rounded-full border border-border px-2.5 py-1 text-xs text-text-muted"
+                    >
+                      {action.type} · {formatRetentionDate(action.dueAt)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {skippedReasons.length > 0 && (
               <div className="rounded-md border border-border bg-surface-raised/50 p-3">
                 <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
@@ -570,6 +730,122 @@ export default function OperationsPage() {
             )}
           </div>
         )}
+
+        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="rounded-md border border-border p-4">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-muted">
+              Retention job queue
+            </div>
+            {retentionJobs.length === 0 ? (
+              <p className="text-sm text-text-muted">No retention jobs are queued.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {retentionJobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className="flex items-center justify-between gap-4 rounded-md border border-border bg-surface-raised/50 px-3 py-2"
+                  >
+                    <div className="flex flex-col gap-1">
+                      <div className="flex flex-wrap items-center gap-3 text-sm text-text-primary">
+                        <span>{job.type}</span>
+                        <span className="text-xs text-text-muted">{job.status}</span>
+                        <span className="font-mono text-[11px] text-text-muted">
+                          {job.attempts}/{job.maxAttempts}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-text-muted">
+                        due {formatRetentionDate(job.dueAt)}
+                        {job.studyId ? ` · ${job.studyId}` : ""}
+                      </div>
+                      {job.lastError && (
+                        <span className="text-xs text-error">{job.lastError}</span>
+                      )}
+                    </div>
+                    {(job.status === "FAILED" || job.status === "DEAD") && (
+                      <button
+                        type="button"
+                        onClick={() => void retryRetentionJob(job.id)}
+                        className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-md border border-border p-4">
+            <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-muted">
+              Legal holds
+            </div>
+            <div className="flex flex-col gap-2">
+              <input
+                value={holdStudyId}
+                onChange={(e) => setHoldStudyId(e.target.value)}
+                placeholder="Study ID"
+                className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+              />
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <select
+                  value={holdReason}
+                  onChange={(e) => setHoldReason(e.target.value)}
+                  className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                >
+                  {RETENTION_LOCK_REASONS.map((reason) => (
+                    <option key={reason} value={reason}>
+                      {reason.replaceAll("_", " ")}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="datetime-local"
+                  value={holdExpiresAt}
+                  onChange={(e) => setHoldExpiresAt(e.target.value)}
+                  aria-label="Hold expiry"
+                  className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void applyHold()}
+                disabled={holdBusy || !holdStudyId.trim()}
+                className="self-start rounded-md border border-border px-3 py-1.5 text-sm font-medium text-text-primary hover:bg-surface-raised disabled:opacity-50"
+              >
+                Apply hold
+              </button>
+            </div>
+
+            {heldCandidates.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2">
+                {heldCandidates.map((candidate) => (
+                  <div
+                    key={candidate.studyId}
+                    className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface-raised/50 px-3 py-2"
+                  >
+                    <div className="flex flex-col gap-1">
+                      <span className="font-mono text-xs text-text-primary">
+                        {candidate.accessionNumber}
+                      </span>
+                      <span className="text-[11px] text-text-muted">
+                        {candidate.lockReason ?? "LEGAL_HOLD"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void releaseHold(candidate.studyId)}
+                      disabled={holdBusy}
+                      className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised disabled:opacity-50"
+                    >
+                      Release
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </section>
     </div>
   );

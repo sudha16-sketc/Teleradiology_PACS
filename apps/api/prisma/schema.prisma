@@ -46,6 +46,9 @@ model User {
   hospital                Hospital?        @relation(fields: [hospitalId], references: [id])
   passwordResetTokens     PasswordResetToken[]
   reconciliationRuns      StudyReconciliationRun[] @relation("ReconciliationRequester")
+  retentionLocksApplied   Study[]                  @relation("RetentionLockActor")
+  retentionNotifications  RetentionNotification[]  @relation("RetentionNotificationRecipient")
+  retentionAuditLogs      RetentionAuditLog[]      @relation("RetentionAuditActor")
 
   @@index([status])
   @@index([role])
@@ -149,6 +152,11 @@ model Study {
   imagingAvailability    ImagingAvailability @default(PENDING)
   imagingAvailabilityReason String?
   imagingCheckedAt      DateTime?
+  retentionLocked       Boolean               @default(false)
+  retentionLockReason   RetentionLockReason?
+  retentionLockedAt     DateTime?
+  retentionLockedBy     String?
+  retentionLockExpiresAt DateTime?
   aiJobs                AIJob[]
   assignments           Assignment[]
   changeRequests        ChangeRequest[]
@@ -159,8 +167,14 @@ model Study {
   series                Series[]
   assignedRadiologist   User?             @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
   hospital              Hospital          @relation(fields: [hospitalId], references: [id])
-  patient               Patient           @relation(fields: [patientId], references: [id])
+  patient               Patient        @relation(fields: [patientId], references: [id])
   worklistItem          WorklistItem?
+  retentionLockActor    User?          @relation("RetentionLockActor", fields: [retentionLockedBy], references: [id])
+  retention             StudyRetention?
+  retentionArchives     RetentionArchive[]
+  retentionNotifications RetentionNotification[]
+  retentionAuditLogs    RetentionAuditLog[]
+  retentionJobs         RetentionJob[]
 
   @@index([orthancStudyId])
   @@index([imagingAvailability])
@@ -169,6 +183,8 @@ model Study {
   @@index([assignedRadiologistId])
   @@index([priority])
   @@index([studyDate])
+  @@index([archivedAt])
+  @@index([retentionLocked])
 }
 
 model Series {
@@ -509,8 +525,9 @@ model BackupRun {
   dicomVerified     Boolean      @default(false)
   remoteVerifiedAt  DateTime?
   createdById       String?
-  createdAt         DateTime     @default(now())
-  createdBy         User?        @relation("BackupCreator", fields: [createdById], references: [id])
+  createdAt             DateTime  @default(now())
+  createdBy             User?     @relation("BackupCreator", fields: [createdById], references: [id])
+  retentionArchives     RetentionArchive[]
 
   @@index([status])
   @@index([createdAt])
@@ -550,6 +567,140 @@ model SlaConfig {
   isActive  Boolean     @default(true)
   updatedBy String?
   updatedAt DateTime    @updatedAt
+}
+
+model StudyRetention {
+  id              String                @id @default(cuid())
+  studyId         String                @unique
+  status          RetentionStatus       @default(PENDING_RETENTION)
+  eligibleAt      DateTime
+  anchorAt        DateTime
+  anchorSource    RetentionAnchorSource
+  policyVersion   String
+  cancelCount     Int                   @default(0)
+  ignoredCount    Int                   @default(0)
+  notificationSequence Int              @default(0)
+  lastNotificationAt DateTime?
+  nextActionAt    DateTime
+  responseDeadline DateTime?
+  retentionLocked Boolean               @default(false)
+  lockReason      RetentionLockReason?
+  lockedAt        DateTime?
+  lockedBy        String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  study           Study                 @relation(fields: [studyId], references: [id])
+  notifications   RetentionNotification[]
+  archive         RetentionArchive?
+  auditLogs       RetentionAuditLog[]
+  jobs            RetentionJob[]
+
+  @@index([status, nextActionAt])
+  @@index([retentionLocked])
+}
+
+model RetentionNotification {
+  id                String                        @id @default(cuid())
+  studyId           String
+  retentionId       String
+  recipientUserId   String
+  appNotificationId String?
+  sequenceNumber    Int
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  responseDeadline  DateTime?
+  respondedAt       DateTime?
+  response          RetentionResponse?
+  deliveryStatus    NotificationDeliveryStatus    @default(PENDING)
+  deliveryAttempts  Int                           @default(0)
+  nextRetryAt       DateTime?
+  lastError         String?
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @updatedAt
+  study             Study                         @relation(fields: [studyId], references: [id])
+  retention         StudyRetention                @relation(fields: [retentionId], references: [id])
+  recipient         User                          @relation("RetentionNotificationRecipient", fields: [recipientUserId], references: [id])
+
+  @@unique([retentionId, recipientUserId, sequenceNumber])
+  @@index([deliveryStatus, nextRetryAt])
+  @@index([retentionId, response])
+  @@index([recipientUserId, respondedAt])
+}
+
+model RetentionArchive {
+  id                       String                      @id @default(cuid())
+  studyId                  String                      @unique
+  retentionId              String                      @unique
+  backupRunId              String?
+  archiveStatus            RetentionArchiveStatus      @default(PENDING)
+  archiveCreatedAt         DateTime?
+  archiveVerifiedAt        DateTime?
+  dicomObjectKey           String?
+  studyObjectKey           String?
+  reportObjectKey          String?
+  manifestObjectKey        String?
+  auditObjectKey           String?
+  dicomChecksum            String?
+  metadataChecksum         String?
+  manifestChecksum         String?
+  checksum                 String?
+  dicomDeleteAt            DateTime?
+  metadataDeleteAt         DateTime?
+  originalDataDeletionStatus OriginalDataDeletionStatus @default(PENDING)
+  dicomDeletionStatus      BackupObjectDeletionStatus  @default(PENDING)
+  metadataDeletionStatus   BackupObjectDeletionStatus  @default(PENDING)
+  retryCount               Int                         @default(0)
+  lastError                String?
+  createdAt                DateTime                    @default(now())
+  updatedAt                DateTime                    @updatedAt
+  study                    Study                       @relation(fields: [studyId], references: [id])
+  retention                StudyRetention              @relation(fields: [retentionId], references: [id])
+  backupRun                BackupRun?                  @relation(fields: [backupRunId], references: [id])
+
+  @@index([archiveStatus, dicomDeleteAt, metadataDeleteAt])
+}
+
+model RetentionAuditLog {
+  id          String         @id @default(cuid())
+  studyId     String?
+  retentionId String?
+  action      RetentionAuditAction
+  triggeredBy String
+  actorId     String?
+  status      String
+  details     Json?
+  timestamp   DateTime       @default(now())
+  study       Study?         @relation(fields: [studyId], references: [id])
+  retention   StudyRetention? @relation(fields: [retentionId], references: [id])
+  actor       User?          @relation("RetentionAuditActor", fields: [actorId], references: [id])
+
+  @@index([studyId, timestamp])
+  @@index([action, timestamp])
+}
+
+model RetentionJob {
+  id          String           @id @default(cuid())
+  type        RetentionJobType
+  status      RetentionJobStatus @default(PENDING)
+  dedupeKey   String           @unique
+  studyId     String?
+  retentionId String?
+  payload     Json?
+  dueAt       DateTime
+  attempts    Int              @default(0)
+  maxAttempts Int              @default(5)
+  leaseUntil  DateTime?
+  lockedBy    String?
+  lastError   String?
+  createdAt   DateTime         @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  study       Study?           @relation(fields: [studyId], references: [id])
+  retention   StudyRetention?  @relation(fields: [retentionId], references: [id])
+
+  @@index([status, dueAt])
+  @@index([leaseUntil])
 }
 
 enum UserRole {
@@ -708,6 +859,23 @@ enum AuditAction {
   DICOM_AVAILABILITY_CHECK
   DICOM_RECONCILIATION
   DICOM_REINGEST
+  RETENTION_STARTED
+  RETENTION_ELIGIBILITY_CHECKED
+  NOTIFICATION_SENT
+  NOTIFICATION_DELIVERED
+  NOTIFICATION_IGNORED
+  DELETION_CANCELLED
+  AUTOMATIC_DELETION_TRIGGERED
+  ARCHIVE_CREATED
+  ARCHIVE_VERIFIED
+  ARCHIVE_FAILED
+  ORIGINAL_DATA_DELETED
+  DICOM_BACKUP_DELETED
+  METADATA_BACKUP_DELETED
+  PERMANENT_DELETION_VERIFIED
+  RETENTION_LOCK_APPLIED
+  RETENTION_LOCK_RELEASED
+  DELETION_FAILED
 }
 
 enum AuditResource {
@@ -725,6 +893,9 @@ enum AuditResource {
   ASSIGNMENT
   BACKUP
   RETENTION
+  RETENTION_NOTIFICATION
+  RETENTION_ARCHIVE
+  LEGAL_HOLD
 }
 
 enum DeliveryStatus {
@@ -776,4 +947,116 @@ enum SlaPriority {
   STAT
   URGENT
   ROUTINE
+}
+
+enum RetentionStatus {
+  PENDING_RETENTION
+  AWAITING_USER_RESPONSE
+  CANCELLED_DEFERRED
+  NOTIFICATION_IGNORED
+  AUTOMATIC_PROCESSING
+  ARCHIVING
+  ARCHIVE_VERIFICATION
+  ARCHIVED
+  ORIGINAL_DATA_CLEANUP
+  BACKUP_RETENTION
+  DICOM_DELETED
+  METADATA_DELETED
+  COMPLETED
+  ON_HOLD
+  FAILED
+}
+
+enum RetentionAnchorSource {
+  COMPLETED_AT
+  HOSPITAL_ACCEPTED_AT
+  DELIVERED_AT
+  STUDY_DATE
+}
+
+enum RetentionLockReason {
+  LEGAL_HOLD
+  ACTIVE_DISPUTE
+  HOSPITAL_RETENTION_REQUEST
+  PENDING_REPORT_DELIVERY
+  MANDATORY_RETENTION
+  INVESTIGATION
+}
+
+enum RetentionResponse {
+  CANCEL
+  DELETE
+  IGNORED
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  RESPONDED
+  FAILED
+  IGNORED
+}
+
+enum RetentionArchiveStatus {
+  PENDING
+  ARCHIVING
+  ARCHIVE_VERIFICATION
+  ARCHIVED
+  FAILED
+  DELETING
+  DELETED
+}
+
+enum BackupObjectDeletionStatus {
+  PENDING
+  DELETING
+  DELETED
+  FAILED
+}
+
+enum OriginalDataDeletionStatus {
+  PENDING
+  IN_PROGRESS
+  DELETED
+  FAILED
+  SKIPPED
+}
+
+enum RetentionJobType {
+  START_RETENTION
+  SEND_NOTIFICATION
+  MARK_IGNORED
+  PROCESS_ARCHIVE
+  CLEANUP_ORIGINAL
+  DELETE_EXPIRED_BACKUPS
+}
+
+enum RetentionJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DEAD
+}
+
+enum RetentionAuditAction {
+  RETENTION_STARTED
+  RETENTION_ELIGIBILITY_CHECKED
+  NOTIFICATION_SENT
+  NOTIFICATION_DELIVERED
+  NOTIFICATION_IGNORED
+  DELETION_CANCELLED
+  AUTOMATIC_DELETION_TRIGGERED
+  ARCHIVE_CREATED
+  ARCHIVE_VERIFIED
+  ARCHIVE_FAILED
+  ORIGINAL_DATA_DELETED
+  DICOM_BACKUP_DELETED
+  METADATA_BACKUP_DELETED
+  PERMANENT_DELETION_VERIFIED
+  RETENTION_LOCK_APPLIED
+  RETENTION_LOCK_RELEASED
+  DELETION_FAILED
 }

@@ -20,6 +20,7 @@ import {
   Clock,
   UploadCloud,
   ServerCog,
+  Archive,
   type LucideIcon,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
@@ -41,6 +42,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/analytics": BarChart3,
   "/audit": Shield,
   "/operations": ServerCog,
+  "/retention": Archive,
   "/settings": Settings,
   "/settings/templates": FileText,
   "/admin/registration-requests": ClipboardCheck,

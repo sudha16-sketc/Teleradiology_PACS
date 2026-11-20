@@ -15,6 +15,6 @@ import { resolveBackupEnv } from './backup-ops.js';
       useFactory: () => createBackupStorage(resolveBackupEnv()),
     },
   ],
-  exports: [BackupService],
+  exports: [BackupService, BACKUP_STORAGE],
 })
 export class BackupModule {}

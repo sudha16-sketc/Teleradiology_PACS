@@ -113,6 +113,12 @@ const COPY: Readonly<Record<string, NotificationCopy>> = {
     title: "Report awaiting review",
     body: "A signed report is waiting for your review.",
   },
+
+  // --- Retention -----------------------------------------------------------
+  RETENTION_NOTIFICATION: {
+    title: "Retention decision required",
+    body: "A study needs a retention decision. Open Axis to respond.",
+  },
 };
 
 /**

@@ -65,6 +65,37 @@ export interface HealthReport {
   timestamp: string;
 }
 
+export type RetentionAnchorSource =
+  | 'COMPLETED_AT'
+  | 'HOSPITAL_ACCEPTED_AT'
+  | 'DELIVERED_AT'
+  | 'STUDY_DATE';
+
+export type RetentionStatus =
+  | 'PENDING_RETENTION'
+  | 'AWAITING_USER_RESPONSE'
+  | 'CANCELLED_DEFERRED'
+  | 'NOTIFICATION_IGNORED'
+  | 'AUTOMATIC_PROCESSING'
+  | 'ARCHIVING'
+  | 'ARCHIVE_VERIFICATION'
+  | 'ARCHIVED'
+  | 'ORIGINAL_DATA_CLEANUP'
+  | 'BACKUP_RETENTION'
+  | 'DICOM_DELETED'
+  | 'METADATA_DELETED'
+  | 'COMPLETED'
+  | 'ON_HOLD'
+  | 'FAILED';
+
+export type RetentionLockReason =
+  | 'LEGAL_HOLD'
+  | 'ACTIVE_DISPUTE'
+  | 'HOSPITAL_RETENTION_REQUEST'
+  | 'PENDING_REPORT_DELIVERY'
+  | 'MANDATORY_RETENTION'
+  | 'INVESTIGATION';
+
 export interface RetentionCandidate {
   studyId: string;
   studyInstanceUid: string;
@@ -72,7 +103,7 @@ export interface RetentionCandidate {
   hospitalName: string;
   completedAt?: string | null;
   retentionAnchorAt: string;
-  retentionAnchorSource: 'COMPLETED_AT' | 'HOSPITAL_ACCEPTED_AT' | 'DELIVERED_AT' | 'STUDY_DATE';
+  retentionAnchorSource: RetentionAnchorSource;
   daysSinceCompletion: number;
   daysSinceAnchor: number;
   verifiedBackupExists: boolean;
@@ -81,6 +112,15 @@ export interface RetentionCandidate {
   archivalLocked: boolean;
   eligible: boolean;
   reason?: string;
+  retentionStatus?: RetentionStatus | null;
+  retentionLocked: boolean;
+  lockReason?: RetentionLockReason | null;
+  cancelCount: number;
+  ignoredCount: number;
+  nextActionAt?: string | null;
+  archiveStatus?: string | null;
+  dicomDeleteAt?: string | null;
+  metadataDeleteAt?: string | null;
 }
 
 export interface RetentionSkipSummary {
@@ -91,17 +131,92 @@ export interface RetentionSkipSummary {
 export interface RetentionPolicy {
   retentionDays: number;
   requiresVerifiedBackup: boolean;
+  initialRetentionDays: number;
+  cancelReminderDays: number;
+  cancelMaxCount: number;
+  ignoreResponseHours: number;
+  ignoreReminderDays: number;
+  ignoreMaxCount: number;
+  dicomBackupRetentionDays: number;
+  metadataBackupRetentionDays: number;
+  mandatoryRetentionDays: number;
+  schedulerEnabled: boolean;
+  dryRun: boolean;
+  destructiveEnabled: boolean;
+  jobRetryLimit: number;
+  policyVersion: string;
+}
+
+export interface RetentionUpcomingAction {
+  studyId?: string | null;
+  type: string;
+  dueAt: string;
+  status: string;
 }
 
 export interface RetentionPreviewResult {
   candidates: RetentionCandidate[];
   eligibleCount: number;
   reviewed: number;
+  inspected: number;
+  eligible: number;
+  ineligible: number;
+  onHold: number;
+  awaitingRetention: number;
+  awaitingUserResponse: number;
+  readyForArchive: number;
+  alreadyArchived: number;
+  failedArchives: number;
+  dicomBackupsDue: number;
+  metadataBackupsDue: number;
   skipped: number;
   skippedReasons: RetentionSkipSummary[];
+  upcomingActions: RetentionUpcomingAction[];
   policy: RetentionPolicy;
 }
 
 export interface RetentionExecutionResult extends RetentionPreviewResult {
   archived: number;
+  processed: number;
+  jobsCreated: number;
+  notificationsSent: number;
+  archiveFailures: number;
+  skippedByReason: RetentionSkipSummary[];
+}
+
+export interface RetentionNotificationView {
+  id: string;
+  studyId: string;
+  studyInstanceUid: string;
+  accessionNumber: string;
+  hospitalName: string;
+  reportStatus: string;
+  sequenceNumber: number;
+  sentAt?: string | null;
+  responseDeadline?: string | null;
+  respondedAt?: string | null;
+  response?: 'CANCEL' | 'DELETE' | 'IGNORED' | null;
+  deliveryStatus: string;
+  cancelCount: number;
+  ignoredCount: number;
+}
+
+export interface RetentionJobView {
+  id: string;
+  type: string;
+  status: string;
+  studyId?: string | null;
+  dueAt: string;
+  attempts: number;
+  maxAttempts: number;
+  lastError?: string | null;
+}
+
+export interface RetentionResponseResult {
+  notificationId: string;
+  response: 'CANCEL' | 'DELETE';
+  retentionStatus: RetentionStatus;
+  cancelCount: number;
+  ignoredCount: number;
+  nextActionAt: string;
 }

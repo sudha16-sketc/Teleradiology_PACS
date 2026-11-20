@@ -1,9 +1,12 @@
 import { promises as fs, createReadStream, createWriteStream } from 'fs';
 import path from 'path';
 import {
+  AbortMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListMultipartUploadsCommand,
+  ListObjectVersionsCommand,
   ListObjectsV2Command,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -17,7 +20,7 @@ export const BACKUP_STORAGE = Symbol('BACKUP_STORAGE');
 
 export interface ArtifactMetadata {
   backupRunId: string;
-  artifact: 'database' | 'dicom';
+  artifact: 'database' | 'dicom' | 'retention';
   checksum: string;
   createdAt: string;
 }
@@ -37,6 +40,7 @@ export interface BackupStorage {
   head(key: string): Promise<RemoteArtifact | null>;
   list(prefix: string): Promise<RemoteArtifact[]>;
   delete(key: string): Promise<void>;
+  purgeVersions?(key: string): Promise<number>;
   verify(key: string, filePath: string, expectedChecksum: string): Promise<boolean>;
 }
 
@@ -136,6 +140,78 @@ export class B2BackupStorage implements BackupStorage {
     await this.client.send(
       new DeleteObjectCommand({ Bucket: this.env.b2BucketName, Key: key }),
     );
+  }
+
+  async purgeVersions(key: string): Promise<number> {
+    let removed = 0;
+    let keyMarker: string | undefined;
+    let versionIdMarker: string | undefined;
+    do {
+      const versions = await this.client.send(
+        new ListObjectVersionsCommand({
+          Bucket: this.env.b2BucketName,
+          Prefix: key,
+          KeyMarker: keyMarker,
+          VersionIdMarker: versionIdMarker,
+        }),
+      );
+      for (const version of versions.Versions ?? []) {
+        if (version.Key !== key || !version.VersionId) continue;
+        await this.client.send(
+          new DeleteObjectCommand({
+            Bucket: this.env.b2BucketName,
+            Key: key,
+            VersionId: version.VersionId,
+          }),
+        );
+        removed += 1;
+      }
+      for (const marker of versions.DeleteMarkers ?? []) {
+        if (marker.Key !== key || !marker.VersionId) continue;
+        await this.client.send(
+          new DeleteObjectCommand({
+            Bucket: this.env.b2BucketName,
+            Key: key,
+            VersionId: marker.VersionId,
+          }),
+        );
+        removed += 1;
+      }
+      keyMarker = versions.IsTruncated
+        ? versions.NextKeyMarker ?? key
+        : undefined;
+      versionIdMarker = versions.IsTruncated
+        ? versions.NextVersionIdMarker
+        : undefined;
+    } while (keyMarker);
+
+    let uploadKeyMarker: string | undefined;
+    let uploadIdMarker: string | undefined;
+    do {
+      const uploads = await this.client.send(
+        new ListMultipartUploadsCommand({
+          Bucket: this.env.b2BucketName,
+          Prefix: key,
+          KeyMarker: uploadKeyMarker,
+          UploadIdMarker: uploadIdMarker,
+        }),
+      );
+      for (const upload of uploads.Uploads ?? []) {
+        if (upload.Key !== key || !upload.UploadId) continue;
+        await this.client.send(
+          new AbortMultipartUploadCommand({
+            Bucket: this.env.b2BucketName,
+            Key: key,
+            UploadId: upload.UploadId,
+          }),
+        );
+        removed += 1;
+      }
+      uploadKeyMarker = uploads.IsTruncated ? uploads.NextKeyMarker : undefined;
+      uploadIdMarker = uploads.IsTruncated ? uploads.NextUploadIdMarker : undefined;
+    } while (uploadKeyMarker);
+
+    return removed;
   }
 
   async verify(key: string, filePath: string, expectedChecksum: string): Promise<boolean> {

@@ -32,6 +32,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { prefix: "/worklist", roles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
   { prefix: "/queue", roles: ["ADMIN", "MANAGER"] },
   { prefix: "/corrections", roles: ["ADMIN", "MANAGER", "RADIOLOGIST", "HOSPITAL"] },
+  { prefix: "/retention", roles: ["ADMIN", "MANAGER", "HOSPITAL"] },
   { prefix: "/profile", roles: ["ADMIN", "MANAGER", "RADIOLOGIST", "HOSPITAL"] },
 ];
 
@@ -55,6 +56,7 @@ export const NAV_DEFS: NavDefinition[] = [
   { href: "/worklist", label: "My Worklist", allowedRoles: ["RADIOLOGIST"] },
   { href: "/reports", label: "My Reports", allowedRoles: ["RADIOLOGIST", "ADMIN", "MANAGER"] },
   { href: "/corrections", label: "Corrections", allowedRoles: ["ADMIN", "MANAGER", "RADIOLOGIST", "HOSPITAL"] },
+  { href: "/retention", label: "Retention Review", allowedRoles: ["ADMIN", "MANAGER", "HOSPITAL"] },
   // Shared clinical view
   { href: "/reading", label: "Reading", allowedRoles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
   { href: "/settings/templates", label: "Report Templates", allowedRoles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },

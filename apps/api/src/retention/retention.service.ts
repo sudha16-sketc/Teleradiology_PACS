@@ -1,141 +1,160 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
-  BackupStatus,
-  BackupType,
-  ImagingAvailability,
   Prisma,
-  ReportStatus,
-  StudyStatus,
+  RetentionAnchorSource,
+  RetentionArchiveStatus,
+  RetentionJobType,
+  RetentionLockReason,
+  RetentionStatus,
 } from '@prisma/client';
 import type {
-  RetentionCandidate,
   RetentionExecutionResult,
-  RetentionPolicy,
+  RetentionJobView,
+  RetentionNotificationView,
   RetentionPreviewResult,
+  RetentionSkipSummary,
+  RetentionUpcomingAction,
 } from '@axis/types';
 import { AuditService } from '../audit/audit.service.js';
-import { resolveBackupEnv } from '../backup/backup-ops.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-
-interface RetentionActor {
-  id: string;
-  role: string;
-  displayName?: string;
-  email?: string;
-  hospitalId?: string | null;
-}
-
-interface VerifiedBackup {
-  id: string;
-  verifiedAt: Date | null;
-}
+import { RetentionArchiveService } from './retention-archive.service.js';
+import type { RetentionActor } from './retention-audit.service.js';
+import { RetentionAuditService } from './retention-audit.service.js';
+import { retentionPolicy } from './retention-config.js';
+import {
+  type EligibilityResult,
+  RetentionEligibilityService,
+} from './retention-eligibility.service.js';
+import { RetentionJobService } from './retention-job.service.js';
+import { RetentionNotificationService } from './retention-notification.service.js';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const NO_HOSPITAL_SCOPE = '__axis_no_hospital__';
 
-const ACTIVE_CORRECTION_STATUSES = new Set([
-  'OPEN',
-  'ACKNOWLEDGED',
-  'APPROVED',
-  'IN_PROGRESS',
-]);
-
-const ACTIVE_REPORT_STATUSES = new Set<ReportStatus>([
-  ReportStatus.DRAFT,
-  ReportStatus.MANAGER_REVIEW,
-  ReportStatus.HOSPITAL_REVIEW,
-  ReportStatus.CORRECTION_REQUESTED,
-]);
-
-const ACTIVE_DELIVERY_STATUSES = new Set([
-  'PENDING',
-  'IN_PROGRESS',
-  'RETRYING',
-]);
-
-const retentionStudyInclude = {
-  hospital: { select: { id: true, name: true, isActive: true } },
-  patient: { select: { id: true, hospitalId: true } },
-  reports: { select: { id: true, status: true } },
-  changeRequests: { select: { id: true, status: true } },
-  deliveryAttempts: { select: { id: true, status: true } },
-  worklistItem: { select: { id: true, completedAt: true } },
-} as const satisfies Prisma.StudyInclude;
-
-type RetentionStudy = Prisma.StudyGetPayload<{
-  include: typeof retentionStudyInclude;
-}>;
+interface SummaryExtras {
+  inspected: number;
+  onHold: number;
+  awaitingRetention: number;
+  awaitingUserResponse: number;
+  readyForArchive: number;
+  alreadyArchived: number;
+  failedArchives: number;
+  dicomBackupsDue: number;
+  metadataBackupsDue: number;
+  upcomingActions: RetentionUpcomingAction[];
+}
 
 @Injectable()
 export class RetentionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly retentionAudit: RetentionAuditService,
+    private readonly eligibility: RetentionEligibilityService,
+    private readonly archiveService: RetentionArchiveService,
+    private readonly notifications: RetentionNotificationService,
+    private readonly jobs: RetentionJobService,
   ) {}
 
-  async preview(
-    actor: RetentionActor,
-  ): Promise<{ data: RetentionPreviewResult }> {
-    this.assertActor(actor);
-    const policy = this.policy();
-    const cutoff = this.cutoff(policy.retentionDays);
+  async preview(actor: RetentionActor): Promise<{ data: RetentionPreviewResult }> {
+    this.eligibility.assertActor(actor);
+    const policy = retentionPolicy();
     const now = new Date();
-    const [backup, studies] = await Promise.all([
-      this.findVerifiedBackup(this.prisma),
-      this.loadStudies(this.prisma, actor, cutoff),
-    ]);
-    const candidates = studies.map((study) =>
-      this.evaluateStudy(study, backup, policy, cutoff, now),
+    const cutoff = this.eligibility.cutoff(policy.retentionDays, now);
+    const backup = await this.eligibility.findVerifiedBackup(this.prisma);
+    const studies = await this.eligibility.loadStudies(this.prisma, actor, cutoff, 'MANUAL');
+    const evaluations = studies.map((study) =>
+      this.eligibility.evaluate(study, backup, policy, cutoff, now, 'MANUAL'),
     );
-    return { data: this.summarize(candidates, policy) };
+    const extras = await this.summaryExtras(actor, now);
+    return {
+      data: {
+        ...this.summarize(evaluations, policy, studies.length, extras),
+      },
+    };
   }
 
-  async execute(
-    actor: RetentionActor,
-  ): Promise<{ data: RetentionExecutionResult }> {
-    this.assertActor(actor);
-    const policy = this.policy();
-    const cutoff = this.cutoff(policy.retentionDays);
-    const result = await this.prisma.$transaction(async (tx) => {
-      const now = new Date();
-      const backup = await this.findVerifiedBackup(tx);
-      const studies = await this.loadStudies(tx, actor, cutoff);
-      const candidates = studies.map((study) =>
-        this.evaluateStudy(study, backup, policy, cutoff, now),
-      );
-      let archived = 0;
+  async execute(actor: RetentionActor): Promise<{ data: RetentionExecutionResult }> {
+    this.eligibility.assertActor(actor);
+    const policy = retentionPolicy();
+    const now = new Date();
+    const cutoff = this.eligibility.cutoff(policy.retentionDays, now);
+    const backup = await this.eligibility.findVerifiedBackup(this.prisma);
+    const studies = await this.eligibility.loadStudies(this.prisma, actor, cutoff, 'MANUAL');
+    const evaluations = studies.map((study) =>
+      this.eligibility.evaluate(study, backup, policy, cutoff, now, 'MANUAL'),
+    );
+    let archived = 0;
+    let processed = 0;
+    let archiveFailures = 0;
 
-      for (const candidate of candidates) {
-        if (!candidate.eligible) continue;
-        const update = await tx.study.updateMany({
+    for (const evaluation of evaluations) {
+      if (!evaluation.eligible) continue;
+      processed += 1;
+      const retention = await this.ensureRetentionRecord(
+        evaluation,
+        policy,
+        RetentionStatus.ARCHIVING,
+        now,
+      );
+      try {
+        const result = await this.archiveService.createArchive(evaluation.studyId, actor);
+        if (!result.archived) {
+          archiveFailures += 1;
+          await this.prisma.studyRetention.update({
+            where: { id: retention.id },
+            data: { status: RetentionStatus.FAILED, nextActionAt: new Date(now.getTime() + MS_PER_DAY) },
+          });
+          continue;
+        }
+        const update = await this.prisma.study.updateMany({
           where: {
-            id: candidate.studyId,
+            id: evaluation.studyId,
             archivedAt: null,
-            status: StudyStatus.COMPLETED,
+            status: { in: ['COMPLETED', 'HOSPITAL_ACCEPTED'] },
           },
           data: { archivedAt: now },
         });
-        if (update.count !== 1) continue;
-        archived += 1;
-        await this.audit.createTx(tx, {
-          actorId: actor.id,
-          actorName: this.actorName(actor),
-          actorRole: actor.role,
-          action: 'ARCHIVE_MARKED',
-          resource: 'STUDY',
-          resourceId: candidate.studyId,
-          metadata: {
-            studyInstanceUid: candidate.studyInstanceUid,
-            archivedAt: now.toISOString(),
-            verifiedBackupId: candidate.verifiedBackupId ?? null,
+        await this.prisma.studyRetention.update({
+          where: { id: retention.id },
+          data: {
+            status: RetentionStatus.ARCHIVED,
+            nextActionAt: new Date(now.getTime() + policy.metadataBackupRetentionDays * MS_PER_DAY),
           },
         });
+        if (update.count !== 1) continue;
+        archived += 1;
+        await this.prisma.$transaction(async (tx) => {
+          await this.audit.createTx(tx, {
+            actorId: actor.id,
+            actorName: this.eligibility.actorName(actor),
+            actorRole: actor.role,
+            action: 'ARCHIVE_MARKED',
+            resource: 'STUDY',
+            resourceId: evaluation.studyId,
+            metadata: {
+              studyInstanceUid: evaluation.studyInstanceUid,
+              archivedAt: now.toISOString(),
+              verifiedBackupId: evaluation.verifiedBackupId ?? null,
+              retentionId: retention.id,
+            },
+          });
+        });
+      } catch {
+        archiveFailures += 1;
+        await this.prisma.studyRetention.update({
+          where: { id: retention.id },
+          data: { status: RetentionStatus.FAILED, nextActionAt: new Date(now.getTime() + MS_PER_DAY) },
+        });
       }
+    }
 
-      const summary = this.summarize(candidates, policy);
+    const extras = await this.summaryExtras(actor, now);
+    const summary = this.summarize(evaluations, policy, studies.length, extras);
+    await this.prisma.$transaction(async (tx) => {
       await this.audit.createTx(tx, {
         actorId: actor.id,
-        actorName: this.actorName(actor),
+        actorName: this.eligibility.actorName(actor),
         actorRole: actor.role,
         action: 'RETENTION_EXECUTED',
         resource: 'RETENTION',
@@ -146,226 +165,479 @@ export class RetentionService {
           skipped: summary.skipped,
           skippedReasons: summary.skippedReasons,
           archived,
+          processed,
+          archiveFailures,
           retentionDays: policy.retentionDays,
           requiresVerifiedBackup: policy.requiresVerifiedBackup,
         },
       });
-      return { ...summary, archived };
     });
-    return { data: result };
-  }
-
-  private assertActor(actor: RetentionActor): void {
-    if (actor.role !== 'ADMIN' && actor.role !== 'MANAGER') {
-      throw new ForbiddenException('Only ADMIN or MANAGER may manage retention');
-    }
-  }
-
-  private actorName(actor: RetentionActor): string {
-    return actor.displayName ?? actor.email ?? actor.id;
-  }
-
-  private policy(): RetentionPolicy {
-    const raw = Number(process.env.AXIS_RETENTION_DAYS ?? '90');
-    const retentionDays =
-      Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 90;
     return {
-      retentionDays,
-      requiresVerifiedBackup:
-        String(process.env.AXIS_RETENTION_REQUIRE_BACKUP ?? 'true').toLowerCase() !==
-        'false',
+      data: {
+        ...summary,
+        archived,
+        processed,
+        jobsCreated: 0,
+        notificationsSent: 0,
+        archiveFailures,
+        skippedByReason: summary.skippedReasons,
+      },
     };
   }
 
-  private cutoff(retentionDays: number): Date {
-    return new Date(Date.now() - retentionDays * MS_PER_DAY);
-  }
-
-  private verifiedBackupWhere(): Prisma.BackupRunWhereInput {
-    const env = resolveBackupEnv();
-    const where: Prisma.BackupRunWhereInput = {
-      status: BackupStatus.VERIFIED,
-      verifiedAt: { not: null },
-      completedAt: { not: null },
-      failedAt: null,
-      type: BackupType.FULL,
-      databaseVerified: true,
-      dicomVerified: true,
-      databaseObjectKey: { not: null },
-      dicomObjectKey: { not: null },
-      databaseChecksum: { not: null },
-      dicomChecksum: { not: null },
-      storageProvider: env.provider,
-      environment: env.environment,
-    };
-    if (env.provider === 'B2') where.remoteVerifiedAt = { not: null };
-    return where;
-  }
-
-  private async findVerifiedBackup(
-    client: Prisma.TransactionClient,
-  ): Promise<VerifiedBackup | null> {
-    return client.backupRun.findFirst({
-      where: this.verifiedBackupWhere(),
-      orderBy: { verifiedAt: 'desc' },
-      select: { id: true, verifiedAt: true },
-    });
-  }
-
-  private async loadStudies(
-    client: Prisma.TransactionClient,
+  async applyLegalHold(
+    studyId: string,
     actor: RetentionActor,
-    cutoff: Date,
-  ): Promise<RetentionStudy[]> {
-    const where: Prisma.StudyWhereInput = {
-      archivedAt: null,
-      OR: [
-        { status: StudyStatus.COMPLETED },
-        {
-          status: { not: StudyStatus.COMPLETED },
-          completedAt: null,
-          hospitalAcceptedAt: { lte: cutoff },
+    reason: RetentionLockReason,
+    expiresAt?: Date,
+  ): Promise<void> {
+    this.eligibility.assertActor(actor);
+    const study = await this.prisma.study.findUnique({
+      where: { id: studyId },
+      select: { id: true, hospitalId: true },
+    });
+    if (!study) throw new NotFoundException(`Study ${studyId} not found`);
+    this.assertStudyScope(actor, study.hospitalId);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.study.update({
+        where: { id: studyId },
+        data: {
+          retentionLocked: true,
+          retentionLockReason: reason,
+          retentionLockedAt: new Date(),
+          retentionLockedBy: actor.id,
+          retentionLockExpiresAt: expiresAt ?? null,
         },
-        {
-          status: { not: StudyStatus.COMPLETED },
-          completedAt: null,
-          hospitalAcceptedAt: null,
-          deliveredAt: { lte: cutoff },
-        },
-        {
-          status: { not: StudyStatus.COMPLETED },
-          completedAt: null,
-          hospitalAcceptedAt: null,
-          deliveredAt: null,
-          studyDate: { lte: cutoff },
-        },
-      ],
-    };
-    if (actor.role === 'MANAGER') {
-      where.hospitalId = actor.hospitalId ?? NO_HOSPITAL_SCOPE;
-    }
-    return client.study.findMany({
-      where,
-      include: retentionStudyInclude,
-      orderBy: [{ studyDate: 'asc' }, { id: 'asc' }],
+      });
+      const retention = await tx.studyRetention.findUnique({ where: { studyId } });
+      if (retention) {
+        await tx.studyRetention.update({
+          where: { studyId },
+          data: {
+            retentionLocked: true,
+            lockReason: reason,
+            lockedAt: new Date(),
+            lockedBy: actor.id,
+            status: RetentionStatus.ON_HOLD,
+          },
+        });
+      }
+      await this.retentionAudit.recordTx(tx, {
+        studyId,
+        retentionId: retention?.id,
+        action: 'RETENTION_LOCK_APPLIED',
+        triggeredBy: 'USER',
+        actor,
+        status: 'SUCCESS',
+        details: { reason, expiresAt: expiresAt?.toISOString() ?? null },
+      });
     });
   }
 
-  private anchorFor(study: RetentionStudy): {
-    at: Date;
-    source: RetentionCandidate['retentionAnchorSource'];
-  } {
-    if (study.completedAt) {
-      return { at: study.completedAt, source: 'COMPLETED_AT' };
-    }
-    if (study.hospitalAcceptedAt) {
-      return { at: study.hospitalAcceptedAt, source: 'HOSPITAL_ACCEPTED_AT' };
-    }
-    if (study.deliveredAt) {
-      return { at: study.deliveredAt, source: 'DELIVERED_AT' };
-    }
-    return { at: study.studyDate, source: 'STUDY_DATE' };
+  async releaseLegalHold(studyId: string, actor: RetentionActor): Promise<void> {
+    this.eligibility.assertActor(actor);
+    const study = await this.prisma.study.findUnique({
+      where: { id: studyId },
+      select: { id: true, hospitalId: true },
+    });
+    if (!study) throw new NotFoundException(`Study ${studyId} not found`);
+    this.assertStudyScope(actor, study.hospitalId);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.study.update({
+        where: { id: studyId },
+        data: {
+          retentionLocked: false,
+          retentionLockReason: null,
+          retentionLockedAt: null,
+          retentionLockedBy: null,
+          retentionLockExpiresAt: null,
+        },
+      });
+      const retention = await tx.studyRetention.findUnique({ where: { studyId } });
+      if (retention) {
+        await tx.studyRetention.update({
+          where: { studyId },
+          data: {
+            retentionLocked: false,
+            lockReason: null,
+            lockedAt: null,
+            lockedBy: null,
+            status: retention.status === RetentionStatus.ON_HOLD ? RetentionStatus.PENDING_RETENTION : retention.status,
+            nextActionAt: new Date(),
+          },
+        });
+      }
+      await this.retentionAudit.recordTx(tx, {
+        studyId,
+        retentionId: retention?.id,
+        action: 'RETENTION_LOCK_RELEASED',
+        triggeredBy: 'USER',
+        actor,
+        status: 'SUCCESS',
+        details: {},
+      });
+    });
   }
 
-  private daysSince(date: Date, now: Date): number {
-    return Math.max(0, Math.floor((now.getTime() - date.getTime()) / MS_PER_DAY));
-  }
-
-  private evaluateStudy(
-    study: RetentionStudy,
-    backup: VerifiedBackup | null,
-    policy: RetentionPolicy,
-    cutoff: Date,
-    now: Date,
-  ): RetentionCandidate {
-    const anchor = this.anchorFor(study);
-    const hasActiveCorrection = study.changeRequests.some((changeRequest) =>
-      ACTIVE_CORRECTION_STATUSES.has(changeRequest.status),
-    );
-    const hasActiveReport = study.reports.some((report) =>
-      ACTIVE_REPORT_STATUSES.has(report.status),
-    );
-    const hasActiveDelivery = study.deliveryAttempts.some((attempt) =>
-      ACTIVE_DELIVERY_STATUSES.has(attempt.status),
-    );
-    const hasActiveWorklist =
-      Boolean(study.worklistItem) && !study.worklistItem?.completedAt;
-    const invalidTenant = study.patient.hospitalId !== study.hospitalId;
-    const inactiveHospital = !study.hospital.isActive;
-    const imagingNotAvailable =
-      study.imagingAvailability !== ImagingAvailability.AVAILABLE;
-    const archivalLocked =
-      invalidTenant ||
-      inactiveHospital ||
-      imagingNotAvailable ||
-      hasActiveCorrection ||
-      hasActiveReport ||
-      hasActiveDelivery ||
-      hasActiveWorklist;
-    const verifiedBackupExists = Boolean(backup);
-
-    let reason: string | undefined;
-    if (study.status !== StudyStatus.COMPLETED) {
-      reason = 'NOT_TERMINAL';
-    } else if (!study.completedAt) {
-      reason = 'MISSING_COMPLETION_TIMESTAMP';
-    } else if (study.completedAt.getTime() > cutoff.getTime()) {
-      reason = 'RETENTION_NOT_ELAPSED';
-    } else if (invalidTenant) {
-      reason = 'INVALID_TENANT';
-    } else if (inactiveHospital) {
-      reason = 'INACTIVE_HOSPITAL';
-    } else if (imagingNotAvailable) {
-      reason = 'IMAGING_NOT_AVAILABLE';
-    } else if (hasActiveCorrection) {
-      reason = 'ACTIVE_CORRECTION';
-    } else if (hasActiveReport) {
-      reason = 'ACTIVE_REPORT_WORKFLOW';
-    } else if (hasActiveDelivery) {
-      reason = 'ACTIVE_DELIVERY';
-    } else if (hasActiveWorklist) {
-      reason = 'ACTIVE_WORKLIST';
-    } else if (policy.requiresVerifiedBackup && !verifiedBackupExists) {
-      reason = 'NO_VERIFIED_FULL_BACKUP';
-    }
-
+  async listJobs(actor: RetentionActor): Promise<{ data: RetentionJobView[] }> {
+    this.eligibility.assertActor(actor);
+    const jobs = await this.jobs.list();
     return {
-      studyId: study.id,
-      studyInstanceUid: study.studyInstanceUid,
-      accessionNumber: study.accessionNumber,
-      hospitalName: study.hospital.name,
-      completedAt: study.completedAt?.toISOString() ?? null,
-      retentionAnchorAt: anchor.at.toISOString(),
-      retentionAnchorSource: anchor.source,
-      daysSinceCompletion: study.completedAt
-        ? this.daysSince(study.completedAt, now)
-        : 0,
-      daysSinceAnchor: this.daysSince(anchor.at, now),
-      verifiedBackupExists,
-      verifiedBackupId: backup?.id ?? null,
-      hasActiveCorrection,
-      archivalLocked,
-      eligible: reason === undefined,
-      reason,
+      data: jobs.map((job) => ({
+        id: job.id,
+        type: job.type,
+        status: job.status,
+        studyId: job.studyId,
+        dueAt: job.dueAt.toISOString(),
+        attempts: job.attempts,
+        maxAttempts: job.maxAttempts,
+        lastError: job.lastError,
+      })),
     };
   }
 
-  private summarize(candidates: RetentionCandidate[], policy: RetentionPolicy) {
-    const counts = new Map<string, number>();
-    for (const candidate of candidates) {
-      if (!candidate.reason) continue;
-      counts.set(candidate.reason, (counts.get(candidate.reason) ?? 0) + 1);
+  async retryJob(id: string, actor: RetentionActor): Promise<{ data: { id: string; retried: boolean } }> {
+    this.eligibility.assertActor(actor);
+    const job = await this.prisma.retentionJob.findUnique({ where: { id }, select: { id: true } });
+    if (!job) throw new NotFoundException(`Retention job ${id} not found`);
+    await this.jobs.retry(id);
+    return { data: { id, retried: true } };
+  }
+
+  async listNotifications(
+    actor: RetentionActor,
+    limit = 100,
+  ): Promise<{ data: RetentionNotificationView[] }> {
+    if (!['ADMIN', 'MANAGER', 'HOSPITAL'].includes(actor.role)) {
+      throw new ForbiddenException('Only ADMIN, MANAGER, or HOSPITAL may list retention notices');
     }
-    const skippedReasons = [...counts.entries()]
+    return { data: await this.notifications.list(actor, limit) };
+  }
+
+  async respondNotification(
+    id: string,
+    actor: RetentionActor,
+    response: 'CANCEL' | 'DELETE',
+  ): Promise<{ data: Awaited<ReturnType<RetentionNotificationService['respond']>> }> {
+    if (!['ADMIN', 'MANAGER', 'HOSPITAL'].includes(actor.role)) {
+      throw new ForbiddenException('Only ADMIN, MANAGER, or HOSPITAL may respond');
+    }
+    return { data: await this.notifications.respond(id, actor, response) };
+  }
+
+  async processJob(job: {
+    id: string;
+    type: RetentionJobType;
+    studyId: string | null;
+    retentionId: string | null;
+    payload: Prisma.JsonValue;
+  }): Promise<string> {
+    switch (job.type) {
+      case RetentionJobType.START_RETENTION:
+        return `lifecycle:${await this.startLifecycle()}`;
+      case RetentionJobType.SEND_NOTIFICATION:
+        return `notifications:${await this.notifications.sendDueNotifications()}`;
+      case RetentionJobType.MARK_IGNORED:
+        return `ignored:${await this.notifications.markIgnoredDue()}`;
+      case RetentionJobType.PROCESS_ARCHIVE:
+        return `archive:${await this.processArchiveJob(job)}`;
+      case RetentionJobType.CLEANUP_ORIGINAL: {
+        if (!job.studyId) throw new Error('Cleanup job is missing studyId');
+        const result = await this.archiveService.cleanupOriginalData(job.studyId);
+        return result.deleted ? 'cleanup:deleted' : `cleanup:${result.reason}`;
+      }
+      case RetentionJobType.DELETE_EXPIRED_BACKUPS: {
+        const result = await this.archiveService.processDueBackups();
+        return `backups:${JSON.stringify(result)}`;
+      }
+      default:
+        throw new Error(`Unsupported retention job type ${job.type}`);
+    }
+  }
+
+  async startLifecycle(): Promise<number> {
+    const policy = retentionPolicy();
+    const now = new Date();
+    const cutoff = this.eligibility.cutoff(policy.initialRetentionDays, now);
+    const backup = await this.eligibility.findVerifiedBackup(this.prisma);
+    const actor: RetentionActor = {
+      id: 'system',
+      role: 'ADMIN',
+      displayName: 'Retention scheduler',
+    };
+    const studies = await this.eligibility.loadStudies(
+      this.prisma,
+      actor,
+      cutoff,
+      'LIFECYCLE',
+    );
+    let started = 0;
+    for (const study of studies) {
+      const evaluation = this.eligibility.evaluate(
+        study,
+        backup,
+        policy,
+        cutoff,
+        now,
+        'LIFECYCLE',
+      );
+      if (!evaluation.eligible) continue;
+      const existing = await this.prisma.studyRetention.findUnique({
+        where: { studyId: study.id },
+        select: { id: true, status: true },
+      });
+      if (existing && existing.status !== RetentionStatus.FAILED) continue;
+      if (!existing) {
+        await this.prisma.studyRetention.create({
+          data: {
+            studyId: study.id,
+            status: RetentionStatus.PENDING_RETENTION,
+            eligibleAt: evaluation.anchorAt,
+            anchorAt: evaluation.anchorAt,
+            anchorSource: evaluation.anchorSource as RetentionAnchorSource,
+            policyVersion: policy.policyVersion,
+            retentionLocked: evaluation.blockedByLock,
+            lockReason: evaluation.lockReason,
+            lockedAt: evaluation.blockedByLock ? now : null,
+            nextActionAt: new Date(evaluation.anchorAt.getTime() + policy.initialRetentionDays * MS_PER_DAY),
+          },
+        });
+      } else {
+        await this.prisma.studyRetention.update({
+          where: { id: existing.id },
+          data: {
+            status: RetentionStatus.PENDING_RETENTION,
+            nextActionAt: new Date(evaluation.anchorAt.getTime() + policy.initialRetentionDays * MS_PER_DAY),
+          },
+        });
+      }
+      const retention = await this.prisma.studyRetention.findUnique({
+        where: { studyId: study.id },
+        select: { id: true },
+      });
+      if (!retention) continue;
+      await this.jobs.enqueue({
+        type: RetentionJobType.SEND_NOTIFICATION,
+        dedupeKey: `retention-notify:${retention.id}`,
+        dueAt: new Date(evaluation.anchorAt.getTime() + policy.initialRetentionDays * MS_PER_DAY),
+        studyId: study.id,
+        retentionId: retention.id,
+        payload: { retentionId: retention.id },
+      });
+      await this.retentionAudit.record({
+        studyId: study.id,
+        retentionId: retention.id,
+        action: 'RETENTION_STARTED',
+        triggeredBy: 'SCHEDULER',
+        status: 'SUCCESS',
+        details: {
+          anchorAt: evaluation.anchorAt.toISOString(),
+          anchorSource: evaluation.anchorSource,
+          policyVersion: policy.policyVersion,
+        },
+      });
+      started += 1;
+    }
+    return started;
+  }
+
+  private async processArchiveJob(job: {
+    studyId: string | null;
+    retentionId: string | null;
+    payload: Prisma.JsonValue;
+  }): Promise<string> {
+    const payload = (job.payload ?? {}) as Record<string, unknown>;
+    const retentionId =
+      job.retentionId ?? (typeof payload.retentionId === 'string' ? payload.retentionId : null);
+    const retention = await this.prisma.studyRetention.findUnique({
+      where: { id: retentionId as string },
+      select: { id: true, studyId: true, retentionLocked: true, status: true },
+    });
+    if (!retention || !retentionId) throw new Error('Archive job is missing retentionId');
+    if (retention.retentionLocked) {
+      await this.prisma.studyRetention.update({
+        where: { id: retentionId },
+        data: { status: RetentionStatus.ON_HOLD },
+      });
+      return 'locked';
+    }
+    const result = await this.archiveService.createArchive(retention.studyId);
+    if (!result.archived) throw new Error(result.reason ?? 'Archive failed');
+    const policy = retentionPolicy();
+    await this.prisma.study.updateMany({
+      where: { id: retention.studyId, archivedAt: null },
+      data: { archivedAt: new Date() },
+    });
+    await this.prisma.studyRetention.update({
+      where: { id: retentionId },
+      data: {
+        status: RetentionStatus.ARCHIVED,
+        nextActionAt: new Date(Date.now() + policy.metadataBackupRetentionDays * MS_PER_DAY),
+      },
+    });
+    if (!policy.dryRun && policy.destructiveEnabled) {
+      await this.jobs.enqueue({
+        type: RetentionJobType.CLEANUP_ORIGINAL,
+        dedupeKey: `retention-cleanup:${retentionId}`,
+        dueAt: new Date(),
+        studyId: retention.studyId,
+        retentionId,
+        payload: { retentionId },
+      });
+    }
+    return result.archiveId ?? 'archived';
+  }
+
+  private async ensureRetentionRecord(
+    evaluation: EligibilityResult,
+    policy: ReturnType<typeof retentionPolicy>,
+    status: RetentionStatus,
+    now: Date,
+  ) {
+    const existing = await this.prisma.studyRetention.findUnique({
+      where: { studyId: evaluation.studyId },
+      select: { id: true },
+    });
+    if (existing) {
+      await this.prisma.studyRetention.update({
+        where: { id: existing.id },
+        data: { status, policyVersion: policy.policyVersion, nextActionAt: now },
+      });
+      return existing;
+    }
+    return this.prisma.studyRetention.create({
+      data: {
+        studyId: evaluation.studyId,
+        status,
+        eligibleAt: evaluation.anchorAt,
+        anchorAt: evaluation.anchorAt,
+        anchorSource: evaluation.anchorSource as RetentionAnchorSource,
+        policyVersion: policy.policyVersion,
+        retentionLocked: evaluation.blockedByLock,
+        lockReason: evaluation.lockReason,
+        nextActionAt: now,
+      },
+      select: { id: true },
+    });
+  }
+
+  private async summaryExtras(
+    actor: RetentionActor,
+    now: Date,
+  ): Promise<SummaryExtras> {
+    const scope = actor.role === 'MANAGER' ? { hospitalId: actor.hospitalId ?? NO_HOSPITAL_SCOPE } : {};
+    const [
+      alreadyArchived,
+      failedArchives,
+      dicomBackupsDue,
+      metadataBackupsDue,
+      onHold,
+      awaitingRetention,
+      awaitingUserResponse,
+      readyForArchive,
+      jobs,
+    ] = await Promise.all([
+      this.prisma.study.count({ where: { ...scope, archivedAt: { not: null } } }),
+      this.prisma.retentionArchive.count({
+        where: { archiveStatus: RetentionArchiveStatus.FAILED, study: scope },
+      }),
+      this.prisma.retentionArchive.count({
+        where: {
+          archiveStatus: { notIn: [RetentionArchiveStatus.DELETED] },
+          dicomDeletionStatus: 'PENDING',
+          dicomDeleteAt: { lte: now },
+          study: scope,
+        },
+      }),
+      this.prisma.retentionArchive.count({
+        where: {
+          archiveStatus: { notIn: [RetentionArchiveStatus.DELETED] },
+          metadataDeletionStatus: 'PENDING',
+          metadataDeleteAt: { lte: now },
+          study: scope,
+        },
+      }),
+      this.prisma.studyRetention.count({
+        where: { status: RetentionStatus.ON_HOLD, study: scope },
+      }),
+      this.prisma.studyRetention.count({
+        where: { status: RetentionStatus.PENDING_RETENTION, study: scope },
+      }),
+      this.prisma.studyRetention.count({
+        where: { status: RetentionStatus.AWAITING_USER_RESPONSE, study: scope },
+      }),
+      this.prisma.studyRetention.count({
+        where: { status: RetentionStatus.AUTOMATIC_PROCESSING, study: scope },
+      }),
+      this.prisma.retentionJob.findMany({
+        where: {
+          status: 'PENDING',
+          dueAt: { lte: new Date(now.getTime() + MS_PER_DAY) },
+        },
+        take: 10,
+        orderBy: { dueAt: 'asc' },
+        select: { type: true, dueAt: true, status: true, studyId: true },
+      }),
+    ]);
+    return {
+      inspected: 0,
+      onHold,
+      awaitingRetention,
+      awaitingUserResponse,
+      readyForArchive,
+      alreadyArchived,
+      failedArchives,
+      dicomBackupsDue,
+      metadataBackupsDue,
+      upcomingActions: jobs.map((job) => ({
+        studyId: job.studyId,
+        type: job.type,
+        dueAt: job.dueAt.toISOString(),
+        status: job.status,
+      })),
+    };
+  }
+
+  private summarize(
+    evaluations: EligibilityResult[],
+    policy: ReturnType<typeof retentionPolicy>,
+    inspected: number,
+    extras: SummaryExtras,
+  ): RetentionPreviewResult {
+    const counts = new Map<string, number>();
+    for (const evaluation of evaluations) {
+      if (!evaluation.reason) continue;
+      counts.set(evaluation.reason, (counts.get(evaluation.reason) ?? 0) + 1);
+    }
+    const skippedReasons: RetentionSkipSummary[] = [...counts.entries()]
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+    const eligibleCount = evaluations.filter((item) => item.eligible).length;
     return {
-      candidates,
-      eligibleCount: candidates.filter((candidate) => candidate.eligible).length,
-      reviewed: candidates.length,
-      skipped: candidates.filter((candidate) => !candidate.eligible).length,
+      candidates: evaluations.map(({ anchorAt: _anchorAt, ...candidate }) => candidate) as RetentionPreviewResult['candidates'],
+      eligibleCount,
+      reviewed: evaluations.length,
+      inspected,
+      eligible: eligibleCount,
+      ineligible: evaluations.length - eligibleCount,
+      onHold: extras.onHold,
+      awaitingRetention: extras.awaitingRetention,
+      awaitingUserResponse: extras.awaitingUserResponse,
+      readyForArchive: extras.readyForArchive,
+      alreadyArchived: extras.alreadyArchived,
+      failedArchives: extras.failedArchives,
+      dicomBackupsDue: extras.dicomBackupsDue,
+      metadataBackupsDue: extras.metadataBackupsDue,
+      skipped: evaluations.length - eligibleCount,
       skippedReasons,
+      upcomingActions: extras.upcomingActions,
       policy,
     };
+  }
+
+  private assertStudyScope(actor: RetentionActor, hospitalId: string): void {
+    if (actor.role === 'MANAGER' && actor.hospitalId !== hospitalId) {
+      throw new ForbiddenException('Managers may only act on their own hospital studies');
+    }
   }
 }

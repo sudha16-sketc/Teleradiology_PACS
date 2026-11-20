@@ -124,6 +124,10 @@ export function NotificationBell() {
   const openStudy = (n: AppNotification) => {
     setOpen(false);
     void markRead(n);
+    if (n.type === "RETENTION_NOTIFICATION") {
+      router.push("/retention");
+      return;
+    }
     // `/reading/[studyUid]` is keyed by the DICOM StudyInstanceUID. The
     // notification's own `studyId` is the internal Study primary key and would
     // 404, so the routable UID projected by the API is used instead.

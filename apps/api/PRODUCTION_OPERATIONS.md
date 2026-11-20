@@ -260,20 +260,30 @@ as a surgical, operator-driven action; it is never part of a backup run.
 
 ## Retention & archival
 
-Retention marks **completed** studies as archived once their `completedAt` is
-older than `AXIS_RETENTION_DAYS` (default 90). Archival is non-destructive of
-records: it flips `Study.archivedAt` and records `ARCHIVE_MARKED` and
-`RETENTION_EXECUTED` audit rows. Preview is read-only and writes no audit rows.
-The clinical data is retained; this is a policy compliance marker, not deletion.
+There are two retention paths:
+
+1. **Manual archival** — the existing preview/execute workflow.
+2. **Lifecycle processing** — DB-backed jobs that start notification sequences,
+   record user decisions, archive, and (only after explicit opt-in) expire
+   archive objects or original DICOM data.
+
+Manual retention marks **COMPLETED** studies as archived once their
+`completedAt` is older than `AXIS_RETENTION_DAYS` (default 90). Archival is
+non-destructive of records: it flips `Study.archivedAt`, writes a minimized
+retention archive, and records `ARCHIVE_MARKED`, `ARCHIVE_CREATED`,
+`ARCHIVE_VERIFIED`, and `RETENTION_EXECUTED` audit rows. Preview is read-only.
 
 Eligibility requires:
 
-- status `COMPLETED`, `archivedAt IS NULL`, and a valid `completedAt`,
-- `completedAt ≤ cutoff` (now minus retention days),
+- status `COMPLETED`, `archivedAt IS NULL`, and a valid lifecycle anchor,
+- anchor ≤ cutoff,
 - valid tenant linkage and an active hospital,
 - `imagingAvailability = AVAILABLE`,
 - no active correction (OPEN/ACKNOWLEDGED/APPROVED/IN_PROGRESS), active draft/
   review report, active delivery, or incomplete worklist item,
+- no legal hold,
+- for lifecycle mode only: a signed report, delivered report, and terminal
+  `COMPLETED`/`HOSPITAL_ACCEPTED` status,
 - a strict verified FULL backup when `AXIS_RETENTION_REQUIRE_BACKUP=true` (the
   default): status `VERIFIED`, `verifiedAt`/`completedAt` set, no `failedAt`,
   type `FULL`, both database/DICOM flags, object keys, and checksums present,
@@ -284,23 +294,104 @@ satisfy the backup gate. BackupRun metadata proves run-level protection, not
 per-study inclusion; restoreability should be validated separately with the
 DICOM archive manifest and a tested restore.
 
+The lifecycle anchor is `completedAt`, then `hospitalAcceptedAt`; it is never
+silently derived from `createdAt`/`studyDate` for lifecycle processing. Initial
+eligibility starts `INITIAL_RETENTION_DAYS` (default 20) after that anchor.
+Recipients are derived server-side: active approved `ADMIN` users plus active
+approved `MANAGER`/`HOSPITAL` users in the study's hospital. Client input never
+chooses recipients.
+
+Decision rules:
+
+- `CANCEL` increments `cancelCount` and defers by `CANCEL_REMINDER_DAYS`.
+  Reaching `CANCEL_MAX_COUNT` enqueues `PROCESS_ARCHIVE`.
+- A delivered notice with no response becomes `IGNORED` after
+  `IGNORE_RESPONSE_HOURS`. One reminder is counted per sequence; reminders are
+  sent every `IGNORE_REMINDER_DAYS`. Reaching `IGNORE_MAX_COUNT` enqueues
+  `PROCESS_ARCHIVE`.
+- `DELETE` enqueues `PROCESS_ARCHIVE` immediately.
+- A legal hold blocks notification, response, archival expiry, and original-data
+  cleanup. Managers are scoped to their own hospital; admins are global.
+
+### Retention endpoints
+
 | Endpoint | Access | Purpose |
 | --- | --- | --- |
-| `GET /api/admin/retention/preview` | ADMIN, MANAGER | Dry-run: `policy`, `reviewed`, `eligibleCount`, `skipped`, `skippedReasons`, and safe candidate details. |
-| `POST /api/admin/retention/execute` | ADMIN, MANAGER | Revalidate and archive eligible studies; returns the preview summary plus `archived`. |
+| `GET /api/admin/retention/preview` | ADMIN, MANAGER | Read-only manual preview plus lifecycle status counts and upcoming actions. |
+| `POST /api/admin/retention/execute` | ADMIN, MANAGER | Revalidate and archive eligible manual studies. |
+| `GET /api/admin/retention/jobs` | ADMIN, MANAGER | Inspect retention queue state. |
+| `POST /api/admin/retention/jobs/:id/retry` | ADMIN, MANAGER | Requeue a `DEAD` job. |
+| `POST /api/admin/retention/holds/:studyId` | ADMIN, MANAGER | Apply a legal hold with reason and optional expiry. |
+| `DELETE /api/admin/retention/holds/:studyId` | ADMIN, MANAGER | Release a legal hold. |
+| `GET /api/retention/notifications` | ADMIN, MANAGER, HOSPITAL | List retention notices visible to the caller. |
+| `POST /api/retention/notifications/:id/respond` | ADMIN, MANAGER, HOSPITAL | Record `CANCEL` or `DELETE`; only the recipient may respond. |
 
-Managers are scoped to their own hospital; a manager without a hospital sees no
-candidates. Admins are global. Always run **preview** first to review candidates,
-then execute.
+### Scheduler and jobs
 
-### Backup object retention
+`RETENTION_SCHEDULER_ENABLED` defaults to `false`. When enabled, each API
+instance enqueues deduplicated recurring jobs (`START_RETENTION`,
+`SEND_NOTIFICATION`, `MARK_IGNORED`, `DELETE_EXPIRED_BACKUPS`) on the configured
+interval and claims up to five due jobs per tick using DB leases. Failed jobs
+retry with backoff until `RETENTION_JOB_RETRY_LIMIT`; then they become `DEAD`
+and can be retried explicitly.
 
-When `BACKUP_STORAGE_PROVIDER=B2`, successful FULL runs apply separate object
-retention after each backup. `BACKUP_RETENTION_ENABLED` defaults to `true` and
+### Archive contents and expiry
+
+Each retention archive records a minimized `report.json`, `study.json`, and
+`archive-manifest.json` with SHA-256 checksums. By default
+(`RETENTION_DICOM_ARCHIVE_ENABLED=false`) it references the verified FULL
+backup's DICOM object. When enabled, a per-study DICOMweb archive is generated
+and checksum-verified before the archive record becomes `ARCHIVED`.
+
+DICOM and metadata expiry are independent:
+`DICOM_BACKUP_RETENTION_DAYS` (default 14) and
+`METADATA_BACKUP_RETENTION_DAYS` (default 30), both from archive verification.
+`RETENTION_DRY_RUN=true` (the default) prevents backup-object deletion and
+original-data deletion. `RETENTION_BACKUP_DELETE_ENABLED` must also be `true`
+to delete expired archive objects, and `RETENTION_DELETE_ENABLED` must also be
+`true` to delete the original Orthanc study. No deletion path is active by
+default, and every deletion attempt is audited.
+
+For B2 backup pairs, `BACKUP_RETENTION_ENABLED` defaults to `true` and
 `BACKUP_RETENTION_COUNT` defaults to `7`. Only older FULL runs with both DB and
 DICOM artifacts verified are eligible; the newest valid pair and the current
-run are always preserved. BackupRun records are never deleted, and every object
-deletion is audited.
+run are always preserved. BackupRun records are never deleted.
+
+### Retention configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AXIS_RETENTION_DAYS` | `90` | Manual archival window. |
+| `AXIS_RETENTION_REQUIRE_BACKUP` | `true` | Require a strict verified FULL backup. |
+| `INITIAL_RETENTION_DAYS` | `20` | Days after lifecycle anchor before first notice. |
+| `CANCEL_REMINDER_DAYS` | `20` | Defer period after `CANCEL`. |
+| `CANCEL_MAX_COUNT` | `3` | `CANCEL` count that triggers automatic processing. |
+| `IGNORE_RESPONSE_HOURS` | `24` | No-response window for delivered notices. |
+| `IGNORE_REMINDER_DAYS` | `3` | Interval between ignored notices. |
+| `IGNORE_MAX_COUNT` | `5` | Ignored sequences that trigger automatic processing. |
+| `DICOM_BACKUP_RETENTION_DAYS` | `14` | DICOM archive object expiry. |
+| `METADATA_BACKUP_RETENTION_DAYS` | `30` | Metadata archive object expiry. |
+| `MANDATORY_RETENTION_DAYS` | `0` | Additional absolute retention floor. |
+| `RETENTION_POLICY_VERSION` | derived | Override the version stored on retention records. |
+| `RETENTION_JOB_RETRY_LIMIT` | `5` | Attempts before a job becomes `DEAD`. |
+| `RETENTION_SCHEDULER_ENABLED` | `false` | Enable in-process lifecycle jobs. |
+| `RETENTION_SCHEDULER_INTERVAL_MINUTES` | `15` | Job poll interval. |
+| `RETENTION_DRY_RUN` | `true` | Block destructive cleanup paths. |
+| `RETENTION_DELETE_ENABLED` | `false` | Allow original Orthanc deletion. |
+| `RETENTION_BACKUP_DELETE_ENABLED` | `false` | Allow expired archive object deletion. |
+| `RETENTION_DICOM_ARCHIVE_ENABLED` | `false` | Generate per-study DICOM archives. |
+
+### Safe activation order
+
+1. Confirm a recent verified FULL backup and a tested restore path.
+2. Keep `RETENTION_DRY_RUN=true`, `RETENTION_DELETE_ENABLED=false`, and
+   `RETENTION_BACKUP_DELETE_ENABLED=false`.
+3. Enable `RETENTION_SCHEDULER_ENABLED=true` and review notices/jobs for at
+   least one full policy cycle.
+4. Only then set `RETENTION_DRY_RUN=false` and enable one deletion flag at a
+   time, starting with `RETENTION_BACKUP_DELETE_ENABLED`.
+5. Never enable deletion to resolve an eligibility or notification problem;
+   fix the policy/data issue first.
 
 ## Rate limiting
 
@@ -358,6 +449,9 @@ See `.env.example` for the full annotated list. Key Phase 7 variables:
 | `BACKUP_RETENTION_ENABLED` / `BACKUP_RETENTION_COUNT` | B2 verified FULL-pair retention (defaults `true` / `7`). |
 | `AXIS_RETENTION_DAYS` | Clinical archival retention window (default `90`). |
 | `AXIS_RETENTION_REQUIRE_BACKUP` | Require a verified backup before archival (default `true`). |
+| `INITIAL_RETENTION_DAYS` / `CANCEL_MAX_COUNT` / `IGNORE_MAX_COUNT` | Lifecycle notification thresholds (see retention configuration above). |
+| `RETENTION_SCHEDULER_ENABLED` / `RETENTION_SCHEDULER_INTERVAL_MINUTES` | Lifecycle job activation and poll interval. |
+| `RETENTION_DRY_RUN` / `RETENTION_DELETE_ENABLED` / `RETENTION_BACKUP_DELETE_ENABLED` | Destructive-operation safety gates. |
 | `BACKUP_ACTOR` | Audit actor identity for CLI backups. |
 | `SECURITY_HEADERS_DISABLED` / `SECURITY_HEADERS_CSP` | Header toggles (see above). |
 | `CORS_ORIGIN` | Allowed CORS origin(s). |

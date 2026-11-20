@@ -320,10 +320,11 @@ async function qidoAll(
   client: OrthancBackupClient,
   path: string,
   extract: (item: unknown) => string | undefined,
+  filters: Record<string, string> = {},
 ): Promise<string[]> {
   const values = new Set<string>();
   for (let offset = 0; ; offset += PAGE_SIZE) {
-    const page = await client.qido(path, { offset: String(offset) });
+    const page = await client.qido(path, { ...filters, offset: String(offset) });
     for (const item of page) {
       const value = extract(item);
       if (value) values.add(value);
@@ -336,10 +337,15 @@ async function qidoAll(
 export async function createDicomWebArchive(
   outFile: string,
   env: BackupEnv,
+  studyUid?: string,
 ): Promise<ArtifactResult> {
   const client = new OrthancBackupClient(env);
-  const studyUids = await qidoAll(client, '/dicom-web/studies', (item) =>
-    dicomJsonFirstValue(item, STUDY_UID_TAG),
+  const filters: Record<string, string> = studyUid ? { StudyInstanceUID: studyUid } : {};
+  const studyUids = await qidoAll(
+    client,
+    '/dicom-web/studies',
+    (item) => dicomJsonFirstValue(item, STUDY_UID_TAG),
+    filters,
   );
   if (!studyUids.length) {
     throw new Error(
@@ -423,6 +429,19 @@ export async function createDicomWebArchive(
     sizeBytes: String(stat.size),
     checksum: await sha256File(outFile),
   };
+}
+
+export async function deleteOrthancStudy(
+  orthancStudyId: string,
+  env: BackupEnv,
+): Promise<void> {
+  if (!/^[A-Za-z0-9._-]+$/.test(orthancStudyId)) {
+    throw new Error('Orthanc study id failed validation before deletion');
+  }
+  const client = new OrthancBackupClient(env);
+  await client.request(`/studies/${encodeURIComponent(orthancStudyId)}`, {
+    method: 'DELETE',
+  });
 }
 
 export interface DicomRestoreResult {
