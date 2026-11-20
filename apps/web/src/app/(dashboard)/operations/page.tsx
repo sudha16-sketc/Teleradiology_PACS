@@ -7,6 +7,7 @@ import {
   Settings2,
   Archive,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
 } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
@@ -25,8 +26,15 @@ interface BackupRow {
   startedAt: string;
   databaseArtifact?: string | null;
   dicomArtifact?: string | null;
+  databaseObjectKey?: string | null;
+  dicomObjectKey?: string | null;
+  databaseVerified?: boolean;
+  dicomVerified?: boolean;
+  storageProvider?: string | null;
+  environment?: string | null;
   sizeBytes?: string | null;
   checksum?: string | null;
+  failureReason?: string | null;
 }
 
 const MINUTES_LABEL: Record<string, string> = {
@@ -45,6 +53,8 @@ export default function OperationsPage() {
   const [backups, setBackups] = useState<BackupRow[]>([]);
   const [backupType, setBackupType] = useState("DATABASE");
   const [backupRunning, setBackupRunning] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
 
   const [retentionPreview, setRetentionPreview] = useState<object | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
@@ -118,6 +128,26 @@ export default function OperationsPage() {
       await loadBackups();
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const restoreBackup = async (row: BackupRow) => {
+    const confirmed = window.confirm(
+      `Restore ${row.type} backup ${row.id}? Database restore requires an explicitly configured empty target.`,
+    );
+    if (!confirmed) return;
+    setRestoreBusy(true);
+    setRestoreMessage(null);
+    try {
+      const result = await apiClient.post<{ data: unknown }>(
+        `/admin/backups/${row.id}/restore`,
+        { type: row.type, confirm: true },
+      );
+      setRestoreMessage(`Restore completed: ${JSON.stringify(result.data)}`);
+    } catch (e) {
+      setRestoreMessage(e instanceof Error ? e.message : "Restore failed");
+    } finally {
+      setRestoreBusy(false);
     }
   };
 
@@ -222,8 +252,8 @@ export default function OperationsPage() {
           </h2>
         </div>
         <p className="mb-4 text-sm text-text-muted">
-          PostgreSQL dumps and Orthanc volume snapshots, checksummed and recorded
-          in the audit log.
+          PostgreSQL dumps and DICOMweb archives, checksummed, uploaded to the
+          configured storage provider, and recorded in the audit log.
         </p>
 
         <div className="flex items-center gap-3">
@@ -233,7 +263,7 @@ export default function OperationsPage() {
             className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
           >
             <option value="DATABASE">Database only</option>
-            <option value="DICOM">DICOM (Orthanc volume)</option>
+            <option value="DICOM">DICOM (DICOMweb archive)</option>
             <option value="FULL">Full (DB + DICOM)</option>
           </select>
           <button
@@ -253,43 +283,81 @@ export default function OperationsPage() {
             backups.map((b) => (
               <div
                 key={b.id}
-                className="flex items-center justify-between rounded-md border border-border bg-surface-raised/50 px-4 py-2.5"
+                className="flex items-center justify-between gap-4 rounded-md border border-border bg-surface-raised/50 px-4 py-2.5"
               >
-                <div className="flex items-center gap-3">
-                  <span
-                    className={
-                      b.status === "VERIFIED"
-                        ? "text-success"
-                        : b.status === "FAILED"
-                          ? "text-error"
-                          : "text-accent"
-                    }
-                  >
-                    {b.status}
-                  </span>
-                  <span className="text-sm text-text-primary">{b.type}</span>
-                  <span className="font-mono text-xs text-text-muted">
-                    {new Date(b.startedAt).toLocaleString()}
-                  </span>
-                  {b.sizeBytes && (
-                    <span className="font-mono text-xs text-text-muted">
-                      {(Number(b.sizeBytes) / 1024).toFixed(1)} KB
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={
+                        b.status === "VERIFIED"
+                          ? "text-success"
+                          : b.status === "FAILED"
+                            ? "text-error"
+                            : "text-accent"
+                      }
+                    >
+                      {b.status}
                     </span>
+                    <span className="text-sm text-text-primary">{b.type}</span>
+                    <span className="font-mono text-xs text-text-muted">
+                      {new Date(b.startedAt).toLocaleString()}
+                    </span>
+                    {b.sizeBytes && (
+                      <span className="font-mono text-xs text-text-muted">
+                        {(Number(b.sizeBytes) / 1024).toFixed(1)} KB
+                      </span>
+                    )}
+                    {b.storageProvider && (
+                      <span className="text-xs text-text-muted">
+                        {b.storageProvider}
+                        {b.environment ? ` / ${b.environment}` : ""}
+                      </span>
+                    )}
+                  </div>
+                  {(b.databaseObjectKey || b.dicomObjectKey) && (
+                    <div className="flex flex-wrap gap-3 font-mono text-[11px] text-text-muted">
+                      {b.databaseObjectKey && (
+                        <span>DB: {b.databaseObjectKey}{b.databaseVerified ? " ✓" : ""}</span>
+                      )}
+                      {b.dicomObjectKey && (
+                        <span>DICOM: {b.dicomObjectKey}{b.dicomVerified ? " ✓" : ""}</span>
+                      )}
+                    </div>
+                  )}
+                  {b.failureReason && (
+                    <span className="text-xs text-error">{b.failureReason}</span>
                   )}
                 </div>
-                {b.status === "COMPLETED" && (
-                  <button
-                    onClick={() => verifyBackup(b.id)}
-                    className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised"
-                  >
-                    <ShieldCheck size={13} />
-                    Verify
-                  </button>
-                )}
+                <div className="flex shrink-0 items-center gap-2">
+                  {b.status === "COMPLETED" && (
+                    <button
+                      onClick={() => verifyBackup(b.id)}
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised"
+                    >
+                      <ShieldCheck size={13} />
+                      Verify
+                    </button>
+                  )}
+                  {(b.status === "COMPLETED" || b.status === "VERIFIED") && (
+                    <button
+                      onClick={() => restoreBackup(b)}
+                      disabled={restoreBusy}
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1 text-xs font-medium text-text-primary hover:bg-surface-raised disabled:opacity-50"
+                    >
+                      <RotateCcw size={13} />
+                      Restore
+                    </button>
+                  )}
+                </div>
               </div>
             ))
           )}
         </div>
+        {restoreMessage && (
+          <p className="mt-3 rounded-md border border-border bg-surface-raised/50 p-3 text-xs text-text-muted">
+            {restoreMessage}
+          </p>
+        )}
       </section>
 
       {/* Retention */}

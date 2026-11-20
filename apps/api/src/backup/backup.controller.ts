@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Param } from '@nestjs/common';
 import { BackupService } from './backup.service.js';
 import { StartBackupDto } from './dto/start-backup.dto.js';
+import { RestoreBackupDto } from './dto/restore-backup.dto.js';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
 
 interface RequestUser {
@@ -27,5 +28,14 @@ export class BackupController {
   @Post(':id/verify')
   verify(@Param('id') id: string, @CurrentUser() user: RequestUser) {
     return this.backup.verify(id, user);
+  }
+
+  @Post(':id/restore')
+  restore(
+    @Param('id') id: string,
+    @Body() dto: RestoreBackupDto,
+    @CurrentUser() user: RequestUser,
+  ) {
+    return this.backup.restore(id, dto.type, user);
   }
 }

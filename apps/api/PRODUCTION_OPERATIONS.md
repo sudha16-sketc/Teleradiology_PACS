@@ -173,27 +173,56 @@ Response fields for the overview are derived as follows:
 
 ### How it works
 
-`BackupService` (`apps/api/src/backup/`) runs artifact backups and records a
-`BackupRun` row with lifecycle status `RUNNING → COMPLETED/FAILED → VERIFIED`.
+`BackupService` and `prisma/backup-cli.ts` share one workflow in
+`apps/api/src/backup/backup-workflow.ts`. Every run creates a `BackupRun` row
+with lifecycle status `RUNNING → COMPLETED/FAILED → VERIFIED`. A run is marked
+`COMPLETED` only after every requested artifact is generated, validated,
+uploaded, and checksum-verified. A partial backup is always `FAILED`.
 
-- **DATABASE** — `pg_dump` via `podman exec` on the configured Postgres container.
-- **DICOM** — `podman volume export` of the Orthanc data volume.
-- **FULL** — both of the above.
+`BACKUP_STORAGE_PROVIDER` selects the mode:
 
-Each run writes a checksum, validates the DB dump (header + non-trivial size),
-and emits `STARTED` / `COMPLETED` / `FAILED` audit rows. A separate **verify**
-action re-checks the artifact checksum and (for DB dumps) re-validates the file,
-setting status to `VERIFIED` and emitting `BACKUP_VERIFIED`.
+- `LOCAL` (default) preserves the development Podman workflow:
+  - **DATABASE** — `pg_dump` via `podman exec` into `axis-postgres`.
+  - **DICOM** — `podman volume export` of `axis_orthanc_data`.
+- `B2` is the production mode:
+  - **DATABASE** — `pg_dump --format=custom --compress=9` connects directly to
+    `DATABASE_URL`; credentials are passed in the child process environment,
+    never in command arguments or logs. `pg_dump` must be installed; set
+    `PG_DUMP_BIN` if it is not on `PATH`.
+  - **DICOM** — authenticated QIDO-RS enumerates every study, series, and
+    instance; WADO-RS retrieves each original DICOM object and streams them
+    into `tar.gz` with a `manifest.json` recording UIDs, hierarchy, and hashes.
+    An empty or incomplete enumeration fails the run.
+  - Artifacts are streamed with multipart upload to the private Backblaze B2
+    bucket (`B2_BUCKET_NAME`), then verified with `HEAD` metadata and a full
+    download checksum comparison.
 
-`BACKUP_ACTOR` selects the audit actor; if none is configured the backup CLI
-resolves the first ADMIN for audit attribution.
+B2 object keys are namespaced as
+`backups/{environment}/{runId}/{db|dicom}_{runId}_{timestamp}.*`. Credentials
+stay server-side; no B2 value is exposed to the browser.
+
+A separate **verify** action re-checks every required artifact (downloading it
+from B2 when needed), validates the DB dump, and moves the run to `VERIFIED`
+only when all requested artifacts pass. Verification, restore, object deletion,
+and retention operations emit audit rows.
+
+### DICOM recovery model
+
+The B2 DICOM artifact contains the original DICOM instance bytes and the UID
+hierarchy, not Orthanc's internal SQLite index. Restore first restores the
+PostgreSQL dump, then re-imports the DICOM instances through the authenticated
+Orthanc ingest endpoint. Orthanc internal IDs are deliberately regenerated and
+the PostgreSQL `orthanc*Id` mappings are updated from the idempotent ingest
+responses. No study, series, instance, or report content is overwritten.
 
 ### Schedule (recommended)
 
-- DATABASE: nightly, off-peak (e.g. 02:00 local), retain N daily.
-- DICOM volume: nightly (or weekly for large volumes), retain N.
-- Run the `db:backup` script or the endpoint, and schedule a **weekly verify**
-  so a corrupt/incomplete dump is caught while the data still exists.
+- DATABASE: nightly, off-peak (e.g. 02:00 local).
+- DICOM: nightly (or weekly for very large archives).
+- Run **FULL** periodically so a database artifact and DICOM artifact are kept
+  as a matching pair; B2 retention only prunes verified FULL pairs.
+- Run a **weekly verify** so a corrupt/incomplete dump is caught while the data
+  still exists.
 
 ### CLI
 
@@ -203,25 +232,31 @@ pnpm --filter @axis/api db:backup --type DATABASE
 pnpm --filter @axis/api db:backup --type DICOM
 ```
 
-### Restore procedure (database)
+### Restore procedure
 
-1. `podman exec -i axis-postgres psql -U axis -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='axis_pacs' AND pid <> pg_backend_pid();"`
-2. `podman exec -i axis-postgres psql -U axis -c "DROP DATABASE IF EXISTS axis_pacs;"`
-3. `podman exec -i axis-postgres psql -U axis -c "CREATE DATABASE axis_pacs;"`
-4. `cat backups/db_TIMESTAMP.sql | podman exec -i axis-postgres psql -U axis -d axis_pacs`
-5. Optionally verify a restored study is present and run `prisma migrate` if the
-   dump predates a migration.
-
-### Restore procedure (DICOM volume)
+Admin-only endpoint:
 
 ```
-podman volume rm axis_orthanc_data
+POST /api/admin/backups/:id/restore
+{ "type": "FULL", "confirm": true }
+```
+
+- The run must be `COMPLETED` or `VERIFIED`.
+- Database restore requires `RESTORE_DATABASE_URL` to point to an explicitly
+  chosen, empty target database. The endpoint never drops or clears a database.
+- DICOM restore re-imports instances into Orthanc and updates only the internal
+  Orthanc ID mappings in PostgreSQL.
+- `pg_restore` must be installed; set `PG_RESTORE_BIN` if needed.
+
+For local development, the previous Podman-based restore commands remain valid:
+
+```
+cat backups/db_TIMESTAMP.sql | podman exec -i axis-postgres psql -U axis -d axis_pacs
 podman volume import axis_orthanc_data backups/orthanc_TIMESTAMP.tar
 ```
 
-Always restore from a `VERIFIED` backup. Record the restore as a post-incident
-audit item (there is no destructive-restore endpoint by design; restore is a
-surgical, operator-driven action).
+Always restore from a `VERIFIED` FULL backup when available. Restore is audited
+as a surgical, operator-driven action; it is never part of a backup run.
 
 ## Retention & archival
 
@@ -245,6 +280,15 @@ Eligibility requires:
 | `POST /api/admin/retention/execute` | ADMIN | Archive eligible studies; returns `{ reviewed, archived, skipped }`. |
 
 Always run **preview** first to review candidates, then execute.
+
+### Backup object retention
+
+When `BACKUP_STORAGE_PROVIDER=B2`, successful FULL runs apply separate object
+retention after each backup. `BACKUP_RETENTION_ENABLED` defaults to `true` and
+`BACKUP_RETENTION_COUNT` defaults to `7`. Only older FULL runs with both DB and
+DICOM artifacts verified are eligible; the newest valid pair and the current
+run are always preserved. BackupRun records are never deleted, and every object
+deletion is audited.
 
 ## Rate limiting
 
@@ -286,15 +330,23 @@ See `.env.example` for the full annotated list. Key Phase 7 variables:
 
 | Variable | Meaning |
 | --- | --- |
-| `AXIS_ENV` | Runtime environment label (e.g. `production`) used in structured logs. |
-| `AXIS_BACKUP_DIR` | Backup artifact directory (default `backups`). |
+| `AXIS_ENV` | Runtime environment label (e.g. `production`) used in structured logs and B2 object keys. |
+| `AXIS_BACKUP_DIR` | Local staging artifact directory (default `backups`). |
+| `BACKUP_STORAGE_PROVIDER` | `LOCAL` (Podman) or `B2` (direct PostgreSQL + DICOMweb + Backblaze B2). |
 | `AXIS_POSTGRES_CONTAINER` | Podman Postgres container name (default `axis-postgres`). |
 | `AXIS_ORTHANC_DATA_VOLUME` | Orthanc data volume (default `axis_orthanc_data`). |
 | `AXIS_PODMAN_BIN` | Podman binary path (default `podman`). |
-| `AXIS_PACS_DB` / `AXIS_PACS_DB_USER` | Database name / user for backups. |
-| `AXIS_RETENTION_DAYS` | Retention window (default `90`). |
+| `AXIS_PACS_DB` / `AXIS_PACS_DB_USER` | Database name / user for LOCAL Podman backups. |
+| `PG_DUMP_BIN` / `PG_RESTORE_BIN` | PostgreSQL client binaries for B2 backups/restores. |
+| `RESTORE_DATABASE_URL` | Explicit empty target database for admin database restores. |
+| `B2_KEY_ID` / `B2_APPLICATION_KEY` | Backblaze B2 S3-compatible credentials. Server-side only. |
+| `B2_BUCKET_NAME` | Private B2 bucket (default `teleradiology-pacs`). |
+| `B2_S3_ENDPOINT` / `B2_REGION` | B2 S3 endpoint and region for the bucket. |
+| `B2_PREFIX` | Object key prefix (default `backups`). |
+| `BACKUP_RETENTION_ENABLED` / `BACKUP_RETENTION_COUNT` | B2 verified FULL-pair retention (defaults `true` / `7`). |
+| `AXIS_RETENTION_DAYS` | Clinical archival retention window (default `90`). |
 | `AXIS_RETENTION_REQUIRE_BACKUP` | Require a verified backup before archival (default `true`). |
-| `BACKUP_ACTOR` | Audit actor id for CLI backups. |
+| `BACKUP_ACTOR` | Audit actor identity for CLI backups. |
 | `SECURITY_HEADERS_DISABLED` / `SECURITY_HEADERS_CSP` | Header toggles (see above). |
 | `CORS_ORIGIN` | Allowed CORS origin(s). |
 

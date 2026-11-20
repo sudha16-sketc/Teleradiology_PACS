@@ -484,26 +484,38 @@ model AIJob {
 /// Statuses progress RUNNING -> COMPLETED -> VERIFIED, or -> FAILED. Verified
 /// backups are the only ones eligible to release retained clinical data.
 model BackupRun {
-  id               String       @id @default(cuid())
-  type             BackupType
-  status           BackupStatus @default(RUNNING)
-  startedAt        DateTime     @default(now())
-  completedAt      DateTime?
-  failedAt         DateTime?
-  databaseArtifact String?
-  dicomArtifact    String?
-  checksum         String?
-  sizeBytes        BigInt?
-  backupDirectory  String?
-  verifiedAt       DateTime?
-  failureReason    String?
-  createdById      String?
-  createdAt        DateTime     @default(now())
-  createdBy        User?        @relation("BackupCreator", fields: [createdById], references: [id])
+  id                String       @id @default(cuid())
+  type              BackupType
+  status            BackupStatus @default(RUNNING)
+  startedAt         DateTime     @default(now())
+  completedAt       DateTime?
+  failedAt          DateTime?
+  databaseArtifact  String?
+  dicomArtifact     String?
+  checksum          String?
+  sizeBytes         BigInt?
+  backupDirectory   String?
+  verifiedAt        DateTime?
+  failureReason     String?
+  storageProvider   String?
+  environment       String?
+  databaseObjectKey String?
+  dicomObjectKey    String?
+  databaseChecksum  String?
+  dicomChecksum     String?
+  databaseSizeBytes BigInt?
+  dicomSizeBytes    BigInt?
+  databaseVerified  Boolean      @default(false)
+  dicomVerified     Boolean      @default(false)
+  remoteVerifiedAt  DateTime?
+  createdById       String?
+  createdAt         DateTime     @default(now())
+  createdBy         User?        @relation("BackupCreator", fields: [createdById], references: [id])
 
   @@index([status])
   @@index([createdAt])
   @@index([verifiedAt])
+  @@index([storageProvider, environment])
 }
 
 /// Read-only comparison of PostgreSQL study metadata against Orthanc. Runs
@@ -685,6 +697,11 @@ enum AuditAction {
   BACKUP_COMPLETED
   BACKUP_FAILED
   BACKUP_VERIFIED
+  BACKUP_RESTORE_STARTED
+  BACKUP_RESTORED
+  BACKUP_RESTORE_FAILED
+  BACKUP_OBJECT_DELETED
+  BACKUP_RETENTION_APPLIED
   RETENTION_PREVIEW
   RETENTION_EXECUTED
   ARCHIVE_MARKED

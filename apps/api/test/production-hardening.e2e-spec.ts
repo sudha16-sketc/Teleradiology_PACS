@@ -224,6 +224,17 @@ describe('Phase 7 -- health & unauthenticated access', () => {
       .send({ priority: 'ROUTINE', minutes: 100 })
       .expect(403);
     await mgrAgent.post('/api/admin/backups').send({ type: 'DATABASE' }).expect(403);
+    await mgrAgent
+      .post('/api/admin/backups/missing/restore')
+      .send({ type: 'DATABASE', confirm: true })
+      .expect(403);
+  });
+
+  it('P7-AUTH-3: unauthenticated restore is rejected', async () => {
+    await request(server)
+      .post('/api/admin/backups/missing/restore')
+      .send({ type: 'DATABASE', confirm: true })
+      .expect(401);
   });
 });
 

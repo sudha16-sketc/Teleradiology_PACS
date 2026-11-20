@@ -1,21 +1,38 @@
-import { Injectable, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  AuditAction,
+  AuditResource,
+  BackupStatus,
+  BackupType,
+  type BackupRun,
+  type PrismaClient,
+} from '@prisma/client';
+import { promises as fs } from 'fs';
+import path from 'path';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
-import { BackupStatus, BackupType, AuditAction, AuditResource } from '@prisma/client';
+import { resolveBackupEnv, restoreDatabaseDump, verifyChecksum } from './backup-ops.js';
+import { restoreDicomArchive } from './dicom-backup.js';
+import { BACKUP_STORAGE, type BackupStorage } from './backup-storage.js';
 import {
-  resolveBackupEnv,
-  dumpDatabase,
-  exportOrthancVolume,
-  validateDatabaseDump,
-  verifyChecksum,
-} from './backup-ops.js';
+  executeBackup,
+  verifyBackupRun,
+  type BackupActor,
+} from './backup-workflow.js';
 
-function fileTimestamp(d = new Date()): string {
-  const p = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-` +
-    `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-  );
+export interface RestoreResult {
+  database?: string;
+  dicom?: {
+    studyCount: number;
+    seriesCount: number;
+    instanceCount: number;
+  };
 }
 
 @Injectable()
@@ -23,6 +40,7 @@ export class BackupService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    @Inject(BACKUP_STORAGE) private readonly storage: BackupStorage,
   ) {}
 
   async list() {
@@ -36,154 +54,160 @@ export class BackupService {
 
   async run(
     type: string,
-    actor: { id: string; role: string; displayName?: string },
-  ): Promise<{ data: unknown; error?: string }> {
-    const t = (['DATABASE', 'DICOM', 'FULL'] as string[]).includes(type)
+    actor: BackupActor,
+  ): Promise<{ data: BackupRun | null; error?: string }> {
+    const backupType = Object.values(BackupType).includes(type as BackupType)
       ? (type as BackupType)
       : BackupType.FULL;
-
-    const env = resolveBackupEnv();
-    const ts = fileTimestamp();
-    const activeRun = await this.prisma.backupRun.findFirst({
-      where: { status: BackupStatus.RUNNING },
-      select: { id: true },
-    });
-    if (activeRun) {
-      throw new ConflictException(
-        `Backup already in progress (run ${activeRun.id}) — concurrent runs are not allowed`,
-      );
-    }
-
-    const run = await this.prisma.backupRun.create({
-      data: {
-        type: t,
-        status: BackupStatus.RUNNING,
-        backupDirectory: env.backupDir,
-        createdById: actor.id,
-        startedAt: new Date(),
-      },
-    });
-
-    await this.audit.create({
-      actorId: actor.id,
-      actorName: actor.displayName ?? actor.role,
-      actorRole: actor.role,
-      action: AuditAction.BACKUP_STARTED,
-      resource: AuditResource.BACKUP,
-      resourceId: run.id,
-      metadata: { type: t },
-    });
-
-    try {
-      const update: {
-        status: BackupStatus;
-        completedAt?: Date;
-        failedAt?: Date;
-        failureReason?: string;
-        databaseArtifact?: string;
-        dicomArtifact?: string;
-        checksum?: string;
-        sizeBytes?: bigint;
-      } = { status: BackupStatus.COMPLETED, completedAt: new Date() };
-
-      if (t === BackupType.DATABASE || t === BackupType.FULL) {
-        const dbFile = `${env.backupDir}/db_${run.id}_${ts}.sql`;
-        const db = await dumpDatabase(dbFile, env);
-        update.databaseArtifact = db.filePath;
-        update.checksum = db.checksum;
-        update.sizeBytes = BigInt(db.sizeBytes);
-        if (!(await validateDatabaseDump(db.filePath))) {
-          throw new Error('Database backup failed validation (empty/unreadable dump)');
-        }
-      }
-
-      if (t === BackupType.DICOM || t === BackupType.FULL) {
-        const orthancFile = `${env.backupDir}/orthanc_${run.id}_${ts}.tar`;
-        const dicom = await exportOrthancVolume(orthancFile, env);
-        update.dicomArtifact = dicom.filePath;
-        if (!update.checksum) update.checksum = dicom.checksum;
-        update.sizeBytes = BigInt(dicom.sizeBytes);
-      }
-
-      await this.prisma.backupRun.update({ where: { id: run.id }, data: update });
-      await this.audit.create({
-        actorId: actor.id,
-        actorName: actor.displayName ?? actor.role,
-        actorRole: actor.role,
-        action: AuditAction.BACKUP_COMPLETED,
-        resource: AuditResource.BACKUP,
-        resourceId: run.id,
-        metadata: { type: t, databaseArtifact: update.databaseArtifact, dicomArtifact: update.dicomArtifact },
-      });
-      return { data: await this.prisma.backupRun.findUnique({ where: { id: run.id } }) };
-    } catch (err) {
-      const reason =
-        err instanceof Error ? err.message : 'Backup execution failed';
-      await this.prisma.backupRun.update({
-        where: { id: run.id },
-        data: { status: BackupStatus.FAILED, failedAt: new Date(), failureReason: reason },
-      });
-      await this.audit.create({
-        actorId: actor.id,
-        actorName: actor.displayName ?? actor.role,
-        actorRole: actor.role,
-        action: AuditAction.BACKUP_FAILED,
-        resource: AuditResource.BACKUP,
-        resourceId: run.id,
-        metadata: { type: t, reason },
-      });
-      return { data: await this.prisma.backupRun.findUnique({ where: { id: run.id } }), error: reason };
-    }
+    const result = await executeBackup(
+      this.prisma as PrismaClient,
+      this.audit,
+      this.storage,
+      resolveBackupEnv(),
+      backupType,
+      actor,
+    );
+    if (result.error && !result.data) throw new ConflictException(result.error);
+    return result;
   }
 
   async verify(
     id: string,
-    actor: { id: string; role: string; displayName?: string },
-  ): Promise<{ data: unknown }> {
+    actor: BackupActor,
+  ): Promise<{ data: { id: string; status: BackupStatus; detail: string } }> {
     const run = await this.prisma.backupRun.findUnique({ where: { id } });
     if (!run) throw new NotFoundException('Backup run not found');
+    const result = await verifyBackupRun(
+      this.prisma as PrismaClient,
+      this.audit,
+      this.storage,
+      resolveBackupEnv(),
+      run,
+      actor,
+    );
+    return { data: { id: run.id, status: result.status, detail: result.detail } };
+  }
 
-    let verified = false;
-    let detail = '';
-    try {
-      if (run.databaseArtifact && run.checksum) {
-        verified = await verifyChecksum(run.databaseArtifact, run.checksum);
-        if (!verified) {
-          detail = 'checksum mismatch on database artifact';
-        } else if (run.type === BackupType.DATABASE || run.type === BackupType.FULL) {
-          verified = await validateDatabaseDump(run.databaseArtifact);
-          detail = verified ? 'database artifact validated' : 'database artifact failed validation';
-        }
-      } else if (run.dicomArtifact && run.checksum) {
-        verified = await verifyChecksum(run.dicomArtifact, run.checksum);
-        detail = verified ? 'dicom artifact checksum matched' : 'checksum mismatch on dicom artifact';
-      }
-    } catch {
-      verified = false;
-      detail = 'verification could not be completed';
+  async restore(
+    id: string,
+    requestedType: BackupType,
+    actor: BackupActor,
+  ): Promise<{ data: RestoreResult }> {
+    const run = await this.prisma.backupRun.findUnique({ where: { id } });
+    if (!run) throw new NotFoundException('Backup run not found');
+    const restorableStatuses: BackupStatus[] = [
+      BackupStatus.COMPLETED,
+      BackupStatus.VERIFIED,
+    ];
+    if (!restorableStatuses.includes(run.status)) {
+      throw new BadRequestException('Only completed or verified backups can be restored');
     }
-
-    await this.prisma.backupRun.update({
-      where: { id: run.id },
-      data: {
-        status: verified ? BackupStatus.VERIFIED : BackupStatus.FAILED,
-        verifiedAt: verified ? new Date() : undefined,
-        failureReason: verified ? null : detail,
-      },
-    });
+    const env = resolveBackupEnv();
+    const requiresDatabase =
+      requestedType === BackupType.DATABASE || requestedType === BackupType.FULL;
+    const requiresDicom =
+      requestedType === BackupType.DICOM || requestedType === BackupType.FULL;
+    if (requiresDatabase && !run.databaseChecksum) {
+      throw new BadRequestException('This backup has no verified database artifact');
+    }
+    if (requiresDicom && !run.dicomChecksum) {
+      throw new BadRequestException('This backup has no verified DICOM artifact');
+    }
 
     await this.audit.create({
       actorId: actor.id,
       actorName: actor.displayName ?? actor.role,
       actorRole: actor.role,
-      action: AuditAction.BACKUP_VERIFIED,
+      action: AuditAction.BACKUP_RESTORE_STARTED,
       resource: AuditResource.BACKUP,
       resourceId: run.id,
-      metadata: { verified, detail },
+      metadata: { type: requestedType, provider: env.provider },
     });
 
-    return {
-      data: { id: run.id, status: verified ? BackupStatus.VERIFIED : BackupStatus.FAILED, detail },
-    };
+    const scratchDir = await fs.mkdtemp(path.join(env.backupDir, 'restore-'));
+    const result: RestoreResult = {};
+    try {
+      if (requiresDatabase) {
+        const targetUrl = process.env.RESTORE_DATABASE_URL;
+        if (!targetUrl) {
+          throw new Error(
+            'RESTORE_DATABASE_URL must be set to the explicitly chosen, empty restore database',
+          );
+        }
+        const checksum = run.databaseChecksum as string;
+        const artifactPath = await this.resolveRestoreArtifact(
+          run.databaseArtifact,
+          run.databaseObjectKey,
+          checksum,
+          scratchDir,
+          'database',
+        );
+        await restoreDatabaseDump(artifactPath, targetUrl, checksum, env);
+        result.database = 'restored';
+      }
+
+      if (requiresDicom) {
+        const checksum = run.dicomChecksum as string;
+        const artifactPath = await this.resolveRestoreArtifact(
+          run.dicomArtifact,
+          run.dicomObjectKey,
+          checksum,
+          scratchDir,
+          'dicom',
+        );
+        result.dicom = await restoreDicomArchive(
+          artifactPath,
+          checksum,
+          env,
+          this.prisma as PrismaClient,
+        );
+      }
+
+      await this.audit.create({
+        actorId: actor.id,
+        actorName: actor.displayName ?? actor.role,
+        actorRole: actor.role,
+        action: AuditAction.BACKUP_RESTORED,
+        resource: AuditResource.BACKUP,
+        resourceId: run.id,
+        metadata: { type: requestedType, result },
+      });
+      return { data: result };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'Backup restore failed';
+      await this.audit.create({
+        actorId: actor.id,
+        actorName: actor.displayName ?? actor.role,
+        actorRole: actor.role,
+        action: AuditAction.BACKUP_RESTORE_FAILED,
+        resource: AuditResource.BACKUP,
+        resourceId: run.id,
+        metadata: { type: requestedType, reason },
+      });
+      throw new BadRequestException(reason);
+    } finally {
+      await fs.rm(scratchDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private async resolveRestoreArtifact(
+    artifactPath: string | null,
+    objectKey: string | null,
+    checksum: string,
+    scratchDir: string,
+    kind: 'database' | 'dicom',
+  ): Promise<string> {
+    if (this.storage.remote && objectKey) {
+      const target = path.join(scratchDir, `${kind}-artifact`);
+      await this.storage.download(objectKey, target);
+      if (!(await verifyChecksum(target, checksum))) {
+        throw new Error(`Restored ${kind} artifact checksum mismatch`);
+      }
+      return target;
+    }
+    if (!artifactPath || !(await verifyChecksum(artifactPath, checksum))) {
+      throw new Error(`Restored ${kind} artifact checksum mismatch`);
+    }
+    return artifactPath;
   }
 }
