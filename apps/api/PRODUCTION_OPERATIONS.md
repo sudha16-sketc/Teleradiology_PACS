@@ -262,24 +262,36 @@ as a surgical, operator-driven action; it is never part of a backup run.
 
 Retention marks **completed** studies as archived once their `completedAt` is
 older than `AXIS_RETENTION_DAYS` (default 90). Archival is non-destructive of
-records: it flips `Study.archivedAt` and records an `ARCHIVE_MARKED` audit row
-per study plus `RETENTION_PREVIEW` / `RETENTION_EXECUTED` job rows. The clinical
-data is retained; this is a policy compliance marker, not deletion.
+records: it flips `Study.archivedAt` and records `ARCHIVE_MARKED` and
+`RETENTION_EXECUTED` audit rows. Preview is read-only and writes no audit rows.
+The clinical data is retained; this is a policy compliance marker, not deletion.
 
 Eligibility requires:
 
-- status `COMPLETED` and `archivedAt IS NULL`,
+- status `COMPLETED`, `archivedAt IS NULL`, and a valid `completedAt`,
 - `completedAt ≤ cutoff` (now minus retention days),
-- a `VERIFIED`/`COMPLETED` backup exists (`AXIS_RETENTION_REQUIRE_BACKUP=true`,
-  the default) — archival is gated on having a verified backup,
-- **no active correction** on the study (OPEN/ACKNOWLEDGED/APPROVED/IN_PROGRESS).
+- valid tenant linkage and an active hospital,
+- `imagingAvailability = AVAILABLE`,
+- no active correction (OPEN/ACKNOWLEDGED/APPROVED/IN_PROGRESS), active draft/
+  review report, active delivery, or incomplete worklist item,
+- a strict verified FULL backup when `AXIS_RETENTION_REQUIRE_BACKUP=true` (the
+  default): status `VERIFIED`, `verifiedAt`/`completedAt` set, no `failedAt`,
+  type `FULL`, both database/DICOM flags, object keys, and checksums present,
+  and matching provider/environment. B2 runs also require `remoteVerifiedAt`.
+
+PENDING/RUNNING/FAILED/unverified, database-only, and DICOM-only runs never
+satisfy the backup gate. BackupRun metadata proves run-level protection, not
+per-study inclusion; restoreability should be validated separately with the
+DICOM archive manifest and a tested restore.
 
 | Endpoint | Access | Purpose |
 | --- | --- | --- |
-| `GET /api/admin/retention/preview` | ADMIN | Dry-run: list candidates with `eligible`, `hasActiveCorrection`, `verifiedBackupExists`, `reason`. |
-| `POST /api/admin/retention/execute` | ADMIN | Archive eligible studies; returns `{ reviewed, archived, skipped }`. |
+| `GET /api/admin/retention/preview` | ADMIN, MANAGER | Dry-run: `policy`, `reviewed`, `eligibleCount`, `skipped`, `skippedReasons`, and safe candidate details. |
+| `POST /api/admin/retention/execute` | ADMIN, MANAGER | Revalidate and archive eligible studies; returns the preview summary plus `archived`. |
 
-Always run **preview** first to review candidates, then execute.
+Managers are scoped to their own hospital; a manager without a hospital sees no
+candidates. Admins are global. Always run **preview** first to review candidates,
+then execute.
 
 ### Backup object retention
 

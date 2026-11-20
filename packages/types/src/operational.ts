@@ -71,19 +71,37 @@ export interface RetentionCandidate {
   accessionNumber: string;
   hospitalName: string;
   completedAt?: string | null;
+  retentionAnchorAt: string;
+  retentionAnchorSource: 'COMPLETED_AT' | 'HOSPITAL_ACCEPTED_AT' | 'DELIVERED_AT' | 'STUDY_DATE';
   daysSinceCompletion: number;
+  daysSinceAnchor: number;
   verifiedBackupExists: boolean;
+  verifiedBackupId?: string | null;
   hasActiveCorrection: boolean;
   archivalLocked: boolean;
   eligible: boolean;
   reason?: string;
 }
 
+export interface RetentionSkipSummary {
+  reason: string;
+  count: number;
+}
+
+export interface RetentionPolicy {
+  retentionDays: number;
+  requiresVerifiedBackup: boolean;
+}
+
 export interface RetentionPreviewResult {
   candidates: RetentionCandidate[];
   eligibleCount: number;
-  policy: {
-    retentionDays: number;
-    requiresVerifiedBackup: boolean;
-  };
+  reviewed: number;
+  skipped: number;
+  skippedReasons: RetentionSkipSummary[];
+  policy: RetentionPolicy;
+}
+
+export interface RetentionExecutionResult extends RetentionPreviewResult {
+  archived: number;
 }

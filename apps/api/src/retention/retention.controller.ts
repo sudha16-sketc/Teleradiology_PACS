@@ -6,14 +6,16 @@ interface RequestUser {
   id: string;
   role: string;
   displayName?: string;
+  email?: string;
+  hospitalId?: string | null;
 }
 
 @Controller('admin/retention')
-@Roles('ADMIN')
+@Roles('ADMIN', 'MANAGER')
 export class RetentionController {
   constructor(private readonly retention: RetentionService) {}
 
-  /** Dry-run: which COMPLETED studies are eligible for archival. */
+  /** Dry-run: retention policy, reviewed studies, eligibility, and skip reasons. */
   @Get('preview')
   preview(@CurrentUser() user: RequestUser) {
     return this.retention.preview(user);

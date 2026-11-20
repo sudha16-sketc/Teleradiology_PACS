@@ -12,6 +12,11 @@ import {
 } from "lucide-react";
 import { apiClient } from "@/lib/api-client";
 import { ErrorState } from "@/components/ui/ErrorState";
+import type {
+  RetentionExecutionResult,
+  RetentionPreviewResult,
+  RetentionSkipSummary,
+} from "@axis/types";
 
 interface SlaRow {
   priority: "STAT" | "URGENT" | "ROUTINE";
@@ -43,6 +48,30 @@ const MINUTES_LABEL: Record<string, string> = {
   ROUTINE: "ROUTINE",
 };
 
+const RETENTION_REASON_LABEL: Record<string, string> = {
+  NOT_TERMINAL: "Not in terminal state",
+  MISSING_COMPLETION_TIMESTAMP: "Missing completion timestamp",
+  RETENTION_NOT_ELAPSED: "Retention period not elapsed",
+  INVALID_TENANT: "Invalid hospital/tenant linkage",
+  INACTIVE_HOSPITAL: "Inactive hospital",
+  IMAGING_NOT_AVAILABLE: "Imaging not available",
+  ACTIVE_CORRECTION: "Active correction",
+  ACTIVE_REPORT_WORKFLOW: "Active report workflow",
+  ACTIVE_DELIVERY: "Active delivery",
+  ACTIVE_WORKLIST: "Active worklist item",
+  NO_VERIFIED_FULL_BACKUP: "No verified full backup",
+};
+
+function retentionReasonLabel(reason?: string): string {
+  if (!reason) return "Eligible";
+  return RETENTION_REASON_LABEL[reason] ?? reason;
+}
+
+function formatRetentionDate(value: string | null | undefined): string {
+  if (!value) return "—";
+  return new Date(value).toLocaleDateString();
+}
+
 export default function OperationsPage() {
   const [error, setError] = useState(false);
   const [slaRows, setSlaRows] = useState<SlaRow[]>([]);
@@ -56,7 +85,11 @@ export default function OperationsPage() {
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState<string | null>(null);
 
-  const [retentionPreview, setRetentionPreview] = useState<object | null>(null);
+  const [retentionPreview, setRetentionPreview] =
+    useState<RetentionPreviewResult | null>(null);
+  const [retentionExecution, setRetentionExecution] =
+    useState<RetentionExecutionResult | null>(null);
+  const [retentionMessage, setRetentionMessage] = useState<string | null>(null);
   const [retentionBusy, setRetentionBusy] = useState(false);
 
   const loadSla = async () => {
@@ -153,24 +186,39 @@ export default function OperationsPage() {
 
   const runRetentionPreview = async () => {
     setRetentionBusy(true);
+    setRetentionMessage(null);
     try {
-      const res = await apiClient.get<object>("/admin/retention/preview");
-      setRetentionPreview(res);
+      const res = await apiClient.get<{ data: RetentionPreviewResult }>(
+        "/admin/retention/preview",
+      );
+      setRetentionPreview(res.data ?? null);
+      setRetentionExecution(null);
     } catch (e) {
       console.error(e);
+      setRetentionMessage("Preview failed. Check permissions and try again.");
     } finally {
       setRetentionBusy(false);
     }
   };
 
   const runRetentionExecute = async () => {
+    const confirmed = window.confirm(
+      "Mark all currently eligible studies as archived? Data is retained and every change is audited.",
+    );
+    if (!confirmed) return;
     setRetentionBusy(true);
+    setRetentionMessage(null);
     try {
-      const res = await apiClient.post<object>("/admin/retention/execute");
-      setRetentionPreview(res);
+      const res = await apiClient.post<{ data: RetentionExecutionResult }>(
+        "/admin/retention/execute",
+      );
+      setRetentionExecution(res.data ?? null);
+      setRetentionPreview(res.data ?? null);
+      setRetentionMessage(`Archived ${res.data?.archived ?? 0} study/studies.`);
       await loadBackups();
     } catch (e) {
       console.error(e);
+      setRetentionMessage("Archival failed. No partial changes were applied.");
     } finally {
       setRetentionBusy(false);
     }
@@ -181,6 +229,10 @@ export default function OperationsPage() {
       <ErrorState title="Failed to load operations data" description="Check that you are an administrator." onRetry={() => load()} />
     );
   }
+
+  const retentionResult = retentionExecution ?? retentionPreview;
+  const skippedReasons: RetentionSkipSummary[] =
+    retentionResult?.skippedReasons ?? [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -392,11 +444,130 @@ export default function OperationsPage() {
           </button>
         </div>
 
-        {retentionPreview && (
-          <div className="mt-4 rounded-md border border-border bg-surface-raised/50 p-4 text-sm">
-            <pre className="whitespace-pre-wrap font-mono text-xs text-text-muted">
-              {JSON.stringify(retentionPreview, null, 2)}
-            </pre>
+        {retentionMessage && (
+          <p className="mt-3 text-sm text-text-muted">{retentionMessage}</p>
+        )}
+
+        {retentionResult && (
+          <div className="mt-4 flex flex-col gap-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">Reviewed</div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.reviewed}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">Eligible</div>
+                <div className="font-mono text-lg text-success">
+                  {retentionResult.eligibleCount}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">Skipped</div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.skipped}
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">
+                  Retention
+                </div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionResult.policy.retentionDays}d
+                </div>
+              </div>
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="text-xs uppercase tracking-wide text-text-muted">
+                  {retentionExecution ? "Archived" : "Backup required"}
+                </div>
+                <div className="font-mono text-lg text-text-primary">
+                  {retentionExecution
+                    ? retentionExecution.archived
+                    : retentionResult.policy.requiresVerifiedBackup
+                      ? "Yes"
+                      : "No"}
+                </div>
+              </div>
+            </div>
+
+            {skippedReasons.length > 0 && (
+              <div className="rounded-md border border-border bg-surface-raised/50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                  Skip reasons
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {skippedReasons.map((item) => (
+                    <span
+                      key={item.reason}
+                      className="rounded-full border border-border px-2.5 py-1 text-xs text-text-muted"
+                    >
+                      {retentionReasonLabel(item.reason)}: {item.count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {retentionResult.candidates.length === 0 ? (
+              <p className="text-sm text-text-muted">
+                No old non-archived studies matched the retention window.
+              </p>
+            ) : (
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead className="bg-surface-raised text-xs uppercase tracking-wide text-text-muted">
+                    <tr>
+                      <th className="px-3 py-2">Study</th>
+                      <th className="px-3 py-2">Hospital</th>
+                      <th className="px-3 py-2">Age</th>
+                      <th className="px-3 py-2">Backup</th>
+                      <th className="px-3 py-2">Result</th>
+                      <th className="px-3 py-2">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {retentionResult.candidates.map((candidate) => (
+                      <tr
+                        key={candidate.studyId}
+                        className="border-t border-border text-text-muted"
+                      >
+                        <td className="px-3 py-2">
+                          <div className="font-mono text-xs text-text-primary">
+                            {candidate.accessionNumber}
+                          </div>
+                          <div className="max-w-[220px] truncate font-mono text-[11px]">
+                            {candidate.studyInstanceUid}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">{candidate.hospitalName}</td>
+                        <td className="px-3 py-2">
+                          {candidate.daysSinceAnchor}d
+                          <div className="text-[11px]">
+                            from {formatRetentionDate(candidate.retentionAnchorAt)}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          {candidate.verifiedBackupExists ? "Verified" : "None"}
+                        </td>
+                        <td className="px-3 py-2">
+                          <span
+                            className={
+                              candidate.eligible ? "text-success" : "text-error"
+                            }
+                          >
+                            {candidate.eligible ? "Eligible" : "Skipped"}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          {retentionReasonLabel(candidate.reason)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </section>
