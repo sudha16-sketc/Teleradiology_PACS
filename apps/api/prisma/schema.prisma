@@ -614,6 +614,7 @@ model RetentionNotification {
   response          RetentionResponse?
   deliveryStatus    NotificationDeliveryStatus    @default(PENDING)
   deliveryAttempts  Int                           @default(0)
+  ignoredCounted    Boolean                       @default(false)
   nextRetryAt       DateTime?
   lastError         String?
   createdAt         DateTime                      @default(now())
@@ -636,7 +637,9 @@ model RetentionArchive {
   archiveStatus            RetentionArchiveStatus      @default(PENDING)
   archiveCreatedAt         DateTime?
   archiveVerifiedAt        DateTime?
+  contentVerifiedAt        DateTime?
   dicomObjectKey           String?
+  dicomObjectOwned         Boolean                     @default(false)
   studyObjectKey           String?
   reportObjectKey          String?
   manifestObjectKey        String?
@@ -651,6 +654,11 @@ model RetentionArchive {
   dicomDeletionStatus      BackupObjectDeletionStatus  @default(PENDING)
   metadataDeletionStatus   BackupObjectDeletionStatus  @default(PENDING)
   retryCount               Int                         @default(0)
+  claimUntil               DateTime?
+  cleanupClaimUntil       DateTime?
+  cleanupFinalized        Boolean   @default(false)
+  orthancDeleteDispatchedAt DateTime?
+  uploadedArtifacts       Json?
   lastError                String?
   createdAt                DateTime                    @default(now())
   updatedAt                DateTime                    @updatedAt
@@ -1019,6 +1027,7 @@ enum BackupObjectDeletionStatus {
 enum OriginalDataDeletionStatus {
   PENDING
   IN_PROGRESS
+  FINALIZING
   DELETED
   FAILED
   SKIPPED

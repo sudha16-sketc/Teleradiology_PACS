@@ -1,4 +1,5 @@
 import type { RetentionPolicy } from '@axis/types';
+import { isWeakSecret } from '../auth/auth.constants.js';
 
 const DEFAULT_RETENTION_DAYS = 90;
 
@@ -12,7 +13,7 @@ function intEnv(
   if (raw === undefined || raw === '') return fallback;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    return fallback;
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return value;
 }
@@ -23,17 +24,46 @@ export function booleanEnv(name: string, fallback: boolean): boolean {
   const normalized = raw.trim().toLowerCase();
   if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
   if (['false', '0', 'no', 'off'].includes(normalized)) return false;
-  return fallback;
+  throw new Error(`${name} must be true or false`);
+}
+
+export const RETENTION_CRON_HEADER = 'x-cron-secret';
+
+export function retentionCronSecret(): string | undefined {
+  const value = process.env.RETENTION_CRON_SECRET?.trim();
+  return value && !isWeakSecret(value) ? value : undefined;
+}
+
+function assertSafetyConfig(policy: RetentionPolicy): void {
+  if (policy.destructiveEnabled && policy.dryRun) {
+    throw new Error('RETENTION_DELETE_ENABLED requires RETENTION_DRY_RUN=false');
+  }
+  if (
+    booleanEnv(RETENTION_ENV_FLAGS.backupDeleteEnabled, false) &&
+    policy.dryRun
+  ) {
+    throw new Error('RETENTION_BACKUP_DELETE_ENABLED requires RETENTION_DRY_RUN=false');
+  }
+  if (policy.destructiveEnabled && !booleanEnv(RETENTION_ENV_FLAGS.dicomArchiveEnabled, false)) {
+    throw new Error('RETENTION_DELETE_ENABLED requires RETENTION_DICOM_ARCHIVE_ENABLED=true');
+  }
+  if (
+    policy.dryRun &&
+    (policy.destructiveEnabled || booleanEnv(RETENTION_ENV_FLAGS.backupDeleteEnabled, false))
+  ) {
+    throw new Error('Destructive retention operations cannot run in dry-run mode');
+  }
 }
 
 export function retentionPolicy(): RetentionPolicy {
-  const legacyRaw = Number(process.env.AXIS_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
-  const retentionDays =
-    Number.isInteger(legacyRaw) && legacyRaw >= 0 && legacyRaw <= 3650
-      ? legacyRaw
-      : DEFAULT_RETENTION_DAYS;
+  const retentionDays = intEnv(
+    'AXIS_RETENTION_DAYS',
+    DEFAULT_RETENTION_DAYS,
+    0,
+    3650,
+  );
   const policyVersion =
-    process.env.RETENTION_POLICY_VERSION ??
+    process.env.RETENTION_POLICY_VERSION ||
     [
       retentionDays,
       intEnv('INITIAL_RETENTION_DAYS', 20, 1),
@@ -43,15 +73,15 @@ export function retentionPolicy(): RetentionPolicy {
       intEnv('METADATA_BACKUP_RETENTION_DAYS', 30, 1),
     ].join('-');
 
-  return {
+  const policy: RetentionPolicy = {
     retentionDays,
     requiresVerifiedBackup: booleanEnv('AXIS_RETENTION_REQUIRE_BACKUP', true),
     initialRetentionDays: intEnv('INITIAL_RETENTION_DAYS', 20, 1),
     cancelReminderDays: intEnv('CANCEL_REMINDER_DAYS', 20, 1),
-    cancelMaxCount: intEnv('CANCEL_MAX_COUNT', 3, 1, 100),
+    cancelMaxCount: intEnv('CANCEL_MAX_COUNT', 3, 1, 3),
     ignoreResponseHours: intEnv('IGNORE_RESPONSE_HOURS', 24, 1, 8760),
     ignoreReminderDays: intEnv('IGNORE_REMINDER_DAYS', 3, 1),
-    ignoreMaxCount: intEnv('IGNORE_MAX_COUNT', 5, 1, 100),
+    ignoreMaxCount: intEnv('IGNORE_MAX_COUNT', 5, 1, 5),
     dicomBackupRetentionDays: intEnv('DICOM_BACKUP_RETENTION_DAYS', 14, 1),
     metadataBackupRetentionDays: intEnv('METADATA_BACKUP_RETENTION_DAYS', 30, 1),
     mandatoryRetentionDays: intEnv('MANDATORY_RETENTION_DAYS', 0, 0),
@@ -61,6 +91,8 @@ export function retentionPolicy(): RetentionPolicy {
     jobRetryLimit: intEnv('RETENTION_JOB_RETRY_LIMIT', 5, 1, 100),
     policyVersion,
   };
+  assertSafetyConfig(policy);
+  return policy;
 }
 
 export const RETENTION_ENV_FLAGS = {

@@ -41,6 +41,7 @@ export interface BackupStorage {
   list(prefix: string): Promise<RemoteArtifact[]>;
   delete(key: string): Promise<void>;
   purgeVersions?(key: string): Promise<number>;
+  verifyPurge?(key: string): Promise<boolean>;
   verify(key: string, filePath: string, expectedChecksum: string): Promise<boolean>;
 }
 
@@ -214,6 +215,49 @@ export class B2BackupStorage implements BackupStorage {
     return removed;
   }
 
+  async verifyPurge(key: string): Promise<boolean> {
+    let keyMarker: string | undefined;
+    let versionIdMarker: string | undefined;
+    do {
+      const versions = await this.client.send(
+        new ListObjectVersionsCommand({
+          Bucket: this.env.b2BucketName,
+          Prefix: key,
+          KeyMarker: keyMarker,
+          VersionIdMarker: versionIdMarker,
+        }),
+      );
+      const hasObject = [...(versions.Versions ?? []), ...(versions.DeleteMarkers ?? [])].some(
+        (item) => item.Key === key,
+      );
+      if (hasObject) return false;
+      if (!versions.IsTruncated) break;
+      keyMarker = versions.NextKeyMarker;
+      versionIdMarker = versions.NextVersionIdMarker;
+      if (!keyMarker && !versionIdMarker) break;
+    } while (keyMarker || versionIdMarker);
+
+    let uploadKeyMarker: string | undefined;
+    let uploadIdMarker: string | undefined;
+    do {
+      const uploads = await this.client.send(
+        new ListMultipartUploadsCommand({
+          Bucket: this.env.b2BucketName,
+          Prefix: key,
+          KeyMarker: uploadKeyMarker,
+          UploadIdMarker: uploadIdMarker,
+        }),
+      );
+      if ((uploads.Uploads ?? []).some((upload) => upload.Key === key)) return false;
+      if (!uploads.IsTruncated) break;
+      uploadKeyMarker = uploads.NextKeyMarker;
+      uploadIdMarker = uploads.NextUploadIdMarker;
+      if (!uploadKeyMarker && !uploadIdMarker) break;
+    } while (uploadKeyMarker || uploadIdMarker);
+
+    return true;
+  }
+
   async verify(key: string, filePath: string, expectedChecksum: string): Promise<boolean> {
     const remote = await this.head(key);
     if (!remote || !remote.checksum || remote.checksum !== expectedChecksum) return false;
@@ -272,6 +316,10 @@ export class LocalBackupStorage implements BackupStorage {
 
   async delete(key: string): Promise<void> {
     await fs.rm(key, { force: true });
+  }
+
+  async verifyPurge(key: string): Promise<boolean> {
+    return (await this.head(key)) === null;
   }
 
   async verify(_key: string, filePath: string, expectedChecksum: string): Promise<boolean> {

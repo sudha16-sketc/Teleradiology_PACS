@@ -22,6 +22,7 @@ import type { RetentionActor } from './retention-audit.service.js';
 import { RetentionAuditService } from './retention-audit.service.js';
 import { retentionPolicy } from './retention-config.js';
 import {
+  retentionStudyInclude,
   type EligibilityResult,
   RetentionEligibilityService,
 } from './retention-eligibility.service.js';
@@ -196,9 +197,65 @@ export class RetentionService {
       where: { id: studyId },
       select: { id: true, hospitalId: true },
     });
-    if (!study) throw new NotFoundException(`Study ${studyId} not found`);
+    if (!study) throw new NotFoundException('Study not found');
     this.assertStudyScope(actor, study.hospitalId);
     await this.prisma.$transaction(async (tx) => {
+      const retention = await tx.studyRetention.findUnique({ where: { studyId } });
+      const now = new Date();
+      const activeCleanup = await tx.retentionArchive.findFirst({
+        where: {
+          studyId,
+          originalDataDeletionStatus: { in: ['IN_PROGRESS', 'FINALIZING'] },
+          cleanupClaimUntil: { gt: now },
+        },
+        select: {
+          id: true,
+          originalDataDeletionStatus: true,
+          orthancDeleteDispatchedAt: true,
+        },
+      });
+      const deleteInFlight = Boolean(activeCleanup?.orthancDeleteDispatchedAt);
+      const abortCleanup =
+        Boolean(activeCleanup) &&
+        !deleteInFlight &&
+        (activeCleanup?.originalDataDeletionStatus === 'IN_PROGRESS' ||
+          activeCleanup?.originalDataDeletionStatus === 'FINALIZING');
+      if (abortCleanup && activeCleanup) {
+        await tx.retentionArchive.updateMany({
+          where: {
+            id: activeCleanup.id,
+            originalDataDeletionStatus: { in: ['IN_PROGRESS', 'FINALIZING'] },
+            cleanupClaimUntil: { gt: now },
+            orthancDeleteDispatchedAt: null,
+          },
+          data: {
+            originalDataDeletionStatus: 'FAILED',
+            cleanupClaimUntil: null,
+            cleanupFinalized: false,
+            lastError: 'LEGAL_HOLD_DURING_CLEANUP',
+          },
+        });
+        await this.retentionAudit.recordTx(tx, {
+          studyId,
+          retentionId: retention?.id,
+          action: 'DELETION_FAILED',
+          triggeredBy: 'USER',
+          actor,
+          status: 'FAILED',
+          details: { reason: 'LEGAL_HOLD_DURING_CLEANUP', cleanupAborted: true },
+        });
+      }
+      const backupDeleteInFlight = await tx.retentionArchive.findFirst({
+        where: {
+          studyId,
+          OR: [
+            { dicomDeletionStatus: 'DELETING' },
+            { metadataDeletionStatus: 'DELETING' },
+          ],
+        },
+        select: { id: true },
+      });
+      const cleanupBoundaryCrossed = activeCleanup?.originalDataDeletionStatus === 'FINALIZING';
       await tx.study.update({
         where: { id: studyId },
         data: {
@@ -209,7 +266,6 @@ export class RetentionService {
           retentionLockExpiresAt: expiresAt ?? null,
         },
       });
-      const retention = await tx.studyRetention.findUnique({ where: { studyId } });
       if (retention) {
         await tx.studyRetention.update({
           where: { studyId },
@@ -229,7 +285,14 @@ export class RetentionService {
         triggeredBy: 'USER',
         actor,
         status: 'SUCCESS',
-        details: { reason, expiresAt: expiresAt?.toISOString() ?? null },
+        details: {
+          reason,
+          expiresAt: expiresAt?.toISOString() ?? null,
+          cleanupBoundaryCrossed,
+          cleanupAborted: abortCleanup,
+          deleteInFlight,
+          backupDeleteInFlight: Boolean(backupDeleteInFlight),
+        },
       });
     });
   }
@@ -240,7 +303,7 @@ export class RetentionService {
       where: { id: studyId },
       select: { id: true, hospitalId: true },
     });
-    if (!study) throw new NotFoundException(`Study ${studyId} not found`);
+    if (!study) throw new NotFoundException('Study not found');
     this.assertStudyScope(actor, study.hospitalId);
     await this.prisma.$transaction(async (tx) => {
       await tx.study.update({
@@ -277,11 +340,40 @@ export class RetentionService {
         details: {},
       });
     });
+    const policy = retentionPolicy();
+    const now = new Date();
+    const freshStudy = await this.prisma.study.findUnique({
+      where: { id: studyId },
+      include: retentionStudyInclude,
+    });
+    const backup = await this.eligibility.findVerifiedBackup(this.prisma);
+    const recheck = freshStudy
+      ? this.eligibility.evaluate(
+          freshStudy,
+          backup,
+          policy,
+          this.eligibility.cutoff(policy.retentionDays, now),
+          now,
+          'LIFECYCLE',
+        )
+      : null;
+    await this.retentionAudit.record({
+      studyId,
+      action: 'RETENTION_ELIGIBILITY_CHECKED',
+      triggeredBy: 'USER',
+      actor,
+      status: 'SUCCESS',
+      details: {
+        recheckedAfterRelease: true,
+        eligible: recheck?.eligible ?? false,
+        reason: recheck?.reason ?? null,
+      },
+    });
   }
 
   async listJobs(actor: RetentionActor): Promise<{ data: RetentionJobView[] }> {
     this.eligibility.assertActor(actor);
-    const jobs = await this.jobs.list();
+    const jobs = await this.jobs.list(100, actor);
     return {
       data: jobs.map((job) => ({
         id: job.id,
@@ -298,9 +390,15 @@ export class RetentionService {
 
   async retryJob(id: string, actor: RetentionActor): Promise<{ data: { id: string; retried: boolean } }> {
     this.eligibility.assertActor(actor);
-    const job = await this.prisma.retentionJob.findUnique({ where: { id }, select: { id: true } });
-    if (!job) throw new NotFoundException(`Retention job ${id} not found`);
-    await this.jobs.retry(id);
+    const job = await this.prisma.retentionJob.findUnique({
+      where: { id },
+      select: { id: true, study: { select: { hospitalId: true } } },
+    });
+    if (!job) throw new NotFoundException('Retention job not found');
+    if (actor.role === 'MANAGER' && job.study?.hospitalId !== actor.hospitalId) {
+      throw new NotFoundException('Retention job not found');
+    }
+    await this.jobs.retry(id, actor);
     return { data: { id, retried: true } };
   }
 
@@ -544,6 +642,7 @@ export class RetentionService {
       this.prisma.retentionArchive.count({
         where: {
           archiveStatus: { notIn: [RetentionArchiveStatus.DELETED] },
+          dicomObjectOwned: true,
           dicomDeletionStatus: 'PENDING',
           dicomDeleteAt: { lte: now },
           study: scope,
@@ -573,6 +672,7 @@ export class RetentionService {
         where: {
           status: 'PENDING',
           dueAt: { lte: new Date(now.getTime() + MS_PER_DAY) },
+          study: scope,
         },
         take: 10,
         orderBy: { dueAt: 'asc' },
@@ -636,8 +736,6 @@ export class RetentionService {
   }
 
   private assertStudyScope(actor: RetentionActor, hospitalId: string): void {
-    if (actor.role === 'MANAGER' && actor.hospitalId !== hospitalId) {
-      throw new ForbiddenException('Managers may only act on their own hospital studies');
-    }
+    this.eligibility.assertStudyScope(actor, hospitalId);
   }
 }

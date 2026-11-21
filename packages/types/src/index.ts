@@ -37,6 +37,10 @@ export type {
 } from './analytics.js';
 
 export type {
+  ArchivedReportArtifact,
+  ArchivedReportArtifactSet,
+  ArchivedReportVersionArtifact,
+  ArchivedStudyArtifact,
   BackupRun,
   BackupStatus,
   BackupType,
@@ -49,6 +53,7 @@ export type {
   RetentionLockReason,
   RetentionNotificationView,
   RetentionPolicy,
+  RetentionArchiveManifest,
   RetentionPreviewResult,
   RetentionResponseResult,
   RetentionSkipSummary,

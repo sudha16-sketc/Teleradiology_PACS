@@ -286,7 +286,7 @@ export async function executeBackup(
 
 interface RetentionCandidate {
   run: BackupRun;
-  keys: string[];
+  artifacts: Array<{ key: string; checksum: string | null }>;
 }
 
 export async function applyBackupRetention(
@@ -300,37 +300,119 @@ export async function applyBackupRetention(
   if (!storage.remote || !env.b2RetentionEnabled || env.b2RetentionCount <= 1) {
     return { kept: 0, deleted: [] };
   }
+  if (actor.role !== 'ADMIN') {
+    throw new Error('Backup retention requires ADMIN authorization');
+  }
+  const candidateWhere: Prisma.BackupRunWhereInput = {
+    storageProvider: 'B2',
+    environment: env.environment,
+    type: BackupType.FULL,
+    status: { in: [BackupStatus.COMPLETED, BackupStatus.VERIFIED] },
+    databaseVerified: true,
+    dicomVerified: true,
+    id: { not: currentRunId },
+  };
   const runs = await prisma.backupRun.findMany({
-    where: {
-      storageProvider: 'B2',
-      environment: env.environment,
-      type: BackupType.FULL,
-      status: { in: [BackupStatus.COMPLETED, BackupStatus.VERIFIED] },
-      databaseVerified: true,
-      dicomVerified: true,
-      id: { not: currentRunId },
-    },
+    where: candidateWhere,
     orderBy: { completedAt: 'desc' },
   });
   const candidates: RetentionCandidate[] = runs
     .map((run) => ({
       run,
-      keys: [run.databaseObjectKey, run.dicomObjectKey].filter(
-        (key): key is string => Boolean(key),
-      ),
+      artifacts: [
+        run.databaseObjectKey
+          ? { key: run.databaseObjectKey, checksum: run.databaseChecksum }
+          : null,
+        run.dicomObjectKey
+          ? { key: run.dicomObjectKey, checksum: run.dicomChecksum }
+          : null,
+      ].filter((artifact): artifact is { key: string; checksum: string | null } => Boolean(artifact)),
     }))
-    .filter((candidate) => candidate.keys.length === 2);
+    .filter((candidate) => candidate.artifacts.length === 2);
   const keepCount = Math.max(1, env.b2RetentionCount);
   const keep = candidates.slice(0, keepCount - 1);
   const remove = candidates.slice(keepCount - 1);
   const deleted: string[] = [];
 
   for (const candidate of remove) {
-    for (const key of candidate.keys) {
-      if (candidate.keys.every((candidateKey) => deleted.includes(candidateKey))) continue;
+    for (const artifact of candidate.artifacts) {
+      const { key, checksum } = artifact;
+      if (deleted.includes(key)) continue;
       const present = await storage.head(key);
       if (!present) continue;
-      await storage.delete(key);
+      if (checksum && present.checksum && present.checksum !== checksum) continue;
+      const currentRun = await prisma.backupRun.findUnique({
+        where: { id: candidate.run.id },
+        select: {
+          status: true,
+          completedAt: true,
+          databaseVerified: true,
+          dicomVerified: true,
+          databaseObjectKey: true,
+          dicomObjectKey: true,
+          databaseChecksum: true,
+          dicomChecksum: true,
+        },
+      });
+      if (
+        !currentRun ||
+        !currentRun.completedAt ||
+        !currentRun.databaseVerified ||
+        !currentRun.dicomVerified ||
+        currentRun.status !== BackupStatus.COMPLETED &&
+        currentRun.status !== BackupStatus.VERIFIED
+      ) {
+        continue;
+      }
+      const ownedByRun =
+        (key === currentRun.databaseObjectKey && checksum === currentRun.databaseChecksum) ||
+        (key === currentRun.dicomObjectKey && checksum === currentRun.dicomChecksum);
+      if (!ownedByRun) continue;
+      const newerCount = await prisma.backupRun.count({
+        where: { ...candidateWhere, completedAt: { gt: currentRun.completedAt } },
+      });
+      if (newerCount < keepCount - 1) continue;
+      const retentionReferences = await prisma.retentionArchive.findMany({
+        where: {
+          OR: [
+            { backupRunId: candidate.run.id },
+            { dicomObjectKey: key },
+            { studyObjectKey: key },
+            { reportObjectKey: key },
+            { manifestObjectKey: key },
+          ],
+        },
+        select: { id: true },
+      });
+      if (retentionReferences.length > 0) continue;
+      const heldStudies = await prisma.study.count({
+        where: {
+          OR: [
+            { retentionLocked: true },
+            { retentionLockReason: 'MANDATORY_RETENTION' },
+          ],
+        },
+      });
+      const heldRetentions = await prisma.studyRetention.count({
+        where: {
+          OR: [
+            { retentionLocked: true },
+            { lockReason: 'MANDATORY_RETENTION' },
+          ],
+        },
+      });
+      if (heldStudies > 0 || heldRetentions > 0) continue;
+      if (storage.purgeVersions) {
+        await storage.purgeVersions(key);
+      } else {
+        await storage.delete(key);
+      }
+      const purged = storage.verifyPurge
+        ? await storage.verifyPurge(key)
+        : (await storage.head(key)) === null;
+      if (!purged) {
+        throw new Error(`Backup object ${key} could not be permanently removed`);
+      }
       deleted.push(key);
       await audit.create({
         actorId: actor.id,
@@ -339,7 +421,12 @@ export async function applyBackupRetention(
         action: AuditAction.BACKUP_OBJECT_DELETED,
         resource: AuditResource.BACKUP,
         resourceId: candidate.run.id,
-        metadata: { key, reason: 'backup_retention', environment: env.environment },
+        metadata: {
+          key,
+          reason: 'backup_retention',
+          environment: env.environment,
+          verified: true,
+        },
       });
     }
   }

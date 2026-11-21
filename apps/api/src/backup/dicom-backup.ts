@@ -191,7 +191,11 @@ class OrthancBackupClient {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
   }
 
-  async request(path: string, init: RequestInit = {}): Promise<Response> {
+  async request(
+    path: string,
+    init: RequestInit = {},
+    allowedStatuses: number[] = [],
+  ): Promise<Response> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs());
     try {
@@ -204,7 +208,7 @@ class OrthancBackupClient {
         headers,
         signal: controller.signal,
       });
-      if (!response.ok) {
+      if (!response.ok && !allowedStatuses.includes(response.status)) {
         throw new Error(`Orthanc request failed with status ${response.status}`);
       }
       return response;
@@ -439,9 +443,27 @@ export async function deleteOrthancStudy(
     throw new Error('Orthanc study id failed validation before deletion');
   }
   const client = new OrthancBackupClient(env);
-  await client.request(`/studies/${encodeURIComponent(orthancStudyId)}`, {
-    method: 'DELETE',
-  });
+  await client.request(
+    `/studies/${encodeURIComponent(orthancStudyId)}`,
+    { method: 'DELETE' },
+    [404],
+  );
+}
+
+export async function orthancStudyExists(
+  orthancStudyId: string,
+  env: BackupEnv,
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9._-]+$/.test(orthancStudyId)) {
+    throw new Error('Orthanc study id failed validation before verification');
+  }
+  const client = new OrthancBackupClient(env);
+  const response = await client.request(
+    `/studies/${encodeURIComponent(orthancStudyId)}`,
+    {},
+    [404],
+  );
+  return response.ok;
 }
 
 export interface DicomRestoreResult {

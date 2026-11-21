@@ -78,6 +78,7 @@ async function bootstrap() {
   app.use('/api/studies/:uid/correction-requests', rl('correction_request', 60 * 60 * 1000, 50));
   app.use('/api/corrections/:id/approve', rl('correction_approve', 60 * 60 * 1000, 100));
   app.use('/api/corrections/:id/reject', rl('correction_reject', 60 * 60 * 1000, 100));
+  app.use('/api/internal/retention/tick', rl('retention_cron', 60 * 60 * 1000, 24));
 
   const cors = resolveCors();
   app.enableCors({

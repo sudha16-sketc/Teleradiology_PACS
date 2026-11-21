@@ -51,6 +51,13 @@ export function assertRequiredEnv(): void {
     missing.push(`AUTH_SECRET (${MIN_AUTH_SECRET_LENGTH}+ random chars)`);
   }
 
+  const cronSecret = process.env.RETENTION_CRON_SECRET;
+  if (cronSecret && isWeakSecret(cronSecret)) {
+    missing.push(
+      `RETENTION_CRON_SECRET (value is a known default or shorter than ${MIN_AUTH_SECRET_LENGTH} chars)`,
+    );
+  }
+
   if (isProduction()) {
     for (const { key, why } of PRODUCTION_REQUIRED) {
       if (!process.env[key]) {

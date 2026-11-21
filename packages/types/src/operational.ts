@@ -154,6 +154,117 @@ export interface RetentionUpcomingAction {
   status: string;
 }
 
+export interface ArchivedReportVersionArtifact {
+  id: string;
+  reportId: string;
+  version: number;
+  status: string;
+  createdAt: string;
+  authorId: string;
+  author: {
+    id: string;
+    displayName: string;
+    email: string | null;
+    role: string;
+  } | null;
+  contentHash: string;
+  contentHtml: string | null;
+  findings: string;
+  impression: string;
+  recommendations: string;
+  clinicalHistory: string;
+  comparison: string;
+  technique: string;
+}
+
+export interface ArchivedReportArtifact {
+  id: string;
+  version: number;
+  status: string;
+  signedOffAt: string | null;
+  signedOffBy: string | null;
+  contentHash: string | null;
+  contentHtml: string | null;
+  findings: string | null;
+  impression: string | null;
+  recommendations: string | null;
+  clinicalHistory: string;
+  comparison: string | null;
+  technique: string | null;
+  criticalFinding: boolean;
+  criticalFindingAcknowledged: boolean;
+  createdAt: string;
+  updatedAt: string;
+  author: {
+    id: string;
+    displayName: string;
+    email: string | null;
+    role: string;
+  } | null;
+}
+
+export interface ArchivedReportArtifactSet {
+  archiveId: string;
+  studyInstanceUid: string;
+  accessionNumber: string;
+  status: string;
+  completedAt: string | null;
+  archivedAt: string;
+  hospital: {
+    id: string;
+    name: string;
+  };
+  patient: {
+    id: string;
+    patientId: string;
+    displayName: string;
+    dateOfBirth: string | null;
+    gender: string | null;
+    hospitalId: string;
+  };
+  reports: ArchivedReportArtifact[];
+  versionSnapshots: ArchivedReportVersionArtifact[];
+}
+
+export interface ArchivedStudyArtifact {
+  archiveId: string;
+  studyInstanceUid: string;
+  accessionNumber: string;
+  hospitalId: string;
+  hospitalName: string;
+  patientId: string;
+  patientDisplayName: string;
+  modality: string;
+  bodyPart: string;
+  studyDate: string;
+  studyTime: string;
+  status: string;
+  reportStatus: string[];
+  reportCount: number;
+  signedReportCount: number;
+}
+
+export interface RetentionArchiveManifest {
+  version: number;
+  archiveId: string;
+  generatedAt: string;
+  studyInstanceUid: string;
+  policyVersion: string;
+  initialRetentionDays: number;
+  dicomBackupRetentionDays: number;
+  metadataBackupRetentionDays: number;
+  dicomObjectKey: string | null;
+  dicomChecksum: string | null;
+  dicomObjectOwned: boolean;
+  reportSha256: string;
+  studySha256: string;
+  artifacts: {
+    report: { file: string; sha256: string; objectKey: string };
+    study: { file: string; sha256: string; objectKey: string };
+    dicom: { file: string; sha256: string | null; objectKey: string | null };
+  };
+}
+
 export interface RetentionPreviewResult {
   candidates: RetentionCandidate[];
   eligibleCount: number;
@@ -194,6 +305,7 @@ export interface RetentionNotificationView {
   sequenceNumber: number;
   sentAt?: string | null;
   responseDeadline?: string | null;
+  scheduledDeletionAt?: string | null;
   respondedAt?: string | null;
   response?: 'CANCEL' | 'DELETE' | 'IGNORED' | null;
   deliveryStatus: string;

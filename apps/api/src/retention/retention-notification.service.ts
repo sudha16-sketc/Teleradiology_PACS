@@ -254,58 +254,95 @@ export class RetentionNotificationService {
 
     let ignoredSequences = 0;
     for (const group of groups.values()) {
-      const updated = await this.prisma.retentionNotification.updateMany({
-        where: { id: { in: group.ids }, response: null },
-        data: {
-          response: 'IGNORED',
-          deliveryStatus: 'IGNORED',
-          respondedAt: now,
-          readAt: now,
-        },
-      });
-      if (!updated.count) continue;
+      const outcome = await this.prisma.$transaction(async (tx) => {
+        const counted = await tx.retentionNotification.updateMany({
+          where: { id: group.ids[0], ignoredCounted: false, response: null },
+          data: { ignoredCounted: true },
+        });
+        if (!counted.count) return null;
 
-      const priorIgnored = await this.prisma.retentionNotification.count({
-        where: {
+        const updated = await tx.retentionNotification.updateMany({
+          where: {
+            id: { in: group.ids },
+            response: null,
+            retention: { retentionLocked: false },
+            study: { retentionLocked: false },
+          },
+          data: {
+            response: 'IGNORED',
+            deliveryStatus: 'IGNORED',
+            respondedAt: now,
+            readAt: now,
+          },
+        });
+        if (!updated.count) return null;
+
+        const retention = await tx.studyRetention.update({
+          where: { id: group.retentionId, retentionLocked: false },
+          data: { ignoredCount: { increment: 1 } },
+          select: { ignoredCount: true, studyId: true },
+        });
+        let shouldProcess = retention.ignoredCount >= policy.ignoreMaxCount;
+        const nextActionAt = shouldProcess
+          ? now
+          : new Date(now.getTime() + policy.ignoreReminderDays * MS_PER_DAY);
+        if (shouldProcess) {
+          await tx.studyRetention.update({
+            where: { id: group.retentionId },
+            data: { status: RetentionStatus.AUTOMATIC_PROCESSING, nextActionAt },
+          });
+        } else {
+          const deferred = await tx.studyRetention.updateMany({
+            where: {
+              id: group.retentionId,
+              ignoredCount: { lt: policy.ignoreMaxCount },
+              status: {
+                in: [
+                  RetentionStatus.PENDING_RETENTION,
+                  RetentionStatus.AWAITING_USER_RESPONSE,
+                  RetentionStatus.CANCELLED_DEFERRED,
+                  RetentionStatus.NOTIFICATION_IGNORED,
+                ],
+              },
+              retentionLocked: false,
+            },
+            data: { status: RetentionStatus.NOTIFICATION_IGNORED, nextActionAt },
+          });
+          if (!deferred.count) {
+            const latest = await tx.studyRetention.findUnique({
+              where: { id: group.retentionId },
+              select: { ignoredCount: true },
+            });
+            if (latest && latest.ignoredCount >= policy.ignoreMaxCount) {
+              shouldProcess = true;
+              await tx.studyRetention.update({
+                where: { id: group.retentionId },
+                data: { status: RetentionStatus.AUTOMATIC_PROCESSING, nextActionAt: now },
+              });
+            }
+          }
+        }
+        await this.audit.recordTx(tx, {
+          studyId: retention.studyId,
           retentionId: group.retentionId,
-          sequenceNumber: group.sequence,
-          response: 'IGNORED',
-          id: { notIn: group.ids },
-        },
+          action: 'NOTIFICATION_IGNORED',
+          triggeredBy: 'SCHEDULER',
+          status: 'SUCCESS',
+          details: {
+            sequence: group.sequence,
+            ignoredCount: retention.ignoredCount,
+            threshold: policy.ignoreMaxCount,
+            automaticProcessing: shouldProcess,
+          },
+        });
+        return {
+          studyId: retention.studyId,
+          ignoredCount: retention.ignoredCount,
+          shouldProcess,
+        };
       });
-      if (priorIgnored > 0) continue;
-
-      const retention = await this.prisma.studyRetention.findUnique({
-        where: { id: group.retentionId },
-        select: { ignoredCount: true, studyId: true },
-      });
-      if (!retention) continue;
-      const ignoredCount = retention.ignoredCount + 1;
-      const shouldProcess = ignoredCount >= policy.ignoreMaxCount;
-      await this.prisma.studyRetention.update({
-        where: { id: group.retentionId },
-        data: {
-          ignoredCount,
-          status: shouldProcess ? RetentionStatus.AUTOMATIC_PROCESSING : RetentionStatus.NOTIFICATION_IGNORED,
-          nextActionAt: shouldProcess
-            ? now
-            : new Date(now.getTime() + policy.ignoreReminderDays * MS_PER_DAY),
-        },
-      });
-      await this.audit.record({
-        studyId: retention.studyId,
-        retentionId: group.retentionId,
-        action: 'NOTIFICATION_IGNORED',
-        triggeredBy: 'SCHEDULER',
-        status: 'SUCCESS',
-        details: {
-          sequence: group.sequence,
-          ignoredCount,
-          threshold: policy.ignoreMaxCount,
-          automaticProcessing: shouldProcess,
-        },
-      });
-      if (shouldProcess) await this.enqueueArchive(group.retentionId, now);
+      if (!outcome) continue;
+      if (outcome.shouldProcess) await this.enqueueArchive(group.retentionId, now);
       ignoredSequences += 1;
     }
     return ignoredSequences;
@@ -342,17 +379,7 @@ export class RetentionNotificationService {
 
     const policy = retentionPolicy();
     const now = new Date();
-    const cancelCount =
-      response === 'CANCEL' ? notification.retention.cancelCount + 1 : notification.retention.cancelCount;
-    const shouldProcess = response === 'DELETE' || cancelCount >= policy.cancelMaxCount;
-    const status = shouldProcess
-      ? RetentionStatus.AUTOMATIC_PROCESSING
-      : RetentionStatus.CANCELLED_DEFERRED;
-    const nextActionAt = shouldProcess
-      ? now
-      : new Date(now.getTime() + policy.cancelReminderDays * MS_PER_DAY);
-
-    await this.prisma.$transaction(async (tx) => {
+    const outcome = await this.prisma.$transaction(async (tx) => {
       const responded = await tx.retentionNotification.updateMany({
         where: { id: notification.id, respondedAt: null },
         data: {
@@ -371,10 +398,60 @@ export class RetentionNotificationService {
           data: { readAt: now },
         });
       }
-      await tx.studyRetention.update({
-        where: { id: notification.retentionId },
-        data: { cancelCount, status, nextActionAt },
+      const current = await tx.studyRetention.update({
+        where: { id: notification.retentionId, retentionLocked: false },
+        data: response === 'CANCEL' ? { cancelCount: { increment: 1 } } : {},
+        select: { cancelCount: true, ignoredCount: true, status: true },
       });
+      const cancelCount = current.cancelCount;
+      let shouldProcess = response === 'DELETE' || cancelCount >= policy.cancelMaxCount;
+      let status = shouldProcess
+        ? RetentionStatus.AUTOMATIC_PROCESSING
+        : RetentionStatus.CANCELLED_DEFERRED;
+      let nextActionAt = shouldProcess
+        ? now
+        : new Date(now.getTime() + policy.cancelReminderDays * MS_PER_DAY);
+      if (shouldProcess) {
+        await tx.studyRetention.update({
+          where: { id: notification.retentionId },
+          data: { status: RetentionStatus.AUTOMATIC_PROCESSING, nextActionAt },
+        });
+      } else {
+        const deferred = await tx.studyRetention.updateMany({
+          where: {
+            id: notification.retentionId,
+            cancelCount: { lt: policy.cancelMaxCount },
+            status: {
+              in: [
+                RetentionStatus.PENDING_RETENTION,
+                RetentionStatus.AWAITING_USER_RESPONSE,
+                RetentionStatus.CANCELLED_DEFERRED,
+                RetentionStatus.NOTIFICATION_IGNORED,
+              ],
+            },
+            retentionLocked: false,
+          },
+          data: { status: RetentionStatus.CANCELLED_DEFERRED, nextActionAt },
+        });
+        if (!deferred.count) {
+          const latest = await tx.studyRetention.findUnique({
+            where: { id: notification.retentionId },
+            select: { cancelCount: true, status: true },
+          });
+          if (
+            latest?.status === RetentionStatus.AUTOMATIC_PROCESSING ||
+            (latest && latest.cancelCount >= policy.cancelMaxCount)
+          ) {
+            shouldProcess = true;
+            status = RetentionStatus.AUTOMATIC_PROCESSING;
+            nextActionAt = now;
+            await tx.studyRetention.update({
+              where: { id: notification.retentionId },
+              data: { status: RetentionStatus.AUTOMATIC_PROCESSING, nextActionAt: now },
+            });
+          }
+        }
+      }
       await this.audit.recordTx(tx, {
         studyId: notification.studyId,
         retentionId: notification.retentionId,
@@ -390,16 +467,23 @@ export class RetentionNotificationService {
           automaticProcessing: shouldProcess,
         },
       });
+      return {
+        cancelCount,
+        ignoredCount: current.ignoredCount,
+        status,
+        nextActionAt,
+        shouldProcess,
+      };
     });
-    if (shouldProcess) await this.enqueueArchive(notification.retentionId, now);
+    if (outcome.shouldProcess) await this.enqueueArchive(notification.retentionId, now);
 
     return {
       notificationId,
       response,
-      retentionStatus: status as unknown as RetentionResponseResult['retentionStatus'],
-      cancelCount,
-      ignoredCount: notification.retention.ignoredCount,
-      nextActionAt: nextActionAt.toISOString(),
+      retentionStatus: outcome.status as unknown as RetentionResponseResult['retentionStatus'],
+      cancelCount: outcome.cancelCount,
+      ignoredCount: outcome.ignoredCount,
+      nextActionAt: outcome.nextActionAt.toISOString(),
     };
   }
 
@@ -423,6 +507,11 @@ export class RetentionNotificationService {
             studyInstanceUid: true,
             accessionNumber: true,
             hospital: { select: { name: true } },
+            reports: {
+              select: { status: true },
+              orderBy: { version: 'desc' },
+              take: 1,
+            },
           },
         },
         sequenceNumber: true,
@@ -431,7 +520,9 @@ export class RetentionNotificationService {
         respondedAt: true,
         response: true,
         deliveryStatus: true,
-        retention: { select: { cancelCount: true, ignoredCount: true } },
+        retention: {
+          select: { cancelCount: true, ignoredCount: true, nextActionAt: true },
+        },
       },
     });
     return rows.map((row) => ({
@@ -440,10 +531,11 @@ export class RetentionNotificationService {
       studyInstanceUid: row.study.studyInstanceUid,
       accessionNumber: row.study.accessionNumber,
       hospitalName: row.study.hospital.name,
-      reportStatus: row.study.status,
+      reportStatus: row.study.reports[0]?.status ?? row.study.status,
       sequenceNumber: row.sequenceNumber,
       sentAt: row.sentAt?.toISOString() ?? null,
       responseDeadline: row.responseDeadline?.toISOString() ?? null,
+      scheduledDeletionAt: row.retention.nextActionAt?.toISOString() ?? null,
       respondedAt: row.respondedAt?.toISOString() ?? null,
       response: row.response,
       deliveryStatus: row.deliveryStatus,

@@ -138,6 +138,9 @@ export default function RetentionReviewPage() {
                     <td className="px-3 py-2">
                       {formatDate(item.responseDeadline)}
                       <div className="text-[11px]">
+                        next action {formatDate(item.scheduledDeletionAt)}
+                      </div>
+                      <div className="text-[11px]">
                         cancels {item.cancelCount} / ignored {item.ignoredCount}
                       </div>
                     </td>

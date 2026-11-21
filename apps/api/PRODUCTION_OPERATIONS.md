@@ -311,7 +311,11 @@ Decision rules:
   `PROCESS_ARCHIVE`.
 - `DELETE` enqueues `PROCESS_ARCHIVE` immediately.
 - A legal hold blocks notification, response, archival expiry, and original-data
-  cleanup. Managers are scoped to their own hospital; admins are global.
+  cleanup. A hold applied to `IN_PROGRESS` or `FINALIZING` cleanup aborts the
+  worker only before `RetentionArchive.orthancDeleteDispatchedAt` is written.
+  Once that dispatch marker exists, the Orthanc DELETE is already in flight and
+  cannot be rolled back; the hold records `deleteInFlight=true` for audit.
+  Managers are scoped to their own hospital; admins are global.
 
 ### Retention endpoints
 
@@ -325,6 +329,7 @@ Decision rules:
 | `DELETE /api/admin/retention/holds/:studyId` | ADMIN, MANAGER | Release a legal hold. |
 | `GET /api/retention/notifications` | ADMIN, MANAGER, HOSPITAL | List retention notices visible to the caller. |
 | `POST /api/retention/notifications/:id/respond` | ADMIN, MANAGER, HOSPITAL | Record `CANCEL` or `DELETE`; only the recipient may respond. |
+| `POST /api/internal/retention/tick` | `X-Cron-Secret` | Trigger one existing scheduler tick; never accepts a browser session. |
 
 ### Scheduler and jobs
 
@@ -335,27 +340,57 @@ interval and claims up to five due jobs per tick using DB leases. Failed jobs
 retry with backoff until `RETENTION_JOB_RETRY_LIMIT`; then they become `DEAD`
 and can be retried explicitly.
 
+For externally driven scheduling, call `POST /api/internal/retention/tick` with
+header `X-Cron-Secret` matching `RETENTION_CRON_SECRET`. The endpoint is public
+to `AuthGuard` only so its dedicated guard can enforce the shared secret; a
+missing, weak, or invalid secret returns `401`. It invokes exactly one
+`RetentionSchedulerService.tick()`, returns HTTP `200` with
+`{ data: { accepted, claimed, processed, failed, skipped }, meta: { triggeredAt } }`,
+and never calls manual `execute` or starts a second timer. Configure either the
+in-process timer or the external cron as the primary driver; with cron-job.org,
+keep `RETENTION_SCHEDULER_ENABLED=false`. `skipped: true` means a tick was
+already running and no new work was claimed for that call. Cron-job.org should
+run every 15 minutes and alert on non-2xx responses; job-level failures are
+tracked in `RetentionJob.lastError` and the admin jobs list.
+
 ### Archive contents and expiry
 
-Each retention archive records a minimized `report.json`, `study.json`, and
-`archive-manifest.json` with SHA-256 checksums. By default
-(`RETENTION_DICOM_ARCHIVE_ENABLED=false`) it references the verified FULL
-backup's DICOM object. When enabled, a per-study DICOMweb archive is generated
-and checksum-verified before the archive record becomes `ARCHIVED`.
+Each retention archive records a `report.json`, `study.json`, and
+`archive-manifest.json` with SHA-256 checksums. The report artifact includes
+report content, author identity, patient identifiers, hospital identity, and
+every immutable `ReportVersion` snapshot (version, status, author, hash,
+timestamps, and content). Archive verification fails when a version snapshot is
+missing or altered.
+By default (`RETENTION_DICOM_ARCHIVE_ENABLED=false`) the archive references the
+verified FULL backup's DICOM object but does not own it. In that mode original
+Orthanc cleanup and DICOM backup expiry remain blocked. When enabled, a
+per-study DICOMweb archive is generated, checksum-verified, and recorded as
+owned before the archive record becomes `ARCHIVED`.
 
 DICOM and metadata expiry are independent:
 `DICOM_BACKUP_RETENTION_DAYS` (default 14) and
 `METADATA_BACKUP_RETENTION_DAYS` (default 30), both from archive verification.
-`RETENTION_DRY_RUN=true` (the default) prevents backup-object deletion and
-original-data deletion. `RETENTION_BACKUP_DELETE_ENABLED` must also be `true`
-to delete expired archive objects, and `RETENTION_DELETE_ENABLED` must also be
-`true` to delete the original Orthanc study. No deletion path is active by
-default, and every deletion attempt is audited.
+Only owned DICOM objects are eligible for expiry. `RETENTION_DRY_RUN=true` (the
+default) prevents backup-object deletion and original-data deletion.
+`RETENTION_BACKUP_DELETE_ENABLED` must also be `true` to delete expired archive
+objects, and `RETENTION_DELETE_ENABLED` must also be `true` (with
+`RETENTION_DICOM_ARCHIVE_ENABLED=true`) to delete the original Orthanc study.
+Original-data deletion uses a database claim and an atomic dispatch marker,
+rechecks legal hold, config, ownership, archive state, and eligibility
+immediately before the external call, and records
+`PERMANENT_DELETION_VERIFIED` only after Orthanc confirms the study is absent.
+Archive-object expiry claims each deletion with a conditional update and
+rechecks legal hold, ownership, checksum, and eligibility immediately before
+each B2 purge. B2 purges re-list versions, delete markers, and multipart uploads
+to confirm removal. No deletion path is active by default, and every deletion
+attempt is audited.
 
 For B2 backup pairs, `BACKUP_RETENTION_ENABLED` defaults to `true` and
 `BACKUP_RETENTION_COUNT` defaults to `7`. Only older FULL runs with both DB and
 DICOM artifacts verified are eligible; the newest valid pair and the current
-run are always preserved. BackupRun records are never deleted.
+run are always preserved. Backup retention is ADMIN-only and rechecks active
+legal holds, retention references, run ownership, and the preserved count
+immediately before each purge. BackupRun records are never deleted.
 
 ### Retention configuration
 
@@ -376,10 +411,11 @@ run are always preserved. BackupRun records are never deleted.
 | `RETENTION_JOB_RETRY_LIMIT` | `5` | Attempts before a job becomes `DEAD`. |
 | `RETENTION_SCHEDULER_ENABLED` | `false` | Enable in-process lifecycle jobs. |
 | `RETENTION_SCHEDULER_INTERVAL_MINUTES` | `15` | Job poll interval. |
+| `RETENTION_CRON_SECRET` | unset | Shared secret for `X-Cron-Secret`; unset disables `/api/internal/retention/tick`. |
 | `RETENTION_DRY_RUN` | `true` | Block destructive cleanup paths. |
-| `RETENTION_DELETE_ENABLED` | `false` | Allow original Orthanc deletion. |
-| `RETENTION_BACKUP_DELETE_ENABLED` | `false` | Allow expired archive object deletion. |
-| `RETENTION_DICOM_ARCHIVE_ENABLED` | `false` | Generate per-study DICOM archives. |
+| `RETENTION_DELETE_ENABLED` | `false` | Allow original Orthanc deletion; requires `RETENTION_DICOM_ARCHIVE_ENABLED=true`. |
+| `RETENTION_BACKUP_DELETE_ENABLED` | `false` | Allow expired archive object deletion; only owned DICOM objects are eligible. |
+| `RETENTION_DICOM_ARCHIVE_ENABLED` | `false` | Generate and own per-study DICOM archives. |
 
 ### Safe activation order
 
@@ -388,7 +424,8 @@ run are always preserved. BackupRun records are never deleted.
    `RETENTION_BACKUP_DELETE_ENABLED=false`.
 3. Enable `RETENTION_SCHEDULER_ENABLED=true` and review notices/jobs for at
    least one full policy cycle.
-4. Only then set `RETENTION_DRY_RUN=false` and enable one deletion flag at a
+4. Only then set `RETENTION_DRY_RUN=false`, enable
+   `RETENTION_DICOM_ARCHIVE_ENABLED=true`, and enable one deletion flag at a
    time, starting with `RETENTION_BACKUP_DELETE_ENABLED`.
 5. Never enable deletion to resolve an eligibility or notification problem;
    fix the policy/data issue first.

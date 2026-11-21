@@ -4,6 +4,7 @@ import { BackupModule } from '../backup/backup.module.js';
 import { NotificationsModule } from '../notifications/notifications.module.js';
 import { RetentionArchiveService } from './retention-archive.service.js';
 import { RetentionAuditService } from './retention-audit.service.js';
+import { RetentionCronController } from './retention-cron.controller.js';
 import {
   RetentionController,
   RetentionNotificationController,
@@ -16,7 +17,11 @@ import { RetentionService } from './retention.service.js';
 
 @Module({
   imports: [AuditModule, BackupModule, NotificationsModule],
-  controllers: [RetentionController, RetentionNotificationController],
+  controllers: [
+    RetentionController,
+    RetentionNotificationController,
+    RetentionCronController,
+  ],
   providers: [
     RetentionService,
     RetentionAuditService,

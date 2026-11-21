@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   BackupStatus,
   BackupType,
@@ -41,14 +41,69 @@ const DELIVERED_STATUSES = new Set(['COMPLETED', 'DELIVERED', 'SUCCESS']);
 
 export const retentionStudyInclude = {
   hospital: { select: { id: true, name: true, isActive: true } },
-  patient: { select: { id: true, hospitalId: true } },
+  patient: {
+    select: {
+      id: true,
+      hospitalId: true,
+      patientId: true,
+      displayName: true,
+      dateOfBirth: true,
+      gender: true,
+    },
+  },
   reports: {
     select: {
       id: true,
       status: true,
       signedOffAt: true,
+      signedOffBy: true,
       version: true,
       createdAt: true,
+      updatedAt: true,
+      contentHash: true,
+      findings: true,
+      impression: true,
+      recommendations: true,
+      clinicalHistory: true,
+      comparison: true,
+      technique: true,
+      contentHtml: true,
+      criticalFinding: true,
+      criticalFindingAcknowledged: true,
+      author: {
+        select: {
+          id: true,
+          displayName: true,
+          email: true,
+          role: true,
+        },
+      },
+      versions: {
+        select: {
+          id: true,
+          reportId: true,
+          version: true,
+          status: true,
+          findings: true,
+          impression: true,
+          authorId: true,
+          contentHash: true,
+          createdAt: true,
+          recommendations: true,
+          clinicalHistory: true,
+          comparison: true,
+          technique: true,
+          contentHtml: true,
+          author: {
+            select: {
+              id: true,
+              displayName: true,
+              email: true,
+              role: true,
+            },
+          },
+        },
+      },
     },
   },
   changeRequests: { select: { id: true, status: true } },
@@ -101,6 +156,13 @@ export class RetentionEligibilityService {
   assertActor(actor: RetentionActor): void {
     if (actor.role !== 'ADMIN' && actor.role !== 'MANAGER') {
       throw new ForbiddenException('Only ADMIN or MANAGER may manage retention');
+    }
+  }
+
+  assertStudyScope(actor: RetentionActor, hospitalId: string | null | undefined): void {
+    this.assertActor(actor);
+    if (actor.role === 'MANAGER' && (!actor.hospitalId || actor.hospitalId !== hospitalId)) {
+      throw new NotFoundException('Study not found');
     }
   }
 

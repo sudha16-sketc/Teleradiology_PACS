@@ -267,7 +267,7 @@ describe('Phase 6 — Corrections', () => {
       .expect(201);
     const cr = await prisma.changeRequest.findFirstOrThrow({ where: { studyId: s.id } });
     await managerAgent.post(`/api/corrections/${cr.id}/approve`).send({}).expect(201);
-    const list = await rad1Agent.get('/api/corrections').expect(200);
+    const list = await rad1Agent.get('/api/corrections?pageSize=100').expect(200);
     const mine = list.body.data.find((c: any) => c.id === cr.id);
     expect(mine).toBeTruthy();
     expect(mine.status).toBe('APPROVED');

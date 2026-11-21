@@ -373,9 +373,16 @@ deployment also requires the web upstream settings documented above.
 
 Set the API's production environment variables in Render: `DATABASE_URL`,
 `AUTH_SECRET`, `CORS_ORIGIN`, `TRUST_PROXY=1`, `ORTHANC_URL`, `REDIS_URL`,
-`REDIS_PASSWORD`, and the Resend settings. Render supplies `PORT`; the API
-listens on it. Configure RabbitMQ, Keycloak, or object storage only when enabled
+`REDIS_PASSWORD`, the Resend settings (`RESEND_API_KEY`, `EMAIL_FROM`,
+`NEXT_PUBLIC_APP_URL`), and B2 settings when backups are enabled. Render supplies
+`PORT`; the API listens on it. Configure RabbitMQ or Keycloak only when enabled
 for that deployment; Redis is no longer optional.
+
+For external scheduling, also set `RETENTION_CRON_SECRET` on the API service and
+keep `RETENTION_SCHEDULER_ENABLED=false` so cron-job.org is the only scheduler.
+Leave `RETENTION_CRON_SECRET` unset to disable the trigger endpoint. Keep
+`RETENTION_DRY_RUN=true` and destructive retention flags disabled until a full
+dry-run review is complete.
 
 Deploy Redis as a private service alongside the API. `render.yaml` contains
 `axis-redis`, built from `infra/redis` with `requirepass`, AOF persistence and a
@@ -416,6 +423,60 @@ unauthenticated access. Verify with `curl https://<api-host>/api/health/ready`.
 Never point a health check at Orthanc's DICOM port `4242`: non-DICOM probes
 there produce repeated `Unrecognized PDU type` log entries. Probe HTTP port
 `8042` or the API readiness endpoint instead.
+
+### cron-job.org integration
+
+Do not point cron-job.org at `/`, `/api/admin/retention/execute`, or the Orthanc
+origin. The example host `https://teleradiology-pacs-2.onrender.com` is the
+Orthanc service in this repository's deployment notes; authenticated Orthanc
+returns `401` to unauthenticated HTTP requests. Use the separate Render API
+origin (`https://<api-host>`) with an explicit API path.
+
+For availability monitoring only, configure cron-job.org with:
+
+- URL: `https://<api-host>/api/health/live`
+- Method: `GET`
+- Headers: none
+- Interval: every 15 minutes
+- Success: HTTP `200` with `{"status":"ok","timestamp":"..."}`
+
+`GET /api/health/live` is public, side-effect free, and never starts retention
+work. `GET /api/health/ready` is also public, returns `200` only when PostgreSQL
+and Redis are reachable, and returns `503` when not ready.
+
+To drive retention scheduling from cron-job.org, configure:
+
+- URL: `https://<api-host>/api/internal/retention/tick`
+- Method: `POST`
+- Header: `X-Cron-Secret: <value of RETENTION_CRON_SECRET>`
+- Interval: every 15 minutes (matches `RETENTION_SCHEDULER_INTERVAL_MINUTES`)
+- Success: HTTP `200` with a body such as
+  `{"data":{"claimed":0,"processed":0,"failed":0,"skipped":false,"accepted":true},"meta":{"triggeredAt":"..."}}`
+- Missing/invalid secret: HTTP `401`
+
+The endpoint calls the existing `RetentionSchedulerService.tick()` only. It does
+not call manual `execute`, run a second scheduler, bypass legal holds, or modify
+destructive flags. Set `RETENTION_SCHEDULER_ENABLED=false` when cron-job.org owns
+scheduling; the in-process timer defaults to off. Repeated calls are idempotent
+through the job dedupe keys and database leases. A response with
+`"skipped":true,"accepted":false` means a tick was already running; it is not a
+failure.
+
+Test authentication without putting the secret in shell history:
+
+```bash
+read -rs RETENTION_CRON_SECRET
+curl -i -X POST 'https://<api-host>/api/internal/retention/tick'
+curl -i -X POST 'https://<api-host>/api/internal/retention/tick' \
+  -H "X-Cron-Secret: $RETENTION_CRON_SECRET"
+```
+
+The first call must return `401`; the second must return `200`. To diagnose a
+failed cron run, compare the cron-job.org status/body with the `X-Request-ID`
+response header and the API's structured `request` log entry for the same
+correlation ID. Verify the API origin, `POST` method, exact header name, and
+that Render's `RETENTION_CRON_SECRET` matches the cron-job.org header. Do not log
+or paste the secret into tickets.
 
 ### Orthanc persistent storage and imaging recovery
 

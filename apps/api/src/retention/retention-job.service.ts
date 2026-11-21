@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, RetentionJobStatus, RetentionJobType } from '@prisma/client';
 import { retentionPolicy } from './retention-config.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import type { RetentionActor } from './retention-audit.service.js';
 
 export interface RetentionJobInput {
   type: RetentionJobType;
@@ -100,6 +101,22 @@ export class RetentionJobService {
     });
   }
 
+  async renewLease(
+    id: string,
+    workerId: string,
+    leaseMs = 5 * 60 * 1000,
+  ): Promise<boolean> {
+    const renewed = await this.prisma.retentionJob.updateMany({
+      where: {
+        id,
+        status: RetentionJobStatus.RUNNING,
+        lockedBy: workerId,
+      },
+      data: { leaseUntil: new Date(Date.now() + leaseMs) },
+    });
+    return renewed.count === 1;
+  }
+
   async complete(id: string): Promise<void> {
     await this.prisma.retentionJob.updateMany({
       where: { id, status: RetentionJobStatus.RUNNING },
@@ -133,12 +150,15 @@ export class RetentionJobService {
     });
   }
 
-  async retry(id: string): Promise<void> {
+  async retry(id: string, actor?: RetentionActor): Promise<void> {
+    const scope = this.scopeFor(actor);
     const job = await this.prisma.retentionJob.findUnique({
       where: { id },
-      select: { status: true },
+      select: { status: true, study: { select: { hospitalId: true } } },
     });
-    if (!job) return;
+    if (!job || (scope && job.study?.hospitalId !== scope)) {
+      throw new NotFoundException('Retention job not found');
+    }
     if (
       job.status !== RetentionJobStatus.DEAD &&
       job.status !== RetentionJobStatus.FAILED
@@ -158,8 +178,10 @@ export class RetentionJobService {
     });
   }
 
-  async list(limit = 100) {
+  async list(limit = 100, actor?: RetentionActor) {
+    const requestedScope = this.scopeFor(actor);
     return this.prisma.retentionJob.findMany({
+      where: requestedScope ? { study: { hospitalId: requestedScope } } : {},
       take: Math.min(Math.max(limit, 1), 200),
       orderBy: [{ dueAt: 'asc' }, { id: 'asc' }],
       select: {
@@ -173,6 +195,15 @@ export class RetentionJobService {
         lastError: true,
       },
     });
+  }
+
+  private scopeFor(actor?: RetentionActor): string | undefined {
+    if (!actor) return undefined;
+    if (actor.role !== 'ADMIN' && actor.role !== 'MANAGER') {
+      throw new NotFoundException('Retention job not found');
+    }
+    if (actor.role === 'MANAGER') return actor.hospitalId ?? '__axis_no_hospital__';
+    return undefined;
   }
 
   private safeError(error: unknown): string {
