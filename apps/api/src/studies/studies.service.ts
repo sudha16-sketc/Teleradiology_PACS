@@ -241,6 +241,9 @@ export class StudiesService {
         referringPhysician: dto.referringPhysician || '',
         studyDescription: dto.studyDescription || '',
         clinicalHistory: dto.clinicalHistory || '',
+        patientHistory: dto.clinicalHistory?.trim()
+          ? { create: { content: dto.clinicalHistory } }
+          : undefined,
         priority: dto.priority || 'ROUTINE',
         subspecialty: dto.subspecialty || 'GENERAL',
         status: 'HOSPITAL_SUBMITTED',

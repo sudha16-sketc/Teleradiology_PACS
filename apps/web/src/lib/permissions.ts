@@ -26,6 +26,7 @@ export const ROUTE_RULES: RouteRule[] = [
   { prefix: "/audit", roles: ["ADMIN"] },
   { prefix: "/operations", roles: ["ADMIN"] },
   { prefix: "/analytics", roles: ["ADMIN", "MANAGER"] },
+  { prefix: "/mis-reports", roles: ["ADMIN", "MANAGER"] },
   { prefix: "/hospitals", roles: ["ADMIN", "MANAGER", "HOSPITAL"] },
   { prefix: "/reports", roles: ["ADMIN", "MANAGER", "RADIOLOGIST", "HOSPITAL"] },
   { prefix: "/reading", roles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
@@ -68,6 +69,7 @@ export const NAV_DEFS: NavDefinition[] = [
   // Org / admin
   { href: "/hospitals", label: "Hospitals", allowedRoles: ["ADMIN", "MANAGER"] },
   { href: "/analytics", label: "Analytics", allowedRoles: ["ADMIN", "MANAGER"] },
+  { href: "/mis-reports", label: "MIS Reports", allowedRoles: ["ADMIN", "MANAGER"] },
   { href: "/audit", label: "Audit", admin: true },
   { href: "/operations", label: "Operations", admin: true },
   { href: "/settings", label: "Settings", admin: true },

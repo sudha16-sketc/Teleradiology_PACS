@@ -278,6 +278,10 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
     expect(study.orthancPatientId).toBe(data.orthancPatientId);
     expect(study.seriesCount).toBe(1);
     expect(study.instanceCount).toBe(1);
+    expect(study.uploadCompletedAt).not.toBeNull();
+    expect(study.uploadCompletedAt!.getTime()).toBeGreaterThanOrEqual(
+      study.receivedAt!.getTime(),
+    );
     expect(study.patient.hospitalId).toBe(CGH_HOSPITAL_ID);
 
     const series = await prisma.series.findUniqueOrThrow({
@@ -300,11 +304,14 @@ describe('Phase 2 -- real ingest: Orthanc, hierarchy persistence, ownership, aud
     // Both audit events were emitted.
     const audits = await prisma.auditLog.findMany({
       where: { resourceId: studyId },
-      select: { action: true },
+      select: { action: true, metadata: true },
     });
     const actions = audits.map((a) => a.action);
     expect(actions).toContain('STUDY_UPLOADED');
     expect(actions).toContain('DICOM_IMPORTED');
+    const importAudit = audits.find((entry) => entry.action === 'DICOM_IMPORTED');
+    expect(importAudit?.metadata).toMatchObject({ instanceCount: 1, seriesCount: 1 });
+    expect(JSON.stringify(importAudit?.metadata ?? {})).toContain('uploadCompletedAt');
   });
 
   it('DICOM-ING-2: hospital ownership is enforced by auth -- another hospital cannot access it', async () => {
@@ -351,6 +358,8 @@ describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => 
     expect(study.hospitalId).toBe(CGH_HOSPITAL_ID);
     expect(study.seriesCount).toBe(1);
     expect(study.instanceCount).toBe(1);
+    expect(study.uploadCompletedAt).not.toBeNull();
+    expect(await prisma.instance.count({ where: { studyId } })).toBe(1);
   });
 });
 
@@ -416,6 +425,7 @@ describe('Phase 2 -- post-ingest DICOMweb verification', () => {
     createdStudyIds.push(failed.id);
     expect(failed.status).toBe('CANCELLED');
     expect(failed.imagingAvailability).toBe('MISSING');
+    expect(failed.uploadCompletedAt).toBeNull();
 
     const actions = (
       await prisma.auditLog.findMany({

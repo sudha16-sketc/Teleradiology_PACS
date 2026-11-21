@@ -31,6 +31,7 @@ complete file structure with descriptions.
 16. [Synthetic Data](#16-synthetic-data)
 17. [What Works vs. What Needs External Infrastructure](#17-what-works-vs-what-needs-external-infrastructure)
 18. [Production Considerations](#18-production-considerations)
+19. [MIS Reports](#19-mis-reports)
 
 ---
 
@@ -1126,6 +1127,19 @@ All endpoints prefixed with `/api`. Backend runs on port 4000.
 | `POST` | `/api/reports/:studyUid/sign` | Sign off report | `{ "signedOffBy": "..." }` |
 | `POST` | `/api/reports/:studyUid/amend` | Amend report | `{ "authorId", "findings", "impression" }` |
 
+### MIS Reports
+
+| Method | Endpoint | Description | Query |
+|---|---|---|---|
+| `GET` | `/api/reports/mis/export` | ADMIN/MANAGER XLSX download | `?fromDate=&toDate=` |
+
+`fromDate` and `toDate` are optional ISO dates or date-only values. Date-only
+values are expanded to inclusive UTC day boundaries on `Study.studyDate`.
+Managers are restricted to their authenticated `User.hospitalId`; client
+`hospitalId` parameters are ignored. Every successful or failed request is
+audited without patient row data. The response uses the XLSX MIME type, an
+attachment filename, and an `X-MIS-Row-Count` header.
+
 ### Users
 
 | Method | Endpoint | Description | Body |
@@ -1283,6 +1297,52 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 - Implement automatic session timeout
 - Set up data retention policies for audit logs
 - Document BAA requirements for cloud providers
+
+---
+
+## 19. MIS Reports
+
+The dashboard `MIS Reports` page is available to `ADMIN` and `MANAGER` roles. It
+optionally filters by study date and downloads a 24-column XLSX workbook from
+`GET /api/reports/mis/export`. ExcelJS generates one `MIS Report` worksheet with
+a frozen, styled header row, autofilter, text-preserved identifiers, real Excel
+dates, and `[h]:mm:ss` TAT cells. Formula-injection prefixes are neutralized.
+
+ADMIN exports are global. MANAGER exports are always restricted to the
+hospital linked to the authenticated session; frontend-supplied hospital IDs are
+ignored. Roles outside ADMIN/MANAGER receive `403`. Every attempt writes a
+metadata-only audit entry with actor, role, scope, filters, timestamp, row count,
+and success/failure.
+
+Data comes from `Study`, `Patient`, `Hospital`, `PatientHistory`, `Instance`,
+`Assignment`, `Report`, and `REPORT_VERIFIED` audit records using Prisma
+relations. An additive migration introduces `Study.uploadCompletedAt` and
+`PatientHistory`; legacy rows without those records export blank timestamps
+rather than fabricated values. `ImageCount` is the stored `Instance` count, and
+`noOfReports` counts `Report` records rather than `ReportVersion` snapshots.
+
+Assignment columns `assignedAt`, `Study Assigned By`, and `Study Assigned To`
+all come from one historical `Assignment` row that matches the signed report's
+signer/author and was active when the report was created. Verification columns
+`Verified At` and `Study Verified By` come from the same latest
+`REPORT_VERIFIED` audit event for the selected signed report; neither
+`managerReviewedAt` nor the current user is a fallback. Studies stream in
+1,000-row keyset batches through an ExcelJS `WorkbookWriter`, with reports and
+verification events fetched per batch; DICOM binaries and report content are
+never loaded.
+
+Age is derived from `Patient.dateOfBirth` at study time and formatted `NNNY`.
+MIS TAT is `signedOffAt - uploadCompletedAt` and `signedOffAt - assignedAt`;
+this is distinct from the analytics/SLA TAT clocks. Missing or negative TAT
+values remain blank and are counted in audit metadata. Benchmark exports on an
+isolated test database completed in approximately 0.3s for 1,000 rows, 1.9s for
+10,000 rows, and 28.4s for 100,000 rows.
+
+Run the focused verification with:
+
+```bash
+BACKUP_STORAGE_PROVIDER=LOCAL pnpm --filter @axis/api test -- --runTestsByPath test/mis-report.e2e-spec.ts --runInBand
+```
 
 ---
 

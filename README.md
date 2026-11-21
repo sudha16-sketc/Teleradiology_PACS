@@ -26,6 +26,7 @@ analytics, and HIPAA-aligned audit logging.
 - [Desktop Client (Windows)](#desktop-client-windows)
 - [Synthetic Data Policy](#synthetic-data-policy)
 - [Authentication](#authentication)
+- [MIS Reports](#mis-reports)
 - [API Endpoints](#api-endpoints)
 - [Production Considerations](#production-considerations)
 - [Known Limitations](#known-limitations)
@@ -857,6 +858,83 @@ identity provider.
 
 ---
 
+## MIS Reports
+
+`MIS Reports` is available in the dashboard navigation to `ADMIN` and `MANAGER`
+accounts. The page supports optional `From Date` / `To Date` filters and a
+`Generate MIS Excel` action. Dates are inclusive UTC day boundaries applied to
+`Study.studyDate`; with no filters, all records in the caller's authorized scope
+are exported. Managers are always limited to their authenticated
+`User.hospitalId`; no client-supplied hospital ID is accepted. Administrators
+may export across hospitals.
+
+The download is a real XLSX workbook generated from PostgreSQL data with ExcelJS.
+It has one worksheet named `MIS Report`, exactly 24 columns in the reference
+order, a styled frozen header row, autofilter, readable widths, text-preserving
+identifier cells, real Excel date values, and `[h]:mm:ss` duration cells.
+User-supplied strings beginning with `=`, `+`, `-`, or `@` are written as text
+with a leading apostrophe to prevent formula injection. Each export writes an
+audit event containing actor, role, scope, filters, record count, filename,
+timestamp, mapping-rule identifiers, and success/failure; patient rows are never
+written to audit logs.
+
+Studies are streamed in keyset-paginated batches of 1,000; signed reports and
+verification audits are fetched per batch. No DICOM binary data or report
+content is loaded. Isolated benchmark exports completed in approximately 0.3s
+for 1,000 rows, 1.9s for 10,000 rows, and 28.4s for 100,000 rows.
+
+| Column | Header | Source |
+|---|---|---|
+| A | Center / Site | `Hospital.name` for `Study.hospitalId` |
+| B | Patient-Id | `Patient.patientId` |
+| C | Patient-Name | `Patient.displayName` |
+| D | Patient Age | Age from `Patient.dateOfBirth` at `Study.studyDate`, formatted `NNNY` |
+| E | Gender | `Patient.gender` |
+| F | Modality | `Study.modality` |
+| G | StudyName/  Study Discrption | `Study.studyDescription` |
+| H | ImageCount | Count of stored `Instance` rows, not `Study.instanceCount` |
+| I | Referring Physician Name | `Study.referringPhysician` |
+| J | Status | `Study.status` |
+| K | Priority | `Study.priority` |
+| L | noOfReports | Count of `Report` records, not `ReportVersion` snapshots |
+| M | studyDateTime | `Study.studyDate` plus `Study.studyTime` |
+| N | uploadCompletedAt | `Study.uploadCompletedAt`, blank for legacy rows |
+| O | historyCreatedAt | `PatientHistory.createdAt`, blank when no history form was submitted |
+| P | assignedAt | `Assignment.assignedAt` from the same assignment row as columns S/T |
+| Q | signedOffAt | Latest signed `Report.signedOffAt` |
+| R | Verified At | Timestamp from the latest matching `REPORT_VERIFIED` audit event |
+| S | Study Assigned By | `Assignment.assignedBy.displayName` from that same assignment row |
+| T | Study Assigned To | `Assignment.radiologist.displayName` from that same assignment row |
+| U | Study Reported By | Signed report author display name |
+| V | Study Verified By | Actor name from the same `REPORT_VERIFIED` event as column R |
+| W | TurnAroundTime | `signedOffAt - uploadCompletedAt` |
+| X | TatAssignedToSSignedOff | `signedOffAt - assignedAt` |
+
+An additive migration adds `Study.uploadCompletedAt` and the `PatientHistory`
+table; it does not fabricate or backfill timestamps for legacy records.
+Successful DICOM finalization sets `Study.uploadCompletedAt` and replaces the
+denormalized instance/series counters with authoritative relation counts. The
+Patient History Form creates `PatientHistory` at study submission, with its own
+creation timestamp independent of `Study.createdAt`.
+
+Assignment columns P/S/T come from one historical `Assignment` row: it must
+match the signed report's signer or author and have been active when that report
+was created; reassignment history is considered and no mutable `Study` snapshot
+is used as a fallback. Verification columns R/V come from the same newest
+`REPORT_VERIFIED` audit event for the selected signed report; `managerReviewedAt`
+and the current user are never substituted. Missing, negative, or invalid TAT
+inputs produce blank cells and are counted in export audit metadata rather than
+being shown as zero. Existing analytics/SLA TAT uses different clocks, so the
+two MIS formulas above are specific to the reference workbook.
+
+Test the export with:
+
+```bash
+BACKUP_STORAGE_PROVIDER=LOCAL pnpm --filter @axis/api test -- --runTestsByPath test/mis-report.e2e-spec.ts --runInBand
+```
+
+---
+
 ## API Endpoints
 
 All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
@@ -886,6 +964,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 | POST   | `/api/reports/:studyUid`          | Create or update a report |
 | POST   | `/api/reports/:studyUid/sign`     | Sign off a report         |
 | POST   | `/api/reports/:studyUid/amend`    | Amend a finalized report  |
+| GET    | `/api/reports/mis/export`         | ADMIN/MANAGER XLSX export (`?fromDate=&toDate=`) |
 
 ### Users
 

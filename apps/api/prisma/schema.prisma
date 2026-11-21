@@ -137,6 +137,7 @@ model Study {
   clinicalHistory       String            @default("")
   dueAt                 DateTime?
   receivedAt            DateTime?
+  uploadCompletedAt     DateTime?
   reportingStartedAt    DateTime?
   deliveredAt           DateTime?
   orthancPatientId      String?
@@ -168,6 +169,7 @@ model Study {
   assignedRadiologist   User?             @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
   hospital              Hospital          @relation(fields: [hospitalId], references: [id])
   patient               Patient        @relation(fields: [patientId], references: [id])
+  patientHistory        PatientHistory?
   worklistItem          WorklistItem?
   retentionLockActor    User?          @relation("RetentionLockActor", fields: [retentionLockedBy], references: [id])
   retention             StudyRetention?
@@ -401,6 +403,15 @@ model Assignment {
   @@index([studyId])
   @@index([radiologistId])
   @@index([isActive])
+}
+
+model PatientHistory {
+  id        String   @id @default(cuid())
+  studyId   String   @unique
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  study     Study    @relation(fields: [studyId], references: [id], onDelete: Cascade)
 }
 
 model AuditLog {

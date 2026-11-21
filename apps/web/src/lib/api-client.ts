@@ -23,6 +23,14 @@ interface RequestOptions extends Omit<RequestInit, "method" | "body"> {
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000;
+
+export interface ApiDownloadResult {
+  blob: Blob;
+  filename: string;
+  contentType: string;
+  headers: Headers;
+}
 
 /**
  * A failed request.
@@ -231,7 +239,79 @@ async function request<T>(
   return JSON.parse(text) as T;
 }
 
+async function download(
+  path: string,
+  options: RequestOptions = {},
+): Promise<ApiDownloadResult> {
+  const { params, headers: customHeaders, timeoutMs, correlationId, ...rest } =
+    options;
+  const requestId = correlationId ?? newCorrelationId();
+  const headers: Record<string, string> = {
+    "x-request-id": requestId,
+    ...Object.fromEntries(
+      Object.entries(customHeaders ?? {}).map(([k, v]) => [k, v as string]),
+    ),
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DeadlineError()),
+    timeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS,
+  );
+
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path, params), {
+      method: "GET",
+      headers,
+      credentials: "include",
+      signal: controller.signal,
+      ...rest,
+    });
+  } catch (error) {
+    const reason =
+      controller.signal.reason instanceof DeadlineError
+        ? controller.signal.reason
+        : error;
+    throw new ApiRequestError(classifyThrown(reason, requestId), path);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!response.ok) {
+    let body: ApiError | undefined;
+    try {
+      body = (await response.json()) as ApiError;
+    } catch {
+      body = undefined;
+    }
+    const serverId =
+      response.headers.get("x-request-id") ?? body?.correlationId ?? requestId;
+    throw new ApiRequestError(
+      classifyStatus(response.status, body?.message, serverId, body?.error),
+      path,
+      body,
+    );
+  }
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filenameMatch = /filename="?([^";]+)"?/i.exec(disposition);
+  const fallback = `MIS_Report_${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.xlsx`;
+
+  return {
+    blob: await response.blob(),
+    filename: filenameMatch?.[1] ?? fallback,
+    contentType:
+      response.headers.get("content-type") ??
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    headers: response.headers,
+  };
+}
+
 export const apiClient = {
+  download(path: string, options?: RequestOptions): Promise<ApiDownloadResult> {
+    return download(path, options);
+  },
+
   get<T>(path: string, options?: RequestOptions): Promise<T> {
     return request<T>("GET", path, options);
   },

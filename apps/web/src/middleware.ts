@@ -31,6 +31,7 @@ const PROTECTED_PREFIXES = [
   "/corrections",
   "/dashboard",
   "/hospitals",
+  "/mis-reports",
   "/operations",
   "/profile",
   "/queue",

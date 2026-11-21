@@ -523,14 +523,23 @@ export class DicomService {
             );
       }
 
+      const authoritativeInstanceCount = await this.prisma.instance.count({
+        where: { studyId: study.id },
+      });
+      const authoritativeSeriesCount = await this.prisma.series.count({
+        where: { studyId: study.id },
+      });
+      const uploadCompletedAt = new Date();
+
       // 8. Finalize the study as an UNASSIGNED case for the manager worklist.
       study = await this.prisma.study.update({
         where: { id: study.id },
         data: {
           orthancStudyId,
           orthancPatientId,
-          seriesCount: seriesGroups.size,
-          instanceCount: stored.length,
+          seriesCount: authoritativeSeriesCount,
+          instanceCount: authoritativeInstanceCount,
+          uploadCompletedAt,
           status: 'UNASSIGNED',
           completedAt: null,
         },
@@ -547,17 +556,18 @@ export class DicomService {
       await this.auditEntry(user, 'DICOM_IMPORTED', study.id, {
         orthancStudyId,
         orthancPatientId,
-        seriesCount: seriesGroups.size,
-        instanceCount: stored.length,
+        seriesCount: authoritativeSeriesCount,
+        instanceCount: authoritativeInstanceCount,
         transferSyntax: first.transferSyntaxName,
         availability: availability.state,
+        uploadCompletedAt: uploadCompletedAt.toISOString(),
       });
 
       return {
         study,
         orthancStudyId,
         orthancPatientId,
-        instanceCount: stored.length,
+        instanceCount: authoritativeInstanceCount,
         skipped: 0,
       };
     } catch (err) {

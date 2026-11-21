@@ -21,6 +21,7 @@ import {
   UploadCloud,
   ServerCog,
   Archive,
+  FileSpreadsheet,
   type LucideIcon,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
@@ -40,6 +41,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/hospitals/reports": FileText,
   "/hospitals/tracker": Activity,
   "/analytics": BarChart3,
+  "/mis-reports": FileSpreadsheet,
   "/audit": Shield,
   "/operations": ServerCog,
   "/retention": Archive,
