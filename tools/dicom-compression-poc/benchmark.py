@@ -40,6 +40,37 @@ except ImportError as exc:
     raise SystemExit(2) from exc
 
 
+class LosslessCompressionError(ValueError):
+    def __init__(
+        self,
+        stage: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.metadata = metadata or {}
+        self.diagnostic_message = message
+
+
+def safe_dataset_metadata(dataset: Dataset, source_syntax: str) -> dict[str, Any]:
+    def int_value(name: str) -> int | None:
+        try:
+            return int(getattr(dataset, name))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    return {
+        "source_transfer_syntax": source_syntax or "<missing>",
+        "rows": int_value("Rows"),
+        "columns": int_value("Columns"),
+        "samples_per_pixel": int_value("SamplesPerPixel"),
+        "bits_allocated": int_value("BitsAllocated"),
+        "pixel_representation": int_value("PixelRepresentation"),
+        "number_of_frames": int_value("NumberOfFrames"),
+    }
+
+
 TRANSFER_SYNTAX_TAG = 0x00020010
 FILE_META_GROUP_LENGTH_TAG = 0x00020000
 PIXEL_GROUPS = {0x0028, 0x7FE0}
@@ -564,6 +595,32 @@ def compress_verified_file(
     transfer_syntax: str,
 ) -> str:
     """Compress uncompressed DICOM or pass through a valid lossless instance."""
+    context: dict[str, Any] = {
+        "stage": "initialization",
+        "metadata": {"target_transfer_syntax": transfer_syntax},
+    }
+    try:
+        return _compress_verified_file(source, destination, transfer_syntax, context)
+    except Exception as exc:
+        if not getattr(exc, "stage", None):
+            setattr(exc, "stage", context["stage"])
+        if not getattr(exc, "metadata", None):
+            setattr(exc, "metadata", context["metadata"])
+        if not getattr(exc, "diagnostic_message", None):
+            setattr(
+                exc,
+                "diagnostic_message",
+                f"Worker raised {type(exc).__name__}",
+            )
+        raise
+
+
+def _compress_verified_file(
+    source: Path,
+    destination: Path,
+    transfer_syntax: str,
+    context: dict[str, Any],
+) -> str:
     variants = {
         str(JPEG2000Lossless): Variant(
             "jpeg2000-lossless", str(JPEG2000Lossless), "pylibjpeg", True
@@ -572,106 +629,155 @@ def compress_verified_file(
             "jpeg-ls-lossless", str(JPEGLSLossless), "pyjpegls", True
         ),
     }
+    context["stage"] = "validate_target_syntax"
     variant = variants.get(transfer_syntax)
     if variant is None:
-        raise ValueError(f"Unsupported lossless transfer syntax: {transfer_syntax}")
+        raise LosslessCompressionError(
+            "validate_target_syntax",
+            f"Unsupported lossless transfer syntax: {transfer_syntax}",
+            context["metadata"],
+        )
 
+    context["stage"] = "validate_paths"
     source = source.resolve()
     destination = destination.resolve()
     if source == destination:
-        raise ValueError("Compressed output must not overwrite the source DICOM")
+        raise LosslessCompressionError(
+            "validate_paths",
+            "Compressed output must not overwrite the source DICOM",
+            context["metadata"],
+        )
     if destination.exists():
         raise FileExistsError(f"Compressed output already exists: {destination.name}")
 
+    context["stage"] = "read_source"
     original = pydicom.dcmread(source)
     source_syntax = str(getattr(original.file_meta, "TransferSyntaxUID", "") or "")
     source_syntax_label = source_syntax or "<missing>"
+    context["metadata"].update(safe_dataset_metadata(original, source_syntax_label))
+    context["stage"] = "validate_source"
 
     if "PixelData" not in original:
-        raise ValueError(
-            f"Source syntax {source_syntax_label}: file has no Pixel Data (7FE0,0010)"
+        raise LosslessCompressionError(
+            "validate_source",
+            f"Source syntax {source_syntax_label}: file has no Pixel Data (7FE0,0010)",
+            context["metadata"],
         )
     if not original.PixelData:
-        raise ValueError(
-            f"Source syntax {source_syntax_label}: Pixel Data (7FE0,0010) is empty"
+        raise LosslessCompressionError(
+            "validate_source",
+            f"Source syntax {source_syntax_label}: Pixel Data (7FE0,0010) is empty",
+            context["metadata"],
         )
 
     if source_syntax in LOSSLESS_TRANSFER_SYNTAXES:
+        context["stage"] = "decode_source"
         try:
             original_pixels = np.asarray(original.pixel_array).copy()
         except Exception as exc:
-            raise ValueError(
+            raise LosslessCompressionError(
+                "decode_source",
                 f"Source syntax {source_syntax}: lossless Pixel Data could not be decoded "
-                f"({type(exc).__name__}: {exc})"
+                f"({type(exc).__name__}: {exc})",
+                context["metadata"],
             ) from exc
         if original_pixels.size == 0:
-            raise ValueError(
-                f"Source syntax {source_syntax}: decoded Pixel Data is empty"
+            raise LosslessCompressionError(
+                "decode_source",
+                f"Source syntax {source_syntax}: decoded Pixel Data is empty",
+                context["metadata"],
             )
         original_pixel_hash = hashlib.sha256(
             original_pixels.tobytes(order="C")
         ).hexdigest()
 
+        context["stage"] = "write_pass_through"
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copyfile(source, destination)
+            context["stage"] = "read_pass_through"
             copied = pydicom.dcmread(destination)
+            context["stage"] = "decode_pass_through"
             copied_pixels = np.asarray(copied.pixel_array)
             copied_pixel_hash = hashlib.sha256(
                 copied_pixels.tobytes(order="C")
             ).hexdigest()
+            context["stage"] = "verify_pass_through"
             if (
                 original_pixels.dtype != copied_pixels.dtype
                 or original_pixels.shape != copied_pixels.shape
                 or original_pixel_hash != copied_pixel_hash
                 or str(getattr(copied.file_meta, "TransferSyntaxUID", "")) != source_syntax
             ):
-                raise ValueError(
+                raise LosslessCompressionError(
+                    "verify_pass_through",
                     f"Source syntax {source_syntax}: lossless pass-through pixel "
-                    "verification failed"
+                    "verification failed",
+                    context["metadata"],
                 )
             return original_pixel_hash
         except Exception:
             destination.unlink(missing_ok=True)
             raise
 
+    context["stage"] = "validate_source_syntax"
     if source_syntax not in UNCOMPRESSED_TRANSFER_SYNTAXES:
         uid = UID(source_syntax) if source_syntax else UID("")
         if source_syntax and uid.is_compressed:
-            raise ValueError(
+            raise LosslessCompressionError(
+                "validate_source_syntax",
                 f"Source syntax {source_syntax}: lossy or unknown-compression transfer syntax "
-                "is not accepted for lossless ingest"
+                "is not accepted for lossless ingest",
+                context["metadata"],
             )
-        raise ValueError(
-            f"Source syntax {source_syntax_label}: unknown or unsupported transfer syntax"
+        raise LosslessCompressionError(
+            "validate_source_syntax",
+            f"Source syntax {source_syntax_label}: unknown or unsupported transfer syntax",
+            context["metadata"],
         )
 
+    context["stage"] = "decode_source"
     original_pixels = np.asarray(original.pixel_array).copy()
     original_pixel_hash = hashlib.sha256(
         original_pixels.tobytes(order="C")
     ).hexdigest()
 
+    context["stage"] = "encode_pixels"
     encoded = copy.deepcopy(original)
-    if (
-        variant.uid == str(JPEG2000Lossless)
-        and min(int(encoded.Rows), int(encoded.Columns)) < 32
-    ):
-        encode_small_jpeg2000(encoded, variant)
-    else:
-        encoded.compress(
-            variant.uid,
-            encoding_plugin=variant.plugin,
-            generate_instance_uid=False,
-        )
+    try:
+        if (
+            variant.uid == str(JPEG2000Lossless)
+            and min(int(encoded.Rows), int(encoded.Columns)) < 32
+        ):
+            encode_small_jpeg2000(encoded, variant)
+        else:
+            encoded.compress(
+                variant.uid,
+                encoding_plugin=variant.plugin,
+                generate_instance_uid=False,
+            )
+    except Exception as exc:
+        message = str(exc)
+        if "pixel data encoder" in message or "plugins" in message:
+            raise LosslessCompressionError(
+                "encode_pixels",
+                message[:500],
+                context["metadata"],
+            ) from exc
+        raise
 
+    context["stage"] = "write_output"
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         encoded.save_as(destination, enforce_file_format=True)
+        context["stage"] = "read_output"
         result = pydicom.dcmread(destination)
+        context["stage"] = "decode_output"
         decoded_pixels = np.asarray(result.pixel_array)
         decoded_pixel_hash = hashlib.sha256(
             decoded_pixels.tobytes(order="C")
         ).hexdigest()
+        context["stage"] = "verify_output"
         if (
             original_pixels.dtype != decoded_pixels.dtype
             or original_pixels.shape != decoded_pixels.shape
@@ -680,7 +786,11 @@ def compress_verified_file(
             or not result.file_meta
             or str(result.file_meta.TransferSyntaxUID) != variant.uid
         ):
-            raise ValueError("Lossless DICOM compression verification failed")
+            raise LosslessCompressionError(
+                "verify_output",
+                "Lossless DICOM compression verification failed",
+                context["metadata"],
+            )
         return original_pixel_hash
     except Exception:
         destination.unlink(missing_ok=True)

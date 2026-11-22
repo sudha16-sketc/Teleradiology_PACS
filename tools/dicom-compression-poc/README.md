@@ -38,11 +38,11 @@ The JPEG-LS encoder is supplied by `pyjpegls`; `pylibjpeg-openjpeg` encodes JPEG
 
 The API invokes `compress_for_ingest.py` for each DICOM instance and does not send an instance to Orthanc unless that command successfully encodes it and verifies identical decoded pixel-array dtype, shape, and SHA-256 hash, unchanged non-pixel metadata, and the selected lossless transfer syntax. The supported settings are JPEG 2000 Lossless (`1.2.840.10008.1.2.4.90`, default) and JPEG-LS Lossless (`1.2.840.10008.1.2.4.80`); all other values fail closed.
 
-The API runtime must have Python 3.12 and the packages in this directory's `requirements.txt` installed. Configure `AXIS_DICOM_PYTHON` to the Python executable if it is not on `PATH`, and optionally set `AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX` to one of the two supported UIDs. Missing interpreters, codec errors, verification mismatches, and failed temp-file cleanup reject the ingest. Original and compressed working files are stored in a private temporary directory and removed after each compression attempt.
+The API build installs Python 3.10+ packages from this directory's `requirements.txt` into `runtime/site-packages` and runs `verify_deployment.py`, which performs a synthetic lossless encode/decode. The API worker runs `python3` with that build-created directory on `PYTHONPATH` and never uses the ignored local `.venv`; configure `AXIS_DICOM_PYTHON` only for an external interpreter override, and optionally set `AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX` to one of the two supported UIDs. Missing interpreters, codec errors, verification mismatches, and failed temp-file cleanup reject the ingest. Original and compressed working files are stored in a private temporary directory and removed after each compression attempt.
 
 Orthanc's public HTTP/DICOM port mappings and DICOM listener are disabled by the repository configuration. Its DICOMweb STOW endpoint is disabled, and the application proxy exposes only read methods. Keep Orthanc reachable only on a private network by the API; do not re-publish its ports or enable STOW/DICOM storage listeners.
 
-The `samples\`, `output\`, and `orthanc-scratch\` folders ignore their contents in Git to avoid committing patient data, generated images, or copied configs/statistics. The POC also ignores its virtual environment and Python bytecode. Keep the `.gitignore` files.
+The `samples\`, `output\`, and `orthanc-scratch\` folders ignore their contents in Git to avoid committing patient data, generated images, or copied configs/statistics. The POC also ignores its local virtual environment, build-created `runtime/` dependencies, and Python bytecode. Keep the `.gitignore` files.
 
 ## Orthanc scratch test: IngestTranscoding and StorageCompression
 

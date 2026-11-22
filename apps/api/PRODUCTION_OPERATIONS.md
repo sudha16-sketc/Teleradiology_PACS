@@ -73,10 +73,15 @@ health check at DICOM port `4242`; non-DICOM probes there cause repeated
 `Unrecognized PDU type` log entries. Check readiness through
 `/api/health/ready`.
 
-The API runtime must include `tools/dicom-compression-poc` and Python 3.12 with
-its `requirements.txt` installed. Set `AXIS_DICOM_PYTHON` to the Python
-executable when it is not the API process's default; missing codec/runtime
-dependencies cause ingest to fail closed.
+The API build must include `tools/dicom-compression-poc` and Python 3.10+ with
+its `requirements.txt` installed into
+`tools/dicom-compression-poc/runtime/site-packages`; the API build runs this
+provisioning and a synthetic lossless encode/decode verification before producing
+the deployable artifact. The API worker runs `python3` with that build-created
+site-packages directory on `PYTHONPATH`. Set `AXIS_DICOM_PYTHON` only when using
+an external interpreter; missing codec/runtime dependencies cause ingest to fail
+closed. Run `pnpm dicom:verify` after deployment to re-check the installed worker
+without changing application startup behavior.
 
 After deployment, access Orthanc only from the API's private network.
 Unauthenticated `/system`, `/studies`, `/patients`, `/plugins` and

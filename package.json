@@ -12,6 +12,8 @@
     "dev:all": "pnpm -r --parallel --filter @axis/api --filter @axis/web dev",
     "build": "pnpm --filter @axis/api build",
     "build:web": "pnpm --filter @axis/web build",
+    "dicom:provision": "pnpm --filter @axis/api dicom:provision",
+    "dicom:verify": "pnpm --filter @axis/api dicom:verify",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",

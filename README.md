@@ -294,7 +294,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `ORTHANC_USERNAME`         | `orthanc`                                            | Orthanc HTTP auth username              |
 | `ORTHANC_PASSWORD`         | `orthanc`                                            | Orthanc HTTP auth password              |
 | `AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX` | JPEG 2000 Lossless (`1.2.840.10008.1.2.4.90`) | Verified lossless storage syntax |
-| `AXIS_DICOM_PYTHON`        | POC `.venv` when present                            | Python executable for the compression worker |
+| `AXIS_DICOM_PYTHON`        | `python3` with build-created POC `runtime/site-packages` | Python executable override for the compression worker |
 | `TRUST_PROXY`              | `1`                                                  | Trusted proxy hops for `X-Forwarded-For` rate limits |
 | `AXIS_ORTHANC_TIMEOUT_MS`  | `30000`                                              | DICOMweb upstream request timeout        |
 | `AXIS_ORTHANC_STREAM_IDLE_TIMEOUT_MS` | `60000`                                   | WADO stream idle timeout                 |
@@ -365,11 +365,17 @@ Deploy the API from the monorepo root so pnpm can resolve workspace packages:
 - **Start Command:** `pnpm --filter @axis/api start:prod`
 
 The root build generates Prisma Client from `apps/api/prisma/schema.prisma`,
-builds `@axis/types`, and compiles the API. The start command runs
-`prisma migrate deploy` before Nest listens, so the deployed API uses the same
-`DATABASE_URL` for schema and queries. For a migration-only step, run
-`pnpm db:migrate:deploy`; never use `prisma migrate dev` or `db push` in
-production. To build the web app separately, run `pnpm run build:web`; its
+builds `@axis/types`, installs the DICOM compression worker packages into
+`tools/dicom-compression-poc/runtime/site-packages` from its `requirements.txt`,
+runs a synthetic lossless encode/decode verification, and compiles the API. No
+Python packages are installed on application startup, and the ignored local
+`.venv` is not used. The API worker runs `python3` with that build-created
+site-packages directory on `PYTHONPATH`; `AXIS_DICOM_PYTHON` is only needed for
+an external interpreter override. The
+start command runs `prisma migrate deploy` before Nest listens, so the deployed
+API uses the same `DATABASE_URL` for schema and queries. For a migration-only
+step, run `pnpm db:migrate:deploy`; never use `prisma migrate dev` or `db push`
+in production. To build the web app separately, run `pnpm run build:web`; its
 deployment also requires the web upstream settings documented above.
 
 Set the API's production environment variables in Render: `DATABASE_URL`,

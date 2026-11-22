@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "nest start --watch",
-    "build": "pnpm db:generate && pnpm --filter @axis/types build && nest build",
+    "build": "pnpm run dicom:provision && pnpm db:generate && pnpm --filter @axis/types build && nest build",
     "start": "node dist/main.js",
     "start:prod": "pnpm db:migrate:deploy && node dist/main.js",
+    "dicom:provision": "bash scripts/provision-dicom-python.sh",
+    "dicom:verify": "bash scripts/verify-dicom-python.sh",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "db:generate": "prisma generate --schema prisma/schema.prisma",

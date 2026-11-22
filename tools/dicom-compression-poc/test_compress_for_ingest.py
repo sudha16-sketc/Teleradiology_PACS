@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import json
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ from pydicom.uid import (
     generate_uid,
 )
 
-from benchmark import compress_verified_file
+from benchmark import LosslessCompressionError, compress_verified_file
 
 
 def write_test_dicom(path: Path) -> np.ndarray:
@@ -177,6 +178,74 @@ class CompressForIngestTests(unittest.TestCase):
                 str(pydicom.dcmread(output).file_meta.TransferSyntaxUID),
                 str(JPEG2000Lossless),
             )
+
+    def test_missing_pixel_data_reports_stage_and_safe_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "source.dcm"
+            output = Path(work) / "verified.dcm"
+            write_test_dicom(source)
+            dataset = pydicom.dcmread(source)
+            dataset.PatientName = "Sensitive^Name"
+            dataset.PatientID = "SENSITIVE-ID"
+            del dataset["PixelData"]
+            dataset.save_as(source, enforce_file_format=True)
+
+            with self.assertRaises(LosslessCompressionError) as context:
+                compress_verified_file(source, output, str(JPEG2000Lossless))
+
+            self.assertEqual(context.exception.stage, "validate_source")
+            metadata = context.exception.metadata
+            self.assertEqual(
+                metadata["source_transfer_syntax"],
+                str(ExplicitVRLittleEndian),
+            )
+            self.assertEqual(metadata["rows"], 64)
+            self.assertEqual(metadata["columns"], 64)
+            self.assertFalse(any("patient" in key.lower() for key in metadata))
+            self.assertNotIn("Sensitive", str(metadata))
+            self.assertFalse(output.exists())
+
+    def test_cli_emits_structured_diagnostic_without_patient_information(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "source.dcm"
+            output = Path(work) / "verified.dcm"
+            write_test_dicom(source)
+            dataset = pydicom.dcmread(source)
+            dataset.PatientName = "Sensitive^Name"
+            dataset.PatientID = "SENSITIVE-ID"
+            del dataset["PixelData"]
+            dataset.save_as(source, enforce_file_format=True)
+            script = Path(__file__).with_name("compress_for_ingest.py")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--input",
+                    str(source),
+                    "--output",
+                    str(output),
+                    "--transfer-syntax",
+                    str(JPEG2000Lossless),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            diagnostic_lines = [
+                line
+                for line in result.stderr.splitlines()
+                if line.startswith("AXIS_DICOM_DIAGNOSTIC=")
+            ]
+            self.assertEqual(len(diagnostic_lines), 1)
+            payload = json.loads(diagnostic_lines[0].split("=", 1)[1])
+            self.assertEqual(payload["stage"], "validate_source")
+            self.assertEqual(payload["metadata"]["rows"], 64)
+            self.assertNotIn("Sensitive", result.stderr)
+            self.assertNotIn("SENSITIVE-ID", result.stderr)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

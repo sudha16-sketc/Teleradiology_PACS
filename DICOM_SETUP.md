@@ -117,7 +117,7 @@ network; configure the API's `ORTHANC_URL` to the private service URL.
 ```ini
 ORTHANC_URL=http://axis-orthanc:8042
 AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX=1.2.840.10008.1.2.4.90
-# Optional; uses the POC .venv when present, otherwise python3 (python on Windows).
+# Optional; uses python3 with build-created POC runtime/site-packages (python on Windows).
 # AXIS_DICOM_PYTHON=/path/to/python
 ORTHANC_USERNAME=orthanc
 ORTHANC_PASSWORD=orthanc
