@@ -7,6 +7,7 @@ import { StudyContextBar } from "@/components/reading/StudyContextBar";
 import { OHIFViewer } from "@/components/reading/OHIFViewer";
 import { StudyMetadataPanel } from "@/components/reading/StudyMetadataPanel";
 import { PriorStudiesList } from "@/components/reading/PriorStudiesList";
+import { ReadingPanels } from "@/components/reading/ReadingPanels";
 import { ReportPanel } from "@/components/reading/ReportPanel";
 import { CriticalFindingBanner } from "@/components/reading/CriticalFindingBanner";
 import { SignOffControls } from "@/components/reading/SignOffControls";
@@ -155,66 +156,73 @@ export default function ReadingPage() {
         </div>
       ) : null}
 
-      <div className="flex min-h-[85dvh] flex-1 flex-col overflow-hidden rounded-md border border-border lg:min-h-0 lg:flex-row">
-        <div className="h-[42dvh] min-h-[280px] shrink-0 bg-surface lg:h-auto lg:min-h-0 lg:min-w-0 lg:flex-1">
-          <OHIFViewer
-            studyInstanceUid={study.studyInstanceUid}
-            onAvailabilityChange={setAvailability}
-          />
-        </div>
-
-        <div className="min-h-[43dvh] w-full flex-1 overflow-y-auto border-t border-border bg-surface lg:min-h-0 lg:w-[380px] lg:flex-none lg:border-l lg:border-t-0">
-          <StudyMetadataPanel study={study} />
-          <PriorStudiesList studyUid={studyUid} />
-          {isReviewer ? (
-            <>
-              <ReportPanel
-                studyInstanceUid={studyUid}
-                report={report}
-                study={study}
-              />
-              {report && <CriticalFindingBanner report={report} />}
-              <ReviewActions
-                studyInstanceUid={studyUid}
-                status={study.status}
-                onChanged={() => void load({ background: true })}
-              />
-            </>
-          ) : isRadiologist && isAssigned ? (
-            <>
-              <ReportPanel
-                studyInstanceUid={studyUid}
-                report={report}
-                study={study}
-                onReportSaved={() => void load({ background: true })}
-                registerSaveFlush={registerSaveFlush}
-              />
-              {report && <CriticalFindingBanner report={report} />}
-              <CorrectionWorkflow
-                studyInstanceUid={studyUid}
-                status={study.status}
-                onChanged={() => void load({ background: true })}
-              />
-              <SignOffControls
-                studyInstanceUid={studyUid}
-                status={study.status}
-                reportHasContent={reportHasContent}
-                beforeSign={beforeSign}
-                onChanged={() => void load({ background: true })}
-              />
-            </>
-          ) : (
-            <>
-              <ReportPanel
-                studyInstanceUid={studyUid}
-                report={report}
-                study={study}
-              />
-              {report && <CriticalFindingBanner report={report} />}
-            </>
-          )}
-        </div>
-      </div>
+      <ReadingPanels
+        viewer={
+          <div className="h-full min-h-0">
+            <OHIFViewer
+              studyInstanceUid={study.studyInstanceUid}
+              onAvailabilityChange={setAvailability}
+            />
+          </div>
+        }
+        report={
+          <>
+            {isReviewer ? (
+              <>
+                <ReportPanel
+                  studyInstanceUid={studyUid}
+                  report={report}
+                  study={study}
+                />
+                {report && <CriticalFindingBanner report={report} />}
+                <ReviewActions
+                  studyInstanceUid={studyUid}
+                  status={study.status}
+                  onChanged={() => void load({ background: true })}
+                />
+              </>
+            ) : isRadiologist && isAssigned ? (
+              <>
+                <ReportPanel
+                  studyInstanceUid={studyUid}
+                  report={report}
+                  study={study}
+                  onReportSaved={() => void load({ background: true })}
+                  registerSaveFlush={registerSaveFlush}
+                />
+                {report && <CriticalFindingBanner report={report} />}
+                <CorrectionWorkflow
+                  studyInstanceUid={studyUid}
+                  status={study.status}
+                  onChanged={() => void load({ background: true })}
+                />
+                <SignOffControls
+                  studyInstanceUid={studyUid}
+                  status={study.status}
+                  reportHasContent={reportHasContent}
+                  beforeSign={beforeSign}
+                  onChanged={() => void load({ background: true })}
+                />
+              </>
+            ) : (
+              <>
+                <ReportPanel
+                  studyInstanceUid={studyUid}
+                  report={report}
+                  study={study}
+                />
+                {report && <CriticalFindingBanner report={report} />}
+              </>
+            )}
+          </>
+        }
+        patient={
+          <>
+            <StudyMetadataPanel study={study} />
+            <PriorStudiesList studyUid={studyUid} />
+          </>
+        }
+      />
     </div>
   );
 }
