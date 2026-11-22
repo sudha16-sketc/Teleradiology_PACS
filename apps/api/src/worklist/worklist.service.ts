@@ -44,6 +44,20 @@ const ASSIGNABLE_STATES: StudyStatus[] = [
   StudyStatus.ASSIGNED,
 ];
 
+const WORKLIST_AUTHOR_SELECT = {
+  id: true,
+  email: true,
+  displayName: true,
+  role: true,
+  status: true,
+  phone: true,
+  organization: true,
+  licenseNumber: true,
+  requestedRole: true,
+  subspecialty: true,
+  isActive: true,
+} as const;
+
 @Injectable()
 export class WorklistService {
   private readonly logger = new Logger(WorklistService.name);
@@ -135,7 +149,7 @@ export class WorklistService {
           hospital: true,
           assignedRadiologist: true,
           reports: {
-            include: { author: true },
+            include: { author: { select: WORKLIST_AUTHOR_SELECT } },
             orderBy: { version: 'desc' },
             take: 1,
           },
@@ -166,7 +180,7 @@ export class WorklistService {
           hospital: true,
           assignedRadiologist: true,
           reports: {
-            include: { author: true },
+            include: { author: { select: WORKLIST_AUTHOR_SELECT } },
             orderBy: { version: 'desc' },
             take: 1,
           },
@@ -206,7 +220,7 @@ export class WorklistService {
         hospital: true,
         assignedRadiologist: true,
         reports: {
-          include: { author: true },
+          include: { author: { select: WORKLIST_AUTHOR_SELECT } },
           orderBy: { version: 'desc' },
           take: 1,
         },

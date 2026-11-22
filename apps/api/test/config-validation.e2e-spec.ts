@@ -1,4 +1,5 @@
 import { assertRequiredEnv } from '../src/common/config/env-validation.js';
+import { resolveCors } from '../src/common/config/cors.js';
 import { orthancBaseUrl, parseOrthancUrl } from '../src/common/config/orthanc-url.js';
 
 const KEYS = [
@@ -28,6 +29,25 @@ function productionEnv(orthancUrl: string): void {
   process.env.NEXT_PUBLIC_APP_URL = 'https://front.example.test';
   delete process.env.AXIS_ALLOW_LOOPBACK_ORTHANC;
 }
+
+describe('CORS credential policy', () => {
+  it('allows credentials only for explicit origins', () => {
+    expect(
+      resolveCors('https://app.example.test, https://viewer.example.test'),
+    ).toEqual({
+      origin: ['https://app.example.test', 'https://viewer.example.test'],
+      credentials: true,
+    });
+  });
+
+  it('never combines a wildcard origin with credentials', () => {
+    expect(resolveCors('*')).toEqual({ origin: true, credentials: false });
+    expect(resolveCors('https://app.example.test,*')).toEqual({
+      origin: true,
+      credentials: false,
+    });
+  });
+});
 
 describe('production Orthanc URL validation', () => {
   let saved: Saved;

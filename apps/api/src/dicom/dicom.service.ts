@@ -364,8 +364,8 @@ export class DicomService {
         priority: 'ROUTINE' as StudyPriority,
         subspecialty: 'GENERAL' as Subspecialty,
         receivedAt: new Date(),
-        seriesCount: seriesSet.size,
-        instanceCount: parsedList.length,
+        seriesCount: existingStudy?.seriesCount ?? 0,
+        instanceCount: existingStudy?.instanceCount ?? 0,
         uploadedFileName: originalName,
         slaDeadline: this.computeSlaDeadline('ROUTINE' as StudyPriority),
       };

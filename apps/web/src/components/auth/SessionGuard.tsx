@@ -4,15 +4,10 @@ import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { ShieldAlert } from "lucide-react";
-import { apiClient } from "@/lib/api-client";
 import { useAppStore } from "@/lib/store";
 import { roleHasAccess, ROLE_REDIRECTS } from "@/lib/permissions";
 import { loginUrl } from "@/lib/return-to";
 import type { AuthUser, UserRole } from "@axis/types";
-
-interface ApiEnvelope<T> {
-  data: T;
-}
 
 function LoadingScreen() {
   return (
@@ -62,22 +57,11 @@ export function SessionGuard({
   const router = useRouter();
   const authStatus = useAppStore((s) => s.authStatus);
   const currentUser = useAppStore((s) => s.currentUser);
-  const setCurrentUser = useAppStore((s) => s.setCurrentUser);
+  const hydrateAuth = useAppStore((s) => s.hydrateAuth);
 
   useEffect(() => {
-    let cancelled = false;
-    apiClient
-      .get<ApiEnvelope<AuthUser>>("/auth/me")
-      .then((res) => {
-        if (!cancelled) setCurrentUser(res.data);
-      })
-      .catch(() => {
-        if (!cancelled) setCurrentUser(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [setCurrentUser]);
+    void hydrateAuth();
+  }, [hydrateAuth]);
 
   if (authStatus === "loading") return <LoadingScreen />;
 

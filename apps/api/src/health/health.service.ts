@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { orthancBaseUrl } from '../common/config/orthanc-url.js';
 import { log } from '../common/observability/structured-logger.js';
 import { RedisService } from '../redis/redis.service.js';
+import { isValidDicomUid } from '../dicom/dicom.constants.js';
 import type { HealthComponent, HealthReport } from '@axis/types';
 
 function orthancAuthHeader(): Record<string, string> {
@@ -22,7 +23,7 @@ function orthancHealthTimeoutMs(): number {
 function dicomwebProbeUrl(studyUid?: string): string {
   const base = `${orthancBaseUrl()}/dicom-web/studies`;
   return studyUid
-    ? `${base}?StudyInstanceUID=${encodeURIComponent(studyUid)}`
+    ? `${base}?StudyInstanceUID=${encodeURIComponent(studyUid)}&limit=1`
     : `${base}?limit=1`;
 }
 
@@ -55,11 +56,26 @@ function hasDicomWebPlugin(body: unknown): boolean {
   return values.some((item) => /dicom-web/i.test(pluginName(item)));
 }
 
+function normalizeUid(uid: string | null | undefined): string {
+  return (uid ?? '')
+    .split('')
+    .filter((char) => char !== '\u0000' && !/\s/.test(char))
+    .join('');
+}
+
 function qidoStudyUid(item: unknown): string | undefined {
   if (!item || typeof item !== 'object') return undefined;
-  const element = (item as Record<string, { Value?: unknown[] } | undefined>)['0020000D'];
-  const value = element?.Value?.[0];
-  return typeof value === 'string' ? value : undefined;
+  const record = item as Record<string, { Value?: unknown[] } | undefined>;
+  const element =
+    record['0020000D'] ??
+    record['0020000d'] ??
+    record.StudyInstanceUID ??
+    record.studyInstanceUID;
+  const values = element?.Value ?? [];
+  for (const value of values) {
+    if (typeof value === 'string' && normalizeUid(value)) return value;
+  }
+  return undefined;
 }
 
 @Injectable()
@@ -129,17 +145,20 @@ export class HealthService {
       try {
         const study = await this.prisma.study.findFirst({
           where: {
-            OR: [
-              { seriesCount: { gt: 0 } },
-              { instanceCount: { gt: 0 } },
-              { series: { some: {} } },
-              { instances: { some: {} } },
-            ],
+            imagingAvailability: 'AVAILABLE',
+            orthancStudyId: { not: null },
+            status: { notIn: ['CANCELLED', 'RECEIVING'] },
+            seriesCount: { gt: 0 },
+            instanceCount: { gt: 0 },
           },
           select: { studyInstanceUid: true },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { imagingCheckedAt: 'desc' },
         });
-        probeStudyUid = study?.studyInstanceUid;
+        if (study && isValidDicomUid(study.studyInstanceUid)) {
+          probeStudyUid = normalizeUid(study.studyInstanceUid);
+        } else if (study) {
+          log('warn', 'orthanc_health_invalid_study_uid');
+        }
       } catch (err) {
         log('warn', 'orthanc_health_expected_study_lookup_failed', {
           errorName: (err as Error)?.name ?? 'UnknownError',
@@ -164,10 +183,15 @@ export class HealthService {
           dicomwebUp = false;
           log('warn', 'orthanc_dicomweb_health_unexpected_response');
         } else if (probeStudyUid) {
-          const matched = body.some((item) => qidoStudyUid(item) === probeStudyUid);
+          const expectedUid = normalizeUid(probeStudyUid);
+          const matched = body.some((item) => normalizeUid(qidoStudyUid(item)) === expectedUid);
           if (!matched) {
             dicomwebUp = false;
-            log('warn', 'orthanc_dicomweb_archive_mismatch');
+            log('warn', 'orthanc_dicomweb_archive_mismatch', {
+              probe: 'study_uid_filter',
+              qidoResultCount: body.length,
+              qidoStudyUidCount: body.filter((item) => qidoStudyUid(item)).length,
+            });
           }
         }
       }

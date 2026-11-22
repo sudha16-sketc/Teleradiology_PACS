@@ -5,6 +5,12 @@ import { apiClient } from "@/lib/api-client";
 
 type AuthStatus = "loading" | "authenticated" | "anonymous";
 
+let authHydration: Promise<void> | null = null;
+
+export function resetAuthHydrationForTests(): void {
+  authHydration = null;
+}
+
 interface AppState {
   railCollapsed: boolean;
   selectedStudyUid: string | null;
@@ -43,12 +49,19 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   clearCurrentUser: () => set({ currentUser: null, authStatus: "anonymous" }),
   setTheme: (theme) => set({ theme }),
-  hydrateAuth: async () => {
-    try {
-      const res = await apiClient.get<{ data: AuthUser }>("/auth/me");
-      set({ currentUser: res.data, authStatus: "authenticated" });
-    } catch {
-      set({ currentUser: null, authStatus: "anonymous" });
+  hydrateAuth: () => {
+    if (!authHydration) {
+      authHydration = (async () => {
+        try {
+          const res = await apiClient.get<{ data: AuthUser }>("/auth/me");
+          set({ currentUser: res.data, authStatus: "authenticated" });
+        } catch {
+          set({ currentUser: null, authStatus: "anonymous" });
+        }
+      })().finally(() => {
+        authHydration = null;
+      });
     }
+    return authHydration;
   },
 }));

@@ -6,6 +6,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module.js';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
 import { assertRequiredEnv } from './common/config/env-validation.js';
+import { resolveCors } from './common/config/cors.js';
 import {
   correlationMiddleware,
   requestLoggingMiddleware,
@@ -14,24 +15,6 @@ import { securityHeadersMiddleware } from './common/security/security-headers.mi
 import { rateLimit } from './common/security/rate-limit.middleware.js';
 import { limitUploadBody } from './common/security/upload-size.middleware.js';
 import { logger } from './common/observability/structured-logger.js';
-
-/**
- * Derive the list of allowed frontend origins from CORS_ORIGIN. Credentials are
- * only enabled for a concrete allow-list of origins. An unrestricted '*' origin
- * is supported only without credentials (never both).
- */
-function resolveCors() {
-  const raw = process.env.CORS_ORIGIN ?? 'http://localhost:3000';
-  const origins = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (origins.includes('*')) {
-    return { origin: true, credentials: false };
-  }
-  return { origin: origins, credentials: true };
-}
 
 async function bootstrap() {
   // Prisma maps BIGINT columns (e.g. BackupRun.sizeBytes) to JS BigInt, which

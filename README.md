@@ -410,11 +410,22 @@ local production-mode test.
 
 `/api/health/ready` returns `200` only when PostgreSQL **and** Redis are
 reachable, and includes `postgresql`, `redis`, `orthanc` and `dicomweb` component
-diagnostics. The `dicomweb` check calls both `/dicom-web/studies?limit=1` and
-`/plugins`; a missing `dicom-web` plugin marks it down. If Orthanc or its
-DICOMweb plugin is down, the response reports `"status":"degraded"` but
-reports/worklists remain available; viewer requests return a sanitized
-`503`/`504` with a correlation ID instead of failing the whole API. If Redis is
+diagnostics. The `dicomweb` check calls `/plugins` and, when a study has been
+fully imported and verified (`imagingAvailability = AVAILABLE`, non-null
+`orthancStudyId`, non-zero series/instance counts, and a non-terminal status),
+filters `/dicom-web/studies` by that `StudyInstanceUID`; otherwise it calls
+`/dicom-web/studies?limit=1` as a plugin liveness probe only. DB-only, in-flight,
+failed, or manually indexed studies are deliberately not treated as expected
+Orthanc archive entries. A missing `dicom-web` plugin or a verified study UID
+absent from the QIDO response marks `dicomweb` down and emits
+`orthanc_dicomweb_archive_mismatch`. This means PostgreSQL metadata and the
+configured Orthanc archive have diverged; it is not a comparison of the
+browser-facing OHIF URL and the service-to-service `ORTHANC_URL`. If Orthanc,
+its DICOMweb plugin, or the archive is unavailable, the response reports
+`"status":"degraded"` while reports/worklists remain available; viewer requests
+return a sanitized `503`/`504` with a correlation ID instead of failing the
+whole API. Alert on `"status":"degraded"` or `components[dicomweb].status ===
+"down"` because HTTP 200 alone does not indicate imaging health. If Redis is
 down, readiness fails and protected requests return `503` rather than allowing
 unauthenticated access. Verify with `curl https://<api-host>/api/health/ready`.
 Never point a health check at Orthanc's DICOM port `4242`: non-DICOM probes
