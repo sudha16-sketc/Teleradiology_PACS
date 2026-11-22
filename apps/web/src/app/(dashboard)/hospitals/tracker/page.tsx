@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Study, StudyStatus } from "@axis/types";
-import { Search, Filter } from "lucide-react";
+import { Search, Filter, FileText } from "lucide-react";
 import { clsx } from "clsx";
 import { apiClient } from "@/lib/api-client";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { SkeletonTable } from "@/components/ui/Skeleton";
 import { HospitalStudyTimeline } from "@/components/hospital/HospitalStudyTimeline";
 import { formatDateTime } from "@/lib/format";
+import { StudyHistoryDialog } from "@/components/hospital/StudyHistoryDialog";
 
 interface TimelineEvent {
   status: StudyStatus;
@@ -154,6 +155,7 @@ export default function HospitalTrackerPage() {
   const [studies, setStudies] = useState<Study[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [historyStudyUid, setHistoryStudyUid] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -320,7 +322,7 @@ export default function HospitalTrackerPage() {
 
           <div className="rounded-md border border-border">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-left text-sm">
+              <table className="w-full min-w-[840px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-border text-xs text-text-muted">
                     <th className="px-4 py-2.5 font-medium">Patient</th>
@@ -329,6 +331,7 @@ export default function HospitalTrackerPage() {
                     <th className="px-4 py-2.5 font-medium">Status</th>
                     <th className="px-4 py-2.5 font-medium">Received</th>
                     <th className="px-4 py-2.5 font-medium">Last Updated</th>
+                    <th className="px-4 py-2.5 font-medium">History</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -359,12 +362,23 @@ export default function HospitalTrackerPage() {
                       <td className="px-4 py-2.5 text-text-muted">
                         {formatDateTime(s.updatedAt)}
                       </td>
+                      <td className="px-4 py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setHistoryStudyUid(s.studyInstanceUid)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                          aria-label={`View history for ${s.patient?.displayName ?? "study"}`}
+                        >
+                          <FileText size={13} />
+                          History
+                        </button>
+                      </td>
                     </tr>
                   ))}
                   {filtered.length === 0 && (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={7}
                         className="px-4 py-8 text-center text-text-muted"
                       >
                         No studies match your filters.
@@ -376,6 +390,12 @@ export default function HospitalTrackerPage() {
             </div>
           </div>
         </>
+      )}
+      {historyStudyUid && (
+        <StudyHistoryDialog
+          studyUid={historyStudyUid}
+          onClose={() => setHistoryStudyUid(null)}
+        />
       )}
     </div>
   );

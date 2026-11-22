@@ -38,6 +38,7 @@ model User {
   authoredReports         Report[]         @relation("ReportAuthor")
   createdTemplates        ReportTemplate[] @relation("TemplateCreator")
   reportImages            ReportImage[]    @relation("ReportImageUploader")
+  historyAttachments      StudyHistoryAttachment[] @relation("StudyHistoryAttachmentUploader")
   reportVersions          ReportVersion[]  @relation("VersionAuthor")
   routingRules            RoutingRule[]    @relation("RoutingRuleCreator")
   assignedStudies         Study[]          @relation("AssignedRadiologist")
@@ -135,6 +136,7 @@ model Study {
   assignedAt            DateTime?
   assignedBy            String?
   clinicalHistory       String            @default("")
+  patientAge                Int?
   dueAt                 DateTime?
   receivedAt            DateTime?
   reportingStartedAt    DateTime?
@@ -163,6 +165,7 @@ model Study {
   deliveryAttempts      DeliveryAttempt[]
   instances             Instance[]
   reportImages          ReportImage[]
+  historyAttachments        StudyHistoryAttachment[]
   reports               Report[]
   series                Series[]
   assignedRadiologist   User?             @relation("AssignedRadiologist", fields: [assignedRadiologistId], references: [id])
@@ -333,6 +336,21 @@ model ReportImage {
 
   @@index([reportId])
   @@index([studyId])
+  @@index([uploadedById])
+}
+
+model StudyHistoryAttachment {
+  id           String   @id @default(cuid())
+  studyId      String   @unique
+  uploadedById String
+  storageKey   String   @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  createdAt    DateTime @default(now())
+  study        Study    @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  uploadedBy   User     @relation("StudyHistoryAttachmentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+
   @@index([uploadedById])
 }
 

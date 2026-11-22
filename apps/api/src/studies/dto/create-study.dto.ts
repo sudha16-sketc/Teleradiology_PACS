@@ -1,24 +1,38 @@
 import {
   IsString,
   IsOptional,
-  IsEnum,
   IsDateString,
   IsIn,
+  IsInt,
+  IsNotEmpty,
+  Max,
+  MaxLength,
+  Matches,
+  Min,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import type { Modality, StudyPriority, Subspecialty } from '@axis/types';
 
 export class CreateStudyDto {
   // Patient
   @IsString()
+  @IsNotEmpty()
+  @Matches(/\S/)
+  @MaxLength(200)
   patientName!: string;
+
+  @Transform(({ value }) => value === undefined ? undefined : value === '' ? Number.NaN : Number(value))
+  @IsInt()
+  @Min(0)
+  @Max(130)
+  patientAge!: number;
 
   @IsOptional()
   @IsString()
   patientId?: string;
 
-  @IsOptional()
   @IsIn(['M', 'F', 'O', 'U'] as const)
-  gender?: 'M' | 'F' | 'O' | 'U';
+  gender!: 'M' | 'F' | 'O' | 'U';
 
   @IsOptional()
   @IsDateString()
@@ -49,9 +63,11 @@ export class CreateStudyDto {
   @IsString()
   studyDescription?: string;
 
-  @IsOptional()
   @IsString()
-  clinicalHistory?: string;
+  @IsNotEmpty()
+  @Matches(/\S/)
+  @MaxLength(10000)
+  clinicalHistory!: string;
 
   @IsOptional()
   @IsIn(['STAT', 'URGENT', 'ROUTINE'] as const)

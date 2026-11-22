@@ -127,6 +127,9 @@ async function createStudy(agent: any): Promise<{ studyUid: string; studyId: str
   const studyUid = uid();
   const res = await agent.post('/api/studies').send({
     patientName: 'Remote Manifest Patient',
+    patientAge: 45,
+    gender: 'U',
+    clinicalHistory: 'Retention test clinical history',
     patientId: `P-RM-${randomUUID().slice(0, 8)}`,
     studyInstanceUid: studyUid,
     modality: 'CT',

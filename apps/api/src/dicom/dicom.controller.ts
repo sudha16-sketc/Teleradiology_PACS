@@ -1,5 +1,6 @@
 import {
   Controller,
+  Body,
   Post,
   UploadedFiles,
   UseInterceptors,
@@ -16,6 +17,10 @@ import { randomBytes } from 'node:crypto';
 import { Roles, CurrentUser } from '../auth/auth.decorators.js';
 import { DicomService, type IngestUser } from './dicom.service.js';
 import { DICOM_LIMITS } from './dicom.constants.js';
+import {
+  DicomHistorySubmissionDto,
+  normalizeHistorySubmission,
+} from './dto/dicom-history.dto.js';
 import type { Request } from 'express';
 
 type UploadRequest = Request & { axisUploadDir?: string };
@@ -94,6 +99,7 @@ export class DicomController {
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @CurrentUser() user: IngestUser,
     @Req() req: Request,
+    @Body() historyDto?: DicomHistorySubmissionDto,
   ): Promise<{ data: any }> {
     if (!files || files.length === 0) {
       throw new BadRequestException('No file uploaded');
@@ -108,6 +114,7 @@ export class DicomController {
         files,
         files[0].originalname || 'study.zip',
         user,
+        normalizeHistorySubmission(historyDto),
       );
 
       return { data: result };

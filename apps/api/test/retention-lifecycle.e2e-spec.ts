@@ -261,6 +261,9 @@ async function createLifecycleStudy(): Promise<{ studyId: string; studyUid: stri
   const studyUid = uid();
   const res = await hospitalAgent.post('/api/studies').send({
     patientName: 'Retention Lifecycle Patient',
+    patientAge: 45,
+    gender: 'U',
+    clinicalHistory: 'Retention test clinical history',
     patientId: `RL-${randomUUID().slice(0, 8)}`,
     studyInstanceUid: studyUid,
     modality: 'CT',

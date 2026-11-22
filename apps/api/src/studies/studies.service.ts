@@ -200,54 +200,64 @@ export class StudiesService {
     const accessionNumber =
       dto.accessionNumber || `AX-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    const existing = await this.prisma.study.findUnique({
-      where: { studyInstanceUid },
-      include: { patient: true },
-    });
-    if (existing) {
-      throw new BadRequestException(`Study ${studyInstanceUid} already exists`);
-    }
+    const study = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.study.findUnique({
+        where: { studyInstanceUid },
+      });
+      if (existing) {
+        throw new BadRequestException(`Study ${studyInstanceUid} already exists`);
+      }
 
-    const patient = await this.prisma.patient.findFirst({
-      where: { hospitalId, displayName: dto.patientName },
-    });
+      const patient = await tx.patient.findFirst({
+        where: { hospitalId, displayName: dto.patientName },
+      });
+      const patientId =
+        dto.patientId ||
+        patient?.patientId ||
+        `P-${new Date().getTime()}`;
+      const patientRecord = patient
+        ? await tx.patient.update({
+            where: { id: patient.id },
+            data: {
+              gender: dto.gender,
+              ...(dto.patientBirthDate
+                ? { dateOfBirth: new Date(dto.patientBirthDate) }
+                : {}),
+            },
+          })
+        : await tx.patient.create({
+            data: {
+              hospitalId,
+              patientId,
+              displayName: dto.patientName,
+              dateOfBirth: dto.patientBirthDate
+                ? new Date(dto.patientBirthDate)
+                : undefined,
+              gender: dto.gender,
+            },
+          });
 
-    const patientId =
-      dto.patientId ||
-      patient?.patientId ||
-      `P-${new Date().getTime()}`;
-
-    const study = await this.prisma.study.create({
-      data: {
-        studyInstanceUid,
-        accessionNumber,
-        patientId: patient
-          ? patient.id
-          : (
-              await this.prisma.patient.create({
-                data: {
-                  hospitalId,
-                  patientId,
-                  displayName: dto.patientName,
-                  dateOfBirth: dto.patientBirthDate ? new Date(dto.patientBirthDate) : undefined,
-                  gender: dto.gender || 'U',
-                },
-              })
-            ).id,
-        hospitalId,
-        studyDate: dto.studyDate ? new Date(dto.studyDate) : new Date(),
-        modality: dto.modality || 'CT',
-        bodyPart: dto.bodyPart || '',
-        referringPhysician: dto.referringPhysician || '',
-        studyDescription: dto.studyDescription || '',
-        clinicalHistory: dto.clinicalHistory || '',
-        priority: dto.priority || 'ROUTINE',
-        subspecialty: dto.subspecialty || 'GENERAL',
-        status: 'HOSPITAL_SUBMITTED',
-        receivedAt: new Date(),
-        dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
-      },
-      include: { patient: true, hospital: true },
+      return tx.study.create({
+        data: {
+          studyInstanceUid,
+          accessionNumber,
+          patientId: patientRecord.id,
+          patientAge: dto.patientAge,
+          hospitalId,
+          studyDate: dto.studyDate ? new Date(dto.studyDate) : new Date(),
+          modality: dto.modality || 'CT',
+          bodyPart: dto.bodyPart || '',
+          referringPhysician: dto.referringPhysician || '',
+          studyDescription: dto.studyDescription || '',
+          clinicalHistory: dto.clinicalHistory,
+          priority: dto.priority || 'ROUTINE',
+          subspecialty: dto.subspecialty || 'GENERAL',
+          status: 'HOSPITAL_SUBMITTED',
+          receivedAt: new Date(),
+          dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
+        },
+        include: { patient: true, hospital: true },
+      });
     });
 
     return { data: study };

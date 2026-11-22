@@ -43,6 +43,7 @@ export interface Study {
   referringPhysician: string;
   studyDescription: string;
   clinicalHistory?: string;
+  patientAge?: number | null;
   priority: StudyPriority;
   status: StudyStatus;
   subspecialty: Subspecialty;

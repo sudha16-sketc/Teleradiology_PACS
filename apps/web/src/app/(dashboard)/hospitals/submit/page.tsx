@@ -33,6 +33,7 @@ import { ErrorPanel } from "@/components/ErrorPanel";
 interface IngestEnvelope {
   data: {
     study: {
+      studyInstanceUid: string;
       accessionNumber: string;
       patient: {
         displayName: string;
@@ -57,6 +58,40 @@ type UploadStage =
   | "ready"
   | "error";
 
+type PatientGender = "M" | "F" | "O" | "U";
+
+interface HistoryFormState {
+  patientName: string;
+  patientAge: string;
+  gender: PatientGender | "";
+  referringPhysician: string;
+  clinicalHistory: string;
+}
+
+const INITIAL_HISTORY: HistoryFormState = {
+  patientName: "",
+  patientAge: "",
+  gender: "",
+  referringPhysician: "",
+  clinicalHistory: "",
+};
+
+const MAX_HISTORY_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const HISTORY_ATTACHMENT_MIME_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+];
+
+function historyAttachmentMimeType(file: File): string | undefined {
+  if (HISTORY_ATTACHMENT_MIME_TYPES.includes(file.type)) return file.type;
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".pdf")) return "application/pdf";
+  if (/\.(jpe?g)$/.test(name)) return "image/jpeg";
+  if (name.endsWith(".png")) return "image/png";
+  return undefined;
+}
+
 const PRIORITY_LABEL: Record<string, string> = {
   STAT: "STAT",
   URGENT: "Urgent",
@@ -77,10 +112,19 @@ export default function SubmitStudyPage() {
   const [uploadFailure, setUploadFailure] = useState<ReturnType<
     typeof failureOf
   > | null>(null);
+  const [historyForm, setHistoryForm] =
+    useState<HistoryFormState>(INITIAL_HISTORY);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyAttachment, setHistoryAttachment] = useState<File | null>(null);
+  const [attachmentUploadFailure, setAttachmentUploadFailure] =
+    useState<ReturnType<typeof failureOf> | null>(null);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
+  const [attachmentUploaded, setAttachmentUploaded] = useState(false);
   const [picking, setPicking] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const isUploading = stage === "uploading" || stage === "sending";
   const desktop = isDesktop();
@@ -88,6 +132,9 @@ export default function SubmitStudyPage() {
   const clearMessages = useCallback(() => {
     setSelectionError(null);
     setUploadFailure(null);
+    setHistoryError(null);
+    setAttachmentUploadFailure(null);
+    setAttachmentUploaded(false);
     setResult(null);
     setStage("idle");
   }, []);
@@ -175,6 +222,32 @@ export default function SubmitStudyPage() {
     }
   }, [applySelection]);
 
+  const uploadHistoryAttachment = async (studyUid: string, file: File) => {
+    setAttachmentUploading(true);
+    setAttachmentUploadFailure(null);
+    try {
+      const mimeType = historyAttachmentMimeType(file);
+      if (!mimeType) {
+        throw new Error("Choose a PDF, JPEG, or PNG supporting file.");
+      }
+      const uploadFile =
+        file.type === mimeType
+          ? file
+          : new File([file], file.name, { type: mimeType });
+      const formData = new FormData();
+      formData.append("file", uploadFile, file.name);
+      await apiClient.post(
+        `/studies/${encodeURIComponent(studyUid)}/history/attachments`,
+        formData,
+      );
+      setAttachmentUploaded(true);
+    } catch (error: unknown) {
+      setAttachmentUploadFailure(failureOf(error));
+    } finally {
+      setAttachmentUploading(false);
+    }
+  };
+
   /**
    * Recursively collect files from a dragged folder.
    *
@@ -258,11 +331,54 @@ export default function SubmitStudyPage() {
   const handleUpload = async () => {
     if (!files.length || isUploading) return;
 
+    const age = Number(historyForm.patientAge);
+    if (!historyForm.patientName.trim()) {
+      setHistoryError("Patient name is required.");
+      return;
+    }
+    if (
+      historyForm.patientAge === "" ||
+      !Number.isInteger(age) ||
+      age < 0 ||
+      age > 130
+    ) {
+      setHistoryError("Enter a patient age between 0 and 130.");
+      return;
+    }
+    if (!historyForm.gender) {
+      setHistoryError("Patient gender is required.");
+      return;
+    }
+    if (!historyForm.clinicalHistory.trim()) {
+      setHistoryError("Clinical history is required.");
+      return;
+    }
+    if (historyForm.clinicalHistory.length > 10000) {
+      setHistoryError("Clinical history must be 10,000 characters or fewer.");
+      return;
+    }
+    if (
+      historyAttachment &&
+      historyAttachment.size > MAX_HISTORY_ATTACHMENT_BYTES
+    ) {
+      setHistoryError("Supporting files must be 10 MB or smaller.");
+      return;
+    }
+    if (historyAttachment && !historyAttachmentMimeType(historyAttachment)) {
+      setHistoryError("Choose a PDF, JPEG, or PNG supporting file.");
+      return;
+    }
+
     clearMessages();
     setStage("sending");
 
     try {
       const formData = new FormData();
+      formData.append("patientName", historyForm.patientName.trim());
+      formData.append("patientAge", String(age));
+      formData.append("gender", historyForm.gender);
+      formData.append("referringPhysician", historyForm.referringPhysician.trim());
+      formData.append("clinicalHistory", historyForm.clinicalHistory.trim());
 
       for (const file of files) {
         if (file.file) {
@@ -293,6 +409,12 @@ export default function SubmitStudyPage() {
       // Success: the study is in, so the shell's read access to the source files
       // is no longer needed and is withdrawn immediately.
       releaseSelection(files);
+      if (historyAttachment) {
+        await uploadHistoryAttachment(
+          response.data.study.studyInstanceUid,
+          historyAttachment,
+        );
+      }
     } catch (e: unknown) {
       setUploadFailure(failureOf(e));
       setStage("error");
@@ -315,9 +437,12 @@ export default function SubmitStudyPage() {
     setDragActive(false);
     setStage("idle");
     clearMessages();
+    setHistoryForm(INITIAL_HISTORY);
+    setHistoryAttachment(null);
 
     if (inputRef.current) inputRef.current.value = "";
     if (folderInputRef.current) folderInputRef.current.value = "";
+    if (attachmentInputRef.current) attachmentInputRef.current.value = "";
   }, [clearMessages, files, releaseSelection]);
 
   /** Replace the current selection, releasing the previous one's grants. */
@@ -362,11 +487,11 @@ export default function SubmitStudyPage() {
 
             <div>
               <h1 className="text-lg font-semibold">
-                Submit Study
+                Create New Study
               </h1>
 
               <p className="text-sm text-muted-foreground">
-                Upload DICOM data for processing
+                Upload DICOM data and provide the patient history for this study
               </p>
             </div>
           </div>
@@ -380,7 +505,7 @@ export default function SubmitStudyPage() {
           <section>
             <div className="mb-6">
               <h2 className="text-xl font-semibold">
-                Upload DICOM Study
+                Study Files
               </h2>
 
               <p className="mt-1 text-sm text-muted-foreground">
@@ -623,6 +748,154 @@ export default function SubmitStudyPage() {
               </div>
             )}
 
+            <section className="mt-6 rounded-lg border border-border bg-surface p-6">
+              <h3 className="text-base font-semibold">Patient History</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Required information is validated before the DICOM study is processed.
+              </p>
+
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <label className="text-sm font-medium">
+                  Patient Name <span className="text-destructive">*</span>
+                  <input
+                    type="text"
+                    required
+                    maxLength={200}
+                    value={historyForm.patientName}
+                    onChange={(event) => {
+                      setHistoryForm((form) => ({
+                        ...form,
+                        patientName: event.target.value,
+                      }));
+                      setHistoryError(null);
+                    }}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
+                  />
+                </label>
+
+                <label className="text-sm font-medium">
+                  Patient Age <span className="text-destructive">*</span>
+                  <input
+                    type="number"
+                    required
+                    min={0}
+                    max={130}
+                    step={1}
+                    value={historyForm.patientAge}
+                    onChange={(event) => {
+                      setHistoryForm((form) => ({
+                        ...form,
+                        patientAge: event.target.value,
+                      }));
+                      setHistoryError(null);
+                    }}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
+                  />
+                </label>
+
+                <label className="text-sm font-medium">
+                  Patient Gender <span className="text-destructive">*</span>
+                  <select
+                    required
+                    value={historyForm.gender}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setHistoryForm((form) => ({
+                        ...form,
+                        gender:
+                          value === "M" ||
+                          value === "F" ||
+                          value === "O" ||
+                          value === "U"
+                            ? value
+                            : "",
+                      }));
+                      setHistoryError(null);
+                    }}
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
+                  >
+                    <option value="">Select gender</option>
+                    <option value="M">Male</option>
+                    <option value="F">Female</option>
+                    <option value="O">Other</option>
+                    <option value="U">Unknown</option>
+                  </select>
+                </label>
+
+                <label className="text-sm font-medium">
+                  Referring Doctor
+                  <input
+                    type="text"
+                    maxLength={200}
+                    value={historyForm.referringPhysician}
+                    onChange={(event) =>
+                      setHistoryForm((form) => ({
+                        ...form,
+                        referringPhysician: event.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
+                  />
+                </label>
+
+                <label className="text-sm font-medium sm:col-span-2">
+                  Clinical History <span className="text-destructive">*</span>
+                  <textarea
+                    required
+                    rows={6}
+                    maxLength={10000}
+                    value={historyForm.clinicalHistory}
+                    onChange={(event) => {
+                      setHistoryForm((form) => ({
+                        ...form,
+                        clinicalHistory: event.target.value,
+                      }));
+                      setHistoryError(null);
+                    }}
+                    className="mt-1 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm font-normal"
+                  />
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    {historyForm.clinicalHistory.length}/10,000 characters
+                  </span>
+                </label>
+
+                <div className="sm:col-span-2">
+                  <label className="text-sm font-medium" htmlFor="history-attachment">
+                    Supporting File (optional)
+                  </label>
+                  <input
+                    ref={attachmentInputRef}
+                    id="history-attachment"
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                    onChange={(event) => {
+                      setHistoryAttachment(event.target.files?.[0] ?? null);
+                      setHistoryError(null);
+                      setAttachmentUploadFailure(null);
+                      setAttachmentUploaded(false);
+                    }}
+                    className="mt-1 block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-border file:bg-surface file:px-3 file:py-2 file:text-sm file:font-medium"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    PDF, JPEG, or PNG; maximum 10 MB.
+                    {historyAttachment
+                      ? ` Selected: ${historyAttachment.name} (${(
+                          historyAttachment.size /
+                          1024 /
+                          1024
+                        ).toFixed(2)} MB)`
+                      : ""}
+                  </p>
+                </div>
+              </div>
+
+              {historyError && (
+                <p className="mt-4 text-sm text-destructive" role="alert">
+                  {historyError}
+                </p>
+              )}
+            </section>
+
             {selectionError && (
               <div className="mt-6 flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-4">
                 <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
@@ -696,7 +969,7 @@ export default function SubmitStudyPage() {
 
                   {stage === "sending"
                     ? "Uploading..."
-                    : "Submit Study"}
+                    : "Create New Study"}
                 </button>
               </div>
             )}
@@ -815,6 +1088,73 @@ export default function SubmitStudyPage() {
                   {result.skipped === 1 ? "" : "s"} could not be
                   imported.
                 </p>
+              </div>
+            )}
+
+            {historyAttachment && (
+              <div className="mx-6 mb-6 rounded-md border border-border p-4">
+                {attachmentUploading ? (
+                  <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Uploading supporting file…
+                  </p>
+                ) : attachmentUploaded ? (
+                  <p className="text-sm text-success">
+                    Supporting file attached: {historyAttachment.name}
+                  </p>
+                ) : attachmentUploadFailure ? (
+                  <>
+                    <ErrorPanel
+                      title="Study created, but the supporting file could not be uploaded"
+                      failure={attachmentUploadFailure}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void uploadHistoryAttachment(
+                          result.study.studyInstanceUid,
+                          historyAttachment,
+                        )
+                      }
+                      className="mt-3 rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted"
+                    >
+                      Retry supporting file upload
+                    </button>
+                    <label className="mt-3 block text-sm font-medium">
+                      Choose a different supporting file
+                      <input
+                        ref={attachmentInputRef}
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                        onChange={(event) => {
+                          setHistoryAttachment(event.target.files?.[0] ?? null);
+                          setAttachmentUploadFailure(null);
+                          setAttachmentUploaded(false);
+                        }}
+                        className="mt-1 block w-full text-sm text-muted-foreground"
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-muted-foreground">
+                      Supporting file selected: {historyAttachment.name}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={attachmentUploading}
+                      onClick={() =>
+                        void uploadHistoryAttachment(
+                          result.study.studyInstanceUid,
+                          historyAttachment,
+                        )
+                      }
+                      className="mt-3 rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted disabled:opacity-60"
+                    >
+                      Upload supporting file
+                    </button>
+                  </>
+                )}
               </div>
             )}
 

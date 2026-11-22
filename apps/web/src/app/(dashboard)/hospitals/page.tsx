@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Send, Clock, CheckCircle2, Timer, RefreshCw } from "lucide-react";
+import { Plus, Send, Clock, CheckCircle2, Timer, RefreshCw, FileText } from "lucide-react";
 import type { Study, StudyStatus, ApiError } from "@axis/types";
 import { MetricCard } from "@/components/hospital/MetricCard";
 import { StudyPipeline } from "@/components/hospital/StudyPipeline";
@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { SkeletonTable } from "@/components/ui/Skeleton";
 import { apiClient } from "@/lib/api-client";
+import { StudyHistoryDialog } from "@/components/hospital/StudyHistoryDialog";
 
 interface StudiesEnvelope {
   data: Study[];
@@ -21,6 +22,7 @@ export default function HospitalPortalPage() {
   const [studies, setStudies] = useState<Study[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [historyStudyUid, setHistoryStudyUid] = useState<string | null>(null);
 
   const load = async () => {
     setIsLoading(true);
@@ -100,7 +102,7 @@ export default function HospitalPortalPage() {
             className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/90"
           >
             <Plus size={15} />
-            Submit Study
+            Create New Study
           </button>
         </div>
       </div>
@@ -175,6 +177,7 @@ export default function HospitalPortalPage() {
                   <th className="px-4 py-2.5 font-medium">Study</th>
                   <th className="px-4 py-2.5 font-medium">Status</th>
                   <th className="px-4 py-2.5 font-medium">Submitted</th>
+                  <th className="px-4 py-2.5 font-medium">History</th>
                 </tr>
               </thead>
               <tbody>
@@ -199,6 +202,17 @@ export default function HospitalPortalPage() {
                     <td className="px-4 py-2.5 text-text-muted">
                       {new Date(s.createdAt).toLocaleString()}
                     </td>
+                    <td className="px-4 py-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setHistoryStudyUid(s.studyInstanceUid)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                        aria-label={`View history for ${s.patient?.displayName ?? "study"}`}
+                      >
+                        <FileText size={13} />
+                        History
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -206,6 +220,12 @@ export default function HospitalPortalPage() {
           </div>
         )}
       </div>
+      {historyStudyUid && (
+        <StudyHistoryDialog
+          studyUid={historyStudyUid}
+          onClose={() => setHistoryStudyUid(null)}
+        />
+      )}
     </div>
   );
 }

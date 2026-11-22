@@ -62,7 +62,7 @@ export const NAV_DEFS: NavDefinition[] = [
   { href: "/settings/templates", label: "Report Templates", allowedRoles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
   // Hospital
   { href: "/hospitals", label: "My Studies", allowedRoles: ["HOSPITAL"] },
-  { href: "/hospitals/submit", label: "Submit Study", allowedRoles: ["HOSPITAL"] },
+  { href: "/hospitals/submit", label: "Create New Study", allowedRoles: ["HOSPITAL"] },
   { href: "/hospitals/reports", label: "Received Reports", allowedRoles: ["HOSPITAL"] },
   { href: "/hospitals/tracker", label: "Study Tracker", allowedRoles: ["HOSPITAL"] },
   // Org / admin

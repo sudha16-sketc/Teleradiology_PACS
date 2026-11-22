@@ -23,6 +23,7 @@ import {
   DicomCompressionError,
   type DicomCompressionProvenance,
 } from './dicom-compression.js';
+import type { StudyHistoryForm } from './dto/dicom-history.dto.js';
 import type { ImagingAvailabilityResult } from '@axis/types';
 
 export interface IngestUser {
@@ -336,7 +337,12 @@ export class DicomService {
     });
   }
 
-  async ingestDicom(files: Express.Multer.File[], originalName: string, user: IngestUser): Promise<IngestResult> {
+  async ingestDicom(
+    files: Express.Multer.File[],
+    originalName: string,
+    user: IngestUser,
+    history?: StudyHistoryForm,
+  ): Promise<IngestResult> {
     const hospitalId = user?.hospitalId;
     if (!hospitalId) {
       throw new ForbiddenException('Your account is not linked to a hospital');
@@ -648,6 +654,27 @@ export class DicomService {
         availability: availability.state,
         ...compressionAuditMetadata(stored),
       });
+
+      if (history) {
+        study = await this.prisma.$transaction(async (tx) => {
+          await tx.patient.update({
+            where: { id: study.patientId },
+            data: {
+              displayName: history.patientName,
+              gender: history.gender,
+            },
+          });
+          return tx.study.update({
+            where: { id: study.id },
+            data: {
+              patientAge: history.patientAge,
+              referringPhysician: history.referringPhysician ?? '',
+              clinicalHistory: history.clinicalHistory,
+            },
+            include: { patient: true, hospital: true },
+          });
+        });
+      }
 
       return {
         study,

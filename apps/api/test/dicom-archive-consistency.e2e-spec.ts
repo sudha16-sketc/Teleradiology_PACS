@@ -112,6 +112,9 @@ async function createIndexedStudy(data: {
   const patientId = `ARCH-${randomUUID().slice(0, 8)}`;
   const res = await hospitalAgent.post('/api/studies').send({
     patientName: 'Archive Consistency Patient',
+    patientAge: 45,
+    gender: 'U',
+    clinicalHistory: 'Archive consistency test clinical history',
     patientId,
     studyInstanceUid: studyUid,
     modality: 'CT',

@@ -352,6 +352,74 @@ describe('Phase 2 -- single raw DICOM file upload (no in-memory re-zip)', () => 
     expect(study.seriesCount).toBe(1);
     expect(study.instanceCount).toBe(1);
   });
+
+  it('DICOM-ING-6: associates submitted history with the UID parsed from the DICOM', async () => {
+    const studyUid = `1.2.826.0.1.3680043.96.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+    const raw = buildP10Dicom({
+      studyUid,
+      seriesUid: `${studyUid}.1`,
+      sopUid: `${studyUid}.2`,
+    });
+
+    const res = await cghAgent
+      .post('/api/dicom/ingest')
+      .field('patientName', 'DICOM History Patient')
+      .field('patientAge', '37')
+      .field('gender', 'F')
+      .field('referringPhysician', 'Dr. History')
+      .field('clinicalHistory', 'Symptoms began two weeks before imaging.')
+      .attach('file', raw, {
+        filename: 'history-study.dcm',
+        contentType: 'application/octet-stream',
+      });
+
+    expect(res.status).toBe(201);
+    createdStudyIds.push(res.body.data.study.id);
+    expect(res.body.data.study.studyInstanceUid).toBe(studyUid);
+    expect(res.body.data.study.patientAge).toBe(37);
+
+    const history = await cghAgent
+      .get(`/api/studies/${studyUid}/history`)
+      .expect(200);
+    expect(history.body.data).toMatchObject({
+      studyInstanceUid: studyUid,
+      patientName: 'DICOM History Patient',
+      patientAge: 37,
+      gender: 'F',
+      referringPhysician: 'Dr. History',
+      clinicalHistory: 'Symptoms began two weeks before imaging.',
+    });
+  });
+
+  it('DICOM-ING-7: rejects partial history before sending any instance to Orthanc', async () => {
+    const studyUid = `1.2.826.0.1.3680043.95.${Date.now()}.${Math.floor(Math.random() * 1e9)}`;
+    const raw = buildP10Dicom({
+      studyUid,
+      seriesUid: `${studyUid}.1`,
+      sopUid: `${studyUid}.2`,
+    });
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+
+    try {
+      const res = await cghAgent
+        .post('/api/dicom/ingest')
+        .field('patientName', 'Incomplete History')
+        .attach('file', raw, {
+          filename: 'incomplete-history.dcm',
+          contentType: 'application/octet-stream',
+        });
+      expect(res.status).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+
+    expect(
+      await prisma.study.findUnique({
+        where: { studyInstanceUid: studyUid },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe('Phase 2 -- post-ingest DICOMweb verification', () => {
