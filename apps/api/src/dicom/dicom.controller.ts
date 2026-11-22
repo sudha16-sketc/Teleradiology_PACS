@@ -44,7 +44,9 @@ function uploadDiskStorage(): multer.StorageEngine {
             const dir = request.axisUploadDir;
             if (!dir) return;
             request.axisUploadDir = undefined;
-            void rm(dir, { recursive: true, force: true }).catch(() => undefined);
+            void rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+              console.error('Failed to remove DICOM upload staging directory', err);
+            });
           };
           request.res?.once('finish', cleanup);
           request.res?.once('close', cleanup);
@@ -114,10 +116,12 @@ export class DicomController {
       // it) regardless of outcome. `files` may be empty if Multer aborted, so
       // always attempt the directory removal.
       if (request.axisUploadDir) {
-        await rm(request.axisUploadDir, {
+        const uploadDir = request.axisUploadDir;
+        request.axisUploadDir = undefined;
+        await rm(uploadDir, {
           recursive: true,
           force: true,
-        }).catch(() => undefined);
+        });
       }
     }
   }
@@ -149,10 +153,12 @@ export class DicomController {
       };
     } finally {
       if (request.axisUploadDir) {
-        await rm(request.axisUploadDir, {
+        const uploadDir = request.axisUploadDir;
+        request.axisUploadDir = undefined;
+        await rm(uploadDir, {
           recursive: true,
           force: true,
-        }).catch(() => undefined);
+        });
       }
     }
   }

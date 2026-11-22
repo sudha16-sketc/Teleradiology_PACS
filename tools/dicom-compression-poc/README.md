@@ -34,6 +34,14 @@ JPEG 2000 ratios are codec compression-ratio targets; JPEG Baseline quality valu
 
 The JPEG-LS encoder is supplied by `pyjpegls`; `pylibjpeg-openjpeg` encodes JPEG 2000, with Pillow used for images smaller than OpenJPEG's minimum resolution configuration. `pylibjpeg-libjpeg` decodes JPEG-family transfer syntaxes. Pillow supplies the JPEG Baseline encoder because `pylibjpeg-libjpeg` does not register a pydicom Baseline encoder. JPEG Baseline requires unsigned 8-bit pixels; the POC does not silently rescale higher bit-depth images. RLE encoding uses pydicom's built-in encoder. Codec support can depend on pixel format and platform; unsupported input/codec combinations are reported as failed rows rather than silently skipped.
 
+## Ingest pipeline integration
+
+The API invokes `compress_for_ingest.py` for each DICOM instance and does not send an instance to Orthanc unless that command successfully encodes it and verifies identical decoded pixel-array dtype, shape, and SHA-256 hash, unchanged non-pixel metadata, and the selected lossless transfer syntax. The supported settings are JPEG 2000 Lossless (`1.2.840.10008.1.2.4.90`, default) and JPEG-LS Lossless (`1.2.840.10008.1.2.4.80`); all other values fail closed.
+
+The API runtime must have Python 3.12 and the packages in this directory's `requirements.txt` installed. Configure `AXIS_DICOM_PYTHON` to the Python executable if it is not on `PATH`, and optionally set `AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX` to one of the two supported UIDs. Missing interpreters, codec errors, verification mismatches, and failed temp-file cleanup reject the ingest. Original and compressed working files are stored in a private temporary directory and removed after each compression attempt.
+
+Orthanc's public HTTP/DICOM port mappings and DICOM listener are disabled by the repository configuration. Its DICOMweb STOW endpoint is disabled, and the application proxy exposes only read methods. Keep Orthanc reachable only on a private network by the API; do not re-publish its ports or enable STOW/DICOM storage listeners.
+
 The `samples\`, `output\`, and `orthanc-scratch\` folders ignore their contents in Git to avoid committing patient data, generated images, or copied configs/statistics. The POC also ignores its virtual environment and Python bytecode. Keep the `.gitignore` files.
 
 ## Orthanc scratch test: IngestTranscoding and StorageCompression
@@ -92,15 +100,15 @@ docker compose -f docker-compose.yml -f tools\dicom-compression-poc\orthanc-scra
 Upload the same DICOM file to each fresh instance (replace the example path):
 
 ```powershell
-curl.exe -X POST "http://localhost:18042/instances" -H "Content-Type: application/dicom" --data-binary "@tools\dicom-compression-poc\samples\sample.dcm"
-curl.exe -X POST "http://localhost:18043/instances" -H "Content-Type: application/dicom" --data-binary "@tools\dicom-compression-poc\samples\sample.dcm"
+curl.exe -u orthanc:orthanc -X POST "http://localhost:18042/instances" -H "Content-Type: application/dicom" --data-binary "@tools\dicom-compression-poc\samples\sample.dcm"
+curl.exe -u orthanc:orthanc -X POST "http://localhost:18043/instances" -H "Content-Type: application/dicom" --data-binary "@tools\dicom-compression-poc\samples\sample.dcm"
 ```
 
 Capture each instance's `/statistics` response:
 
 ```powershell
-curl.exe -s "http://localhost:18042/statistics" | Set-Content "tools\dicom-compression-poc\orthanc-scratch\baseline-statistics.json"
-curl.exe -s "http://localhost:18043/statistics" | Set-Content "tools\dicom-compression-poc\orthanc-scratch\compressed-statistics.json"
+curl.exe -s -u orthanc:orthanc "http://localhost:18042/statistics" | Set-Content "tools\dicom-compression-poc\orthanc-scratch\baseline-statistics.json"
+curl.exe -s -u orthanc:orthanc "http://localhost:18043/statistics" | Set-Content "tools\dicom-compression-poc\orthanc-scratch\compressed-statistics.json"
 ```
 
 Compare `TotalDiskSize`, `TotalDiskSizeMB`, and the instance/study counts. Use identical input studies and fresh, isolated volumes for a fair comparison; compare one study at a time or ensure both instances contain the same set. `/statistics` reports Orthanc-wide totals, not per-instance sizes. Check the Orthanc logs and `/plugins` endpoint for available codec plugins and successful transcoding. If the image lacks a JPEG 2000 encoder, use a separately tested Orthanc build with the required codec rather than interpreting a rejected ingest as a compression result.

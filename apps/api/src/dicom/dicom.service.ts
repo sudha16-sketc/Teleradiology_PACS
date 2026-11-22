@@ -17,6 +17,7 @@ import { extractDicomArchive, type ExtractedArchive } from './zip-archive.js';
 import { parseDicomBuffer, validateDicomIdentifiers, type ParsedDicom } from './dicom.parser.js';
 import { isValidDicomUid } from './dicom.constants.js';
 import { DicomWebService } from '../dicomweb/dicomweb.service.js';
+import { compressDicomBuffer } from './dicom-compression.js';
 import type { ImagingAvailabilityResult } from '@axis/types';
 
 export interface IngestUser {
@@ -166,16 +167,17 @@ export class DicomService {
   }
 
   /**
-   * Stores a single DICOM instance in Orthanc via the REST C-STORE endpoint
-   * and returns the exact Orthanc resource identifiers for the instance and
+   * Stores a single verified, losslessly compressed instance through the
+   * Orthanc REST endpoint and returns its exact resource identifiers and
    * its ancestors. This eliminates the previous (fragile) "find new study"
    * heuristic completely.
    */
   private async storeRawInstance(buffer: Buffer, parsed: ParsedDicom): Promise<OrthancStored> {
+    const compressed = await compressDicomBuffer(buffer);
     const res = await this.orthancFetch('/instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/dicom' },
-      body: new Uint8Array(buffer) as unknown as BodyInit,
+      body: new Uint8Array(compressed) as unknown as BodyInit,
     });
     const body = (await res.json()) as any;
     // Orthanc is idempotent by SOP Instance UID: an already-stored instance

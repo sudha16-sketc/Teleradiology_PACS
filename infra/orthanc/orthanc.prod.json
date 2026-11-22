@@ -3,6 +3,7 @@
   "AccessionGenerator": "REJECT",
   "DicomAet": "ORTHANC",
   "DicomCheckCalledAet": false,
+  "DicomServerEnabled": false,
   "DicomPort": 4242,
   "HttpPort": 8042,
   "StorageDirectory": "/var/lib/orthanc/db",
@@ -18,7 +19,7 @@
   "DicomWeb": {
     "Enable": true,
     "EnableQido": true,
-    "EnableStow": true,
+    "EnableStow": false,
     "EnableWado": true,
     "Wado": {
       "Root": "/dicom-web"

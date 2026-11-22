@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 from io import BytesIO
 import math
 import sys
@@ -543,6 +544,73 @@ def benchmark_variant(
         )
         print(f"{source.name} [{variant.name}]: {row['error']}", file=sys.stderr)
         return row
+
+
+def compress_verified_file(
+    source: Path,
+    destination: Path,
+    transfer_syntax: str,
+) -> str:
+    """Write a losslessly compressed instance only after pixel-hash verification."""
+    variants = {
+        str(JPEG2000Lossless): Variant(
+            "jpeg2000-lossless", str(JPEG2000Lossless), "pylibjpeg", True
+        ),
+        str(JPEGLSLossless): Variant(
+            "jpeg-ls-lossless", str(JPEGLSLossless), "pyjpegls", True
+        ),
+    }
+    variant = variants.get(transfer_syntax)
+    if variant is None:
+        raise ValueError(f"Unsupported lossless transfer syntax: {transfer_syntax}")
+
+    source = source.resolve()
+    destination = destination.resolve()
+    if source == destination:
+        raise ValueError("Compressed output must not overwrite the source DICOM")
+    if destination.exists():
+        raise FileExistsError(f"Compressed output already exists: {destination.name}")
+
+    original = pydicom.dcmread(source)
+    original_pixels = np.asarray(original.pixel_array).copy()
+    original_pixel_hash = hashlib.sha256(
+        original_pixels.tobytes(order="C")
+    ).hexdigest()
+
+    encoded = copy.deepcopy(original)
+    if (
+        variant.uid == str(JPEG2000Lossless)
+        and min(int(encoded.Rows), int(encoded.Columns)) < 32
+    ):
+        encode_small_jpeg2000(encoded, variant)
+    else:
+        encoded.compress(
+            variant.uid,
+            encoding_plugin=variant.plugin,
+            generate_instance_uid=False,
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        encoded.save_as(destination, enforce_file_format=True)
+        result = pydicom.dcmread(destination)
+        decoded_pixels = np.asarray(result.pixel_array)
+        decoded_pixel_hash = hashlib.sha256(
+            decoded_pixels.tobytes(order="C")
+        ).hexdigest()
+        if (
+            original_pixels.dtype != decoded_pixels.dtype
+            or original_pixels.shape != decoded_pixels.shape
+            or original_pixel_hash != decoded_pixel_hash
+            or not metadata_preserved(original, result)
+            or not result.file_meta
+            or str(result.file_meta.TransferSyntaxUID) != variant.uid
+        ):
+            raise ValueError("Lossless DICOM compression verification failed")
+        return original_pixel_hash
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def parse_args() -> argparse.Namespace:

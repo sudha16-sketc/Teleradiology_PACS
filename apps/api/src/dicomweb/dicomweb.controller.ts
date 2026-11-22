@@ -1,9 +1,6 @@
 import {
   Controller,
   Get,
-  Post,
-  Put,
-  Delete,
   Head,
   Param,
   Req,
@@ -39,20 +36,5 @@ export class DicomWebController {
   @Head('*')
   head(@Req() request: Request, @Res() response: Response) {
     return this.dicomwebService.proxy(request, 'HEAD', response);
-  }
-
-  @Post('*')
-  post(@Req() request: Request, @Res() response: Response) {
-    return this.dicomwebService.proxy(request, 'POST', response);
-  }
-
-  @Put('*')
-  put(@Req() request: Request, @Res() response: Response) {
-    return this.dicomwebService.proxy(request, 'PUT', response);
-  }
-
-  @Delete('*')
-  delete(@Req() request: Request, @Res() response: Response) {
-    return this.dicomwebService.proxy(request, 'DELETE', response);
   }
 }

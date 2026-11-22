@@ -53,7 +53,6 @@ analytics, and HIPAA-aligned audit logging.
 │Postgr│ │Orthanc │ │ Redis  │ │RabbitMQ │ │Keycloak│ │MinIO │
 │SQL 16│ │DICOMweb│ │ Cache  │ │Messaging│ │  OIDC  │ │  S3  │
 │      │ │ WADO/  │ │        │ │         │ │        │ │      │
-│      │ │ STOW/  │ │        │ │         │ │        │ │      │
 │      │ │ QIDO   │ │        │ │         │ │        │ │      │
 └──────┘ └────────┘ └────────┘ └─────────┘ └────────┘ └──────┘
 ```
@@ -63,7 +62,7 @@ graph LR
     FE["Next.js Frontend<br/>Port 3000"]
     API["NestJS API<br/>Port 4000"]
     PG["PostgreSQL 16<br/>Port 5432"]
-    ORTH["Orthanc PACS<br/>Port 8042"]
+    ORTH["Orthanc PACS<br/>Private API network"]
     REDIS["Redis 7<br/>Port 6379"]
     RMQ["RabbitMQ 3<br/>Port 5672 / 15672"]
     KC["Keycloak 24<br/>Port 8180"]
@@ -71,7 +70,7 @@ graph LR
     OHIF["OHIF Viewer<br/>Port 3001"]
 
     FE -->|"REST API"| API
-    FE -->|"DICOMweb (WADO-RS)"| ORTH
+    API -->|"Verified compressed ingest + DICOMweb"| ORTH
     FE -->|"OIDC Auth"| KC
     FE -->|"OHIF Viewer"| OHIF
     API -->|"Prisma ORM"| PG
@@ -291,9 +290,11 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `NEXT_PUBLIC_API_URL`      | `http://localhost:4000/api`                           | Next.js `/api` rewrite upstream         |
 | `API_PORT`                 | `4000`                                               | NestJS listen port                      |
 | `DATABASE_URL`             | `postgresql://axis:axis_dev@localhost:5432/axis_pacs` | PostgreSQL connection string            |
-| `ORTHANC_URL`              | `http://localhost:8042`                               | Server-side Orthanc origin (no `/dicom-web`) |
+| `ORTHANC_URL`              | Private Orthanc service URL                           | Server-side Orthanc origin (no `/dicom-web`); keep it private to the API network |
 | `ORTHANC_USERNAME`         | `orthanc`                                            | Orthanc HTTP auth username              |
 | `ORTHANC_PASSWORD`         | `orthanc`                                            | Orthanc HTTP auth password              |
+| `AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX` | JPEG 2000 Lossless (`1.2.840.10008.1.2.4.90`) | Verified lossless storage syntax |
+| `AXIS_DICOM_PYTHON`        | POC `.venv` when present                            | Python executable for the compression worker |
 | `TRUST_PROXY`              | `1`                                                  | Trusted proxy hops for `X-Forwarded-For` rate limits |
 | `AXIS_ORTHANC_TIMEOUT_MS`  | `30000`                                              | DICOMweb upstream request timeout        |
 | `AXIS_ORTHANC_STREAM_IDLE_TIMEOUT_MS` | `60000`                                   | WADO stream idle timeout                 |
@@ -385,24 +386,20 @@ service into the API's secret store (or use `fromService` in the Blueprint).
 Never publish port 6379 or expose the Redis URL to the browser. See
 `infra/redis/README.md`.
 
-Deploy Orthanc on the existing public Render web service, not as a paid private
-service. In that service's Build settings set Runtime to Docker, Dockerfile Path
-to `infra/orthanc/Dockerfile.prod` and Docker Context to `infra/orthanc`. Keep
-the existing disk mounted at `/var/lib/orthanc/db` and leave the Render HTTP
-health check path unset so the default TCP probe on `8042` is used.
+Deploy Orthanc as a private Render service reachable only over the private
+network from the API. Do not deploy it as a public web service or expose its
+HTTP/DICOM ports. Set Runtime to Docker, Dockerfile Path to
+`infra/orthanc/Dockerfile.prod` and Docker Context to `infra/orthanc`. Keep the
+persistent disk mounted at `/var/lib/orthanc/db`.
 
 Set `ORTHANC_AUTH_ENABLED=true` plus generated `ORTHANC_USERNAME` and
-`ORTHANC_PASSWORD` on the Orthanc service, then set the same credentials and
-`ORTHANC_URL=https://<public-orthanc-origin>` on the API. `ORTHANC_URL` must not
-include `/dicom-web`. If Render private networking is enabled and a private
-service named `axis-orthanc` is deployed from the same Dockerfile, use
-`ORTHANC_URL=http://axis-orthanc:8042` instead; startup validation allows that
-exact private hostname over HTTP. Do not use it from services outside the same
-private network. `infra/orthanc/orthanc.prod.json` requires all three auth
-variables; the container refuses to start if any is missing. Do not point
-production at `localhost` — startup validation rejects loopback URLs unless
-`AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a local production-mode
-test.
+`ORTHANC_PASSWORD` on Orthanc and the same credentials on the API. Set the API's
+`ORTHANC_URL=http://axis-orthanc:8042` to the private service name; never use a
+public origin or include `/dicom-web`. `infra/orthanc/orthanc.prod.json`
+requires all three auth variables; the container refuses to start if any is
+missing. Do not point production at `localhost` — startup validation rejects
+loopback URLs unless `AXIS_ALLOW_LOOPBACK_ORTHANC=1` is explicitly set for a
+local production-mode test.
 
 `/api/health/ready` returns `200` only when PostgreSQL **and** Redis are
 reachable, and includes `postgresql`, `redis`, `orthanc` and `dicomweb` component
@@ -415,7 +412,7 @@ down, readiness fails and protected requests return `503` rather than allowing
 unauthenticated access. Verify with `curl https://<api-host>/api/health/ready`.
 Never point a health check at Orthanc's DICOM port `4242`: non-DICOM probes
 there produce repeated `Unrecognized PDU type` log entries. Probe HTTP port
-`8042` or the API readiness endpoint instead.
+`8042` only from the private API network, or use the API readiness endpoint.
 
 ### Orthanc persistent storage and imaging recovery
 
@@ -437,18 +434,15 @@ If the live Orthanc service has no disk:
 - Add a Render disk named `axis-orthanc-data`, mount path
   `/var/lib/orthanc/db`, size `10 GB` (increase only if imaging volume requires
   it), then redeploy. Only data written under that path survives redeploys.
-- Keep the API's `ORTHANC_URL` pointed at the public HTTPS origin of the same
-  service (for example `https://teleradiology-pacs-2.onrender.com`), never
-  `localhost`, and never with a `/dicom-web` suffix.
-- The existing service is a web service with a default TCP port check on `8042`;
-  do not add a `healthCheckPath`, because unauthenticated HTTP probes would get
-  `401` after auth is enabled.
+- Keep the API's `ORTHANC_URL` pointed at the private service name
+  `http://axis-orthanc:8042`, never `localhost` or a public HTTPS origin, and
+  never with a `/dicom-web` suffix.
 - To confirm the current service is the one used during previous uploads, use
-  `GET /system` with the configured credentials and compare the Orthanc `ID` or
-  `Name` against any earlier deployment record or backup. Repository history
-  cannot prove live dashboard state.
+  `GET /system` from the API's private network with configured credentials and
+  compare the Orthanc `ID` or `Name` against an earlier deployment record or
+  backup. Repository history cannot prove live dashboard state.
 - Verify `GET /plugins` includes `dicom-web` and `GET /dicom-web/studies`
-  returns `200`, both with the configured credentials. A stock Orthanc with only
+  returns `200` from the API's private network with configured credentials. A stock Orthanc with only
   `explorer.js` cannot serve `/dicom-web/studies`, so QIDO failures appear as
   `dicomweb_availability_upstream_error route: /studies upstreamStatus: 404`.
   Rebuild/redeploy that service from `infra/orthanc/Dockerfile.prod`; do not
@@ -468,8 +462,9 @@ The authenticated imaging endpoints are:
   Orthanc for the signed-in user and records imaging availability.
 - `POST /api/dicom/reingest/:studyUid` — authorized recovery from original
   DICOM files (multipart field `file`, ZIP or individual instances). Files are
-  parsed, UID-checked, stored in Orthanc, verified, and only then reflected as
-  available. Reports, assignments, tenants, and clinical statuses are preserved.
+  parsed, UID-checked, losslessly compressed and pixel-hash verified before they
+  reach Orthanc, and only then reflected as available. Reports, assignments,
+  tenants, and clinical statuses are preserved.
 - `GET|POST /api/admin/dicom-reconciliation` — ADMIN-only, paginated
   reconciliation runs. `POST` accepts `page`, `pageSize` (max 50), and optional
   `hospitalId`; results are recorded and never delete or overwrite DICOM data.
@@ -489,7 +484,7 @@ All services are defined in `docker-compose.yml` and can be started with
 | **postgres** | `postgres:16-alpine`                     | `5432`                     | Primary relational database              |
 | **redis**    | `docker.io/library/redis:7.4-alpine` (built from `infra/redis`) | `127.0.0.1:6379` | Authenticated centralized sessions and reference-data cache |
 | **rabbitmq** | `rabbitmq:3-management-alpine`           | `5672`, `15672` (console)  | Async event messaging / job queues       |
-| **orthanc**  | `jodogne/orthanc-plugins:latest`         | `8042` (HTTP), `4242` (DICOM) | DICOM archive & DICOMweb server      |
+| **orthanc**  | `jodogne/orthanc-plugins:1.12.6`         | Private network only; no host ports | DICOM archive & read-only DICOMweb server |
 | **keycloak** | `quay.io/keycloak/keycloak:24.0`        | `8180`                     | OpenID Connect identity provider         |
 | **minio**    | `minio/minio:latest`                     | `9000` (API), `9001` (console) | S3-compatible object storage         |
 
@@ -499,7 +494,7 @@ All services are defined in `docker-compose.yml` and can be started with
 | ------------- | -------------------------------------- |
 | Frontend      | http://localhost:3000                   |
 | API           | http://localhost:4000/api               |
-| Orthanc       | http://localhost:8042                   |
+| Orthanc       | Private to the API network; no host URL |
 | Keycloak      | http://localhost:8180/auth              |
 | MinIO Console | http://localhost:9001                   |
 | RabbitMQ Mgmt | http://localhost:15672                  |
@@ -572,26 +567,22 @@ and DICOMweb server. The configuration is in `infra/orthanc/orthanc.json`.
 | Series list | GET   | `/dicom-web/studies/{uid}/series` |
 | Instances  | GET    | `/dicom-web/series/{uid}/instances` |
 | Retrieve   | GET    | `/dicom-web/studies/{uid}` (Accept: multipart/related) |
-| Store      | POST   | `/dicom-web/stow-rs/studies`      |
+| Store      | —      | Disabled; upload through the Axis ingest API only |
 
 ### Orthanc Configuration Highlights
 
-- DICOMweb is enabled with QIDO-RS, WADO-RS, and STOW-RS
+- DICOMweb read access is enabled with QIDO-RS and WADO-RS; STOW-RS is disabled
 - All DICOMweb endpoints are rooted at `/dicom-web`
-- DICOM C-STORE listener on port `4242`
-- Authentication is disabled by default for local development
-- Default credentials: `orthanc` / `orthanc`
+- DICOM C-STORE listener is disabled and no Orthanc host ports are published
+- HTTP authentication is enabled; local development credentials are `orthanc` / `orthanc`
 
 ### Uploading Test DICOM Data
 
-You can push DICOM files to Orthanc via STOW-RS:
+Do not upload files directly to Orthanc using REST, STOW-RS, or DICOM C-STORE.
+Use the authenticated Axis ingest endpoint, which compresses each instance and
+verifies its decoded pixel hash before submitting it to Orthanc:
 
-```bash
-curl -X POST http://localhost:8042/dicom-web/stow-rs/studies \
-  -u orthanc:orthanc \
-  -H "Content-Type: multipart/related; type=application/dicom" \
-  --data-binary @path/to/dicom-file.dcm
-```
+`POST /api/dicom/ingest` (multipart field `file`).
 
 ---
 
@@ -620,9 +611,8 @@ never land on Axis `/login`. The Reading Page is protected by the normal
 existing `axis_session` cookie, the authenticated user's role, hospital and
 study assignment. Expired or revoked sessions produce HTTP 401 and return the
 top-level page to `/login?returnTo=<reading-page>`; forbidden studies produce
-HTTP 403 and an error panel. The proxy only allows GET/HEAD, so STOW/DELETE
-through `/api/dicom-web` is not available; DICOM uploads continue to use
-`/api/dicom/ingest`.
+HTTP 403 and an error panel. The proxy only allows GET/HEAD; STOW/DELETE through `/api/dicom-web` is not
+available. DICOM uploads and recovery use the compress-and-verify ingest path.
 
 Do not set OHIF's `APP_CONFIG`, `CLIENT_ID` or `HEALTHCARE_API_ENDPOINT`
 environment variables: the upstream OHIF entrypoint treats them as an override
@@ -870,7 +860,8 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 ### Security
 
 - [ ] Replace all default credentials and secrets in `.env`
-- [ ] Enable Orthanc authentication (`AuthenticationEnabled: true`)
+- [x] Enable Orthanc authentication (`AuthenticationEnabled: true`)
+- [x] Keep Orthanc private, disable STOW/DICOM C-STORE, and publish no host ports
 - [ ] Configure Keycloak with TLS and production realm settings
 - [ ] Set `AUTH_SECRET` to a cryptographically random value (min 32 chars)
 - [ ] Enable HTTPS behind a reverse proxy (nginx, Caddy, Traefik)
@@ -884,7 +875,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 - [ ] Use a managed PostgreSQL service (RDS, Cloud SQL, Azure Database)
 - [ ] Verify the Render `axis-redis-data` disk is attached to the live Redis service
 - [ ] Use a managed RabbitMQ service or deploy with clustering
-- [ ] Configure Orthanc with TLS and proper DICOM TLS for receiving
+- [x] Keep Orthanc private and disable STOW-RS and its DICOM C-STORE listener
 - [ ] Set up MinIO with erasure coding for production durability
 - [ ] Configure Docker Compose health checks for orchestrator integration
 - [ ] Set up log aggregation (ELK, Datadog, CloudWatch)
@@ -933,7 +924,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 
 - [x] pnpm monorepo setup (`apps/web`, `apps/api`, `apps/desktop`, `packages/types`)
 - [x] Docker Compose infrastructure (PostgreSQL, Redis, RabbitMQ, Orthanc, Keycloak, MinIO)
-- [x] Orthanc DICOMweb configuration (QIDO-RS, WADO-RS, STOW-RS)
+- [x] Orthanc read-only DICOMweb configuration (QIDO-RS and WADO-RS; STOW-RS disabled)
 - [x] Prisma schema with 14 models, enums, and indexes
 - [x] Database seed script with synthetic data (`AX-SYN` prefixed)
 - [x] NestJS API — Studies, Worklist, Reports, Users, Hospitals, Audit, Analytics, AI modules
