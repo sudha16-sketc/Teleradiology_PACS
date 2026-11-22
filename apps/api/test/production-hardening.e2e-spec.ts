@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { promises as fs } from 'fs';
 import request from 'supertest';
 import { createTestApp } from './app-bootstrap.js';
 import { loginAgent, USERS, prisma } from './helpers.js';
@@ -8,6 +9,15 @@ import { randomUUID } from 'crypto';
 
 let app: INestApplication;
 let server: any;
+
+const BACKUP_DIR = '/tmp/opencode/axis-production-hardening-e2e';
+const STORAGE_ENV_KEYS = [
+  'BACKUP_STORAGE_PROVIDER',
+  'B2_KEY_ID',
+  'B2_APPLICATION_KEY',
+  'AXIS_BACKUP_DIR',
+] as const;
+const originalStorageEnv: Record<string, string | undefined> = {};
 
 const admin = USERS.ADMIN;
 const manager = USERS.MANAGER;
@@ -50,6 +60,13 @@ async function forceCompletedOld(studyId: string): Promise<void> {
 }
 
 beforeAll(async () => {
+  for (const key of STORAGE_ENV_KEYS) originalStorageEnv[key] = process.env[key];
+  process.env.BACKUP_STORAGE_PROVIDER = 'LOCAL';
+  process.env.B2_KEY_ID = '';
+  process.env.B2_APPLICATION_KEY = '';
+  process.env.AXIS_BACKUP_DIR = BACKUP_DIR;
+  await fs.rm(BACKUP_DIR, { recursive: true, force: true });
+
   const built = await createTestApp();
   app = built.app;
   server = built.server;
@@ -76,6 +93,12 @@ afterAll(async () => {
   for (const id of createdBackupIds) {
     await prisma.backupRun.delete({ where: { id } }).catch(() => undefined);
   }
+  for (const key of STORAGE_ENV_KEYS) {
+    const value = originalStorageEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  await fs.rm(BACKUP_DIR, { recursive: true, force: true });
   await prisma.$disconnect();
   await app.close();
 });

@@ -1294,7 +1294,9 @@ export class RetentionArchiveService {
         reportObjectKey: objectKeys['report.json'],
         studyObjectKey: objectKeys['study.json'],
       });
-      const manifestPath = objectKeys['archive-manifest.json'];
+      const manifestPath = this.storage.remote
+        ? `${scratchDir}/archive-manifest.json`
+        : objectKeys['archive-manifest.json'];
       await this.writeJson(manifestPath, manifestData);
       const manifestChecksum = await sha256File(manifestPath);
 

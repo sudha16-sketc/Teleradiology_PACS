@@ -69,6 +69,28 @@ export const TRANSFER_SYNTAXES: Record<string, { name: string; implicit: boolean
   '1.2.840.10008.1.2.5': { name: 'RLE Lossless', implicit: false, bigEndian: false },
 };
 
+export const SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES = new Set([
+  '1.2.840.10008.1.2.4.50',
+]);
+
+export type SourceCompressionClass =
+  | 'jpeg-baseline'
+  | 'lossless'
+  | 'uncompressed'
+  | 'unsupported';
+
+export function classifySourceCompression(uid: string | undefined): SourceCompressionClass {
+  if (!uid) return 'unsupported';
+  if (SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES.has(uid)) return 'jpeg-baseline';
+  if (uid === '1.2.840.10008.1.2.4.90' || uid === '1.2.840.10008.1.2.4.80') {
+    return 'lossless';
+  }
+  if (uid === '1.2.840.10008.1.2' || uid === '1.2.840.10008.1.2.1') {
+    return 'uncompressed';
+  }
+  return 'unsupported';
+}
+
 export function describeTransferSyntax(uid: string): string {
   return TRANSFER_SYNTAXES[uid]?.name ?? 'Unknown/private';
 }

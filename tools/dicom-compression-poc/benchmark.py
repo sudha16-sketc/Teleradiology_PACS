@@ -60,20 +60,92 @@ def safe_dataset_metadata(dataset: Dataset, source_syntax: str) -> dict[str, Any
         except (AttributeError, TypeError, ValueError):
             return None
 
+    def string_value(name: str) -> str | None:
+        try:
+            return str(getattr(dataset, name))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    history = lossy_history_snapshot(dataset)
     return {
         "source_transfer_syntax": source_syntax or "<missing>",
         "rows": int_value("Rows"),
         "columns": int_value("Columns"),
         "samples_per_pixel": int_value("SamplesPerPixel"),
         "bits_allocated": int_value("BitsAllocated"),
+        "bits_stored": int_value("BitsStored"),
+        "high_bit": int_value("HighBit"),
         "pixel_representation": int_value("PixelRepresentation"),
         "number_of_frames": int_value("NumberOfFrames"),
+        "photometric_interpretation": string_value("PhotometricInterpretation"),
+        "source_compression_type": source_compression_type(source_syntax),
+        "prior_lossy_compression": history["lossy_image_compression"] == "01",
+        "lossy_image_compression": history["lossy_image_compression"],
+        "lossy_method": history["lossy_method"],
+        "lossy_ratio": history["lossy_ratio"],
+        "reencode_policy_version": REENCODE_POLICY_VERSION,
     }
+
+
+def source_compression_type(source_syntax: str) -> str:
+    if source_syntax in UNCOMPRESSED_TRANSFER_SYNTAXES:
+        return "uncompressed"
+    if source_syntax in SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES:
+        return "jpeg-baseline"
+    if source_syntax in LOSSLESS_TRANSFER_SYNTAXES:
+        return "lossless-compressed"
+    if source_syntax and UID(source_syntax).is_compressed:
+        return "unsupported-compressed"
+    return "unknown"
+
+
+def lossy_history_snapshot(dataset: Dataset) -> dict[str, str | None]:
+    def value(name: str) -> str | None:
+        try:
+            raw = getattr(dataset, name)
+        except AttributeError:
+            return None
+        if raw is None:
+            return None
+        values = _as_values(raw)
+        if not values:
+            return None
+        return "\\".join(str(item) for item in values)
+
+    return {
+        "lossy_image_compression": value("LossyImageCompression"),
+        "lossy_method": value("LossyImageCompressionMethod"),
+        "lossy_ratio": value("LossyImageCompressionRatio"),
+    }
+
+
+def canonical_pixels(pixels: np.ndarray) -> np.ndarray:
+    array = np.asarray(pixels)
+    if array.dtype.kind not in ("u", "i", "b"):
+        raise ValueError(f"Unsupported pixel dtype for canonical hashing: {array.dtype}")
+    normalized = array.astype(array.dtype.newbyteorder("="), copy=False)
+    return np.ascontiguousarray(normalized)
+
+
+def canonical_pixel_hash(pixels: np.ndarray) -> str:
+    return hashlib.sha256(canonical_pixels(pixels).tobytes(order="C")).hexdigest()
 
 
 TRANSFER_SYNTAX_TAG = 0x00020010
 FILE_META_GROUP_LENGTH_TAG = 0x00020000
-PIXEL_GROUPS = {0x0028, 0x7FE0}
+PIXEL_DATA_TAGS = {0x7FE00010, 0x7FE00001, 0x7FE00002}
+TRANSCODABLE_PIXEL_TAGS = {
+    0x00280002,
+    0x00280004,
+    0x00280006,
+    0x00280008,
+    0x00280010,
+    0x00280011,
+    0x00280100,
+    0x00280101,
+    0x00280102,
+    0x00280103,
+}
 LOSSY_TAGS = {0x00282110, 0x00282112, 0x00282114}
 LOSSLESS_TRANSFER_SYNTAXES = {
     "1.2.840.10008.1.2.4.80",   # JPEG-LS Lossless
@@ -85,6 +157,10 @@ UNCOMPRESSED_TRANSFER_SYNTAXES = {
     str(ExplicitVRLittleEndian),
     str(ImplicitVRLittleEndian),
 }
+SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES = {str(JPEGBaseline8Bit)}
+JPEG_BASELINE_METHOD = "ISO_10918_1"
+REENCODE_POLICY_VERSION = "jpeg-baseline-lossless-v1"
+MONOCHROME_PHOTOMETRIC_INTERPRETATIONS = {"MONOCHROME1", "MONOCHROME2"}
 CSV_FIELDS = [
     "file",
     "modality",
@@ -112,6 +188,12 @@ class Variant:
     lossless: bool
     lossy_method: str | None = None
     options: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class VerifiedCompression:
+    pixel_hash: str
+    provenance: dict[str, Any]
 
 
 def parse_levels(value: str | None, label: str, minimum: float, maximum: float) -> list[float]:
@@ -180,9 +262,9 @@ def metadata_snapshot(ds: Dataset) -> dict[str, str]:
     def visit(dataset: Dataset, prefix: str) -> None:
         for element in dataset:
             tag = int(element.tag)
-            group = tag >> 16
             if (
-                group in PIXEL_GROUPS
+                tag in PIXEL_DATA_TAGS
+                or tag in TRANSCODABLE_PIXEL_TAGS
                 or tag in LOSSY_TAGS
                 or tag in {TRANSFER_SYNTAX_TAG, FILE_META_GROUP_LENGTH_TAG}
             ):
@@ -241,18 +323,19 @@ def encode_jpeg_baseline(ds: Dataset, quality: int) -> None:
     pixels = np.asarray(ds.pixel_array)
     samples_per_pixel = int(getattr(ds, "SamplesPerPixel", 1))
     frame_count = int(getattr(ds, "NumberOfFrames", 1))
-    if samples_per_pixel == 1:
-        frames = [pixels] if frame_count == 1 else list(pixels)
-        if any(frame.ndim != 2 for frame in frames):
-            raise ValueError("JPEG Baseline expected monochrome frames")
-    elif samples_per_pixel == 3:
-        frames = [pixels] if frame_count == 1 else list(pixels)
-        if any(frame.ndim != 3 or frame.shape[-1] != 3 for frame in frames):
-            raise ValueError("JPEG Baseline expected RGB frames")
+    if samples_per_pixel not in (1, 3):
+        raise ValueError("JPEG Baseline supports one or three samples per pixel")
+    frame_shape = (int(ds.Rows), int(ds.Columns))
+    if samples_per_pixel == 3:
+        frame_shape = (*frame_shape, 3)
         ds.PhotometricInterpretation = "YBR_FULL_422"
         ds.PlanarConfiguration = 0
-    else:
-        raise ValueError("JPEG Baseline supports one or three samples per pixel")
+    expected_shape = frame_shape if frame_count == 1 else (frame_count, *frame_shape)
+    if tuple(pixels.shape) != expected_shape:
+        raise ValueError(
+            f"JPEG Baseline requires decoded shape {expected_shape}, got {tuple(pixels.shape)}"
+        )
+    frames = [pixels] if frame_count == 1 else [pixels[index] for index in range(frame_count)]
     if not frames or any(frame.dtype != np.uint8 for frame in frames):
         raise ValueError("JPEG Baseline requires decoded unsigned 8-bit frames")
 
@@ -589,38 +672,471 @@ def benchmark_variant(
         return row
 
 
-def compress_verified_file(
+def _required_int(dataset: Dataset, name: str, stage: str, metadata: dict[str, Any]) -> int:
+    try:
+        value = int(getattr(dataset, name))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise LosslessCompressionError(
+            stage,
+            f"Missing or invalid {name}",
+            metadata,
+        ) from exc
+    return value
+
+
+def validate_lossy_history(
+    dataset: Dataset,
+    source_syntax: str,
+    metadata: dict[str, Any],
+) -> dict[str, str | None]:
+    history = lossy_history_snapshot(dataset)
+    metadata.update(history)
+    if history["lossy_image_compression"] != "01":
+        raise LosslessCompressionError(
+            "validate_lossy_history",
+            f"Source syntax {source_syntax}: LossyImageCompression must be '01'",
+            metadata,
+        )
+    methods = _as_values(getattr(dataset, "LossyImageCompressionMethod", None))
+    ratios = _as_values(getattr(dataset, "LossyImageCompressionRatio", None))
+    if not methods or not ratios:
+        raise LosslessCompressionError(
+            "validate_lossy_history",
+            f"Source syntax {source_syntax}: lossy method and ratio are required",
+            metadata,
+        )
+    if len(methods) != len(ratios):
+        raise LosslessCompressionError(
+            "validate_lossy_history",
+            f"Source syntax {source_syntax}: lossy method and ratio counts differ",
+            metadata,
+        )
+    try:
+        parsed_ratios = [float(str(value)) for value in ratios]
+    except (TypeError, ValueError) as exc:
+        raise LosslessCompressionError(
+            "validate_lossy_history",
+            f"Source syntax {source_syntax}: malformed LossyImageCompressionRatio",
+            metadata,
+        ) from exc
+    if not all(math.isfinite(value) and value > 0 for value in parsed_ratios):
+        raise LosslessCompressionError(
+            "validate_lossy_history",
+            f"Source syntax {source_syntax}: lossy ratio must be positive and finite",
+            metadata,
+        )
+    if str(methods[-1]) != JPEG_BASELINE_METHOD:
+        raise LosslessCompressionError(
+            "validate_lossy_history",
+            f"Source syntax {source_syntax}: unsupported LossyImageCompressionMethod",
+            metadata,
+        )
+    return history
+
+
+def validate_source_pixel_metadata(
+    dataset: Dataset,
+    source_syntax: str,
+    metadata: dict[str, Any],
+    require_encapsulated: bool,
+    require_8bit: bool = False,
+) -> dict[str, Any]:
+    stage = "validate_source_pixels"
+    rows = _required_int(dataset, "Rows", stage, metadata)
+    columns = _required_int(dataset, "Columns", stage, metadata)
+    samples_per_pixel = _required_int(dataset, "SamplesPerPixel", stage, metadata)
+    bits_allocated = _required_int(dataset, "BitsAllocated", stage, metadata)
+    bits_stored = _required_int(dataset, "BitsStored", stage, metadata)
+    high_bit = _required_int(dataset, "HighBit", stage, metadata)
+    pixel_representation = _required_int(dataset, "PixelRepresentation", stage, metadata)
+    number_of_frames = int(getattr(dataset, "NumberOfFrames", 1))
+    photometric_interpretation = str(getattr(dataset, "PhotometricInterpretation", ""))
+
+    if rows <= 0 or columns <= 0:
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: Rows and Columns must be positive",
+            metadata,
+        )
+    if number_of_frames <= 0:
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: NumberOfFrames must be positive",
+            metadata,
+        )
+    if samples_per_pixel != 1:
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: only single-sample images are supported",
+            metadata,
+        )
+    if photometric_interpretation not in MONOCHROME_PHOTOMETRIC_INTERPRETATIONS:
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: unsupported PhotometricInterpretation",
+            metadata,
+        )
+    if "PlanarConfiguration" in dataset:
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: PlanarConfiguration must be absent for monochrome pixels",
+            metadata,
+        )
+    if require_8bit and (bits_allocated, bits_stored, high_bit, pixel_representation) != (
+        8,
+        8,
+        7,
+        0,
+    ):
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: JPEG Baseline requires unsigned 8-bit pixels",
+            metadata,
+        )
+    if require_encapsulated:
+        pixel_element = dataset["PixelData"]
+        if str(pixel_element.VR) != "OB" or not pixel_element.is_undefined_length:
+            raise LosslessCompressionError(
+                stage,
+                f"Source syntax {source_syntax}: encapsulated Pixel Data is invalid",
+                metadata,
+            )
+
+    metadata.update(
+        {
+            "rows": rows,
+            "columns": columns,
+            "samples_per_pixel": samples_per_pixel,
+            "bits_allocated": bits_allocated,
+            "bits_stored": bits_stored,
+            "high_bit": high_bit,
+            "pixel_representation": pixel_representation,
+            "number_of_frames": number_of_frames,
+            "photometric_interpretation": photometric_interpretation,
+        }
+    )
+    return {
+        "rows": rows,
+        "columns": columns,
+        "samples_per_pixel": samples_per_pixel,
+        "bits_allocated": bits_allocated,
+        "bits_stored": bits_stored,
+        "high_bit": high_bit,
+        "pixel_representation": pixel_representation,
+        "number_of_frames": number_of_frames,
+        "photometric_interpretation": photometric_interpretation,
+    }
+
+
+def decode_pixels(
+    dataset: Dataset,
+    stage: str,
+    source_label: str,
+    metadata: dict[str, Any],
+) -> np.ndarray:
+    try:
+        pixels = np.asarray(dataset.pixel_array).copy()
+    except Exception as exc:
+        raise LosslessCompressionError(
+            stage,
+            f"{source_label}: Pixel Data could not be decoded "
+            f"({type(exc).__name__}: {exc})",
+            metadata,
+        ) from exc
+    if pixels.size == 0:
+        raise LosslessCompressionError(
+            stage,
+            f"{source_label}: decoded Pixel Data is empty",
+            metadata,
+        )
+    return canonical_pixels(pixels)
+
+
+def validate_decoded_pixel_shape(
+    pixels: np.ndarray,
+    pixel_metadata: dict[str, Any],
+    stage: str,
+    source_label: str,
+    metadata: dict[str, Any],
+) -> None:
+    rows = int(pixel_metadata["rows"])
+    columns = int(pixel_metadata["columns"])
+    frames = int(pixel_metadata["number_of_frames"])
+    expected = (rows, columns) if frames == 1 else (frames, rows, columns)
+    if tuple(pixels.shape) != expected:
+        raise LosslessCompressionError(
+            stage,
+            f"{source_label}: decoded shape {tuple(pixels.shape)} does not match expected {expected}",
+            metadata,
+        )
+
+
+def build_uncompressed_intermediate(
+    dataset: Dataset,
+    pixels: np.ndarray,
+    metadata: dict[str, Any],
+) -> Dataset:
+    context_stage = "build_uncompressed_intermediate"
+    try:
+        intermediate, _ = explicit_vr_little_endian(dataset, pixels)
+        round_trip = np.asarray(intermediate.pixel_array)
+    except Exception as exc:
+        raise LosslessCompressionError(
+            context_stage,
+            f"Uncompressed intermediate could not be constructed "
+            f"({type(exc).__name__}: {exc})",
+            metadata,
+        ) from exc
+    if (
+        intermediate.file_meta.TransferSyntaxUID != ExplicitVRLittleEndian
+        or round_trip.dtype != pixels.dtype
+        or round_trip.shape != pixels.shape
+        or not np.array_equal(canonical_pixels(round_trip), pixels)
+    ):
+        raise LosslessCompressionError(
+            context_stage,
+            "Uncompressed intermediate pixel verification failed",
+            metadata,
+        )
+    return intermediate
+
+
+def verify_decoded_pixels(
+    source_pixels: np.ndarray,
+    output_pixels: np.ndarray,
+    source_pixel_hash: str,
+    metadata: dict[str, Any],
+) -> str:
+    output_pixel_hash = canonical_pixel_hash(output_pixels)
+    metadata.update(
+        {
+            "source_pixel_sha256": source_pixel_hash,
+            "output_pixel_sha256": output_pixel_hash,
+            "pixel_verified": False,
+        }
+    )
+    if source_pixels.dtype != output_pixels.dtype or source_pixels.shape != output_pixels.shape:
+        raise LosslessCompressionError(
+            "verify_pixel_integrity",
+            "Decoded output pixel dtype or shape does not match decoded source pixels",
+            metadata,
+        )
+    if source_pixel_hash != output_pixel_hash or not np.array_equal(source_pixels, output_pixels):
+        raise LosslessCompressionError(
+            "verify_pixel_integrity",
+            "Decoded output pixels are not exactly equal to decoded source pixels",
+            metadata,
+        )
+    metadata["pixel_verified"] = True
+    return output_pixel_hash
+
+
+def verify_output_metadata(
+    source: Dataset,
+    output: Dataset,
+    expected_syntax: str,
+    source_pixel_metadata: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    if not output.file_meta or str(output.file_meta.TransferSyntaxUID) != expected_syntax:
+        raise LosslessCompressionError(
+            "validate_output_metadata",
+            f"Output transfer syntax is not {expected_syntax}",
+            metadata,
+        )
+    output_keywords = {
+        "rows": "Rows",
+        "columns": "Columns",
+        "samples_per_pixel": "SamplesPerPixel",
+        "bits_allocated": "BitsAllocated",
+        "bits_stored": "BitsStored",
+        "high_bit": "HighBit",
+        "pixel_representation": "PixelRepresentation",
+        "number_of_frames": "NumberOfFrames",
+        "photometric_interpretation": "PhotometricInterpretation",
+    }
+    for name, expected in source_pixel_metadata.items():
+        keyword = output_keywords[name]
+        if name == "photometric_interpretation":
+            actual: Any = str(getattr(output, keyword, ""))
+        elif name == "number_of_frames":
+            actual = int(getattr(output, keyword, 1))
+        else:
+            actual = int(getattr(output, keyword, -1))
+        if actual != expected:
+            raise LosslessCompressionError(
+                "validate_output_metadata",
+                f"Output {name} does not match source",
+                metadata,
+            )
+    if "PlanarConfiguration" in output:
+        raise LosslessCompressionError(
+            "validate_output_metadata",
+            "Output PlanarConfiguration must be absent for monochrome pixels",
+            metadata,
+        )
+    if str(output["PixelData"].VR) != "OB" or not output["PixelData"].is_undefined_length:
+        raise LosslessCompressionError(
+            "validate_output_metadata",
+            "Output encapsulated Pixel Data is invalid",
+            metadata,
+        )
+    if not metadata_preserved(source, output):
+        raise LosslessCompressionError(
+            "validate_output_metadata",
+            "Output non-pixel metadata differs from source",
+            metadata,
+        )
+    if lossy_history_snapshot(source) != lossy_history_snapshot(output):
+        raise LosslessCompressionError(
+            "validate_output_metadata",
+            "Output lossy-compression history differs from source",
+            metadata,
+        )
+
+
+def build_provenance(
+    source_syntax: str,
+    target_syntax: str,
+    source_pixel_hash: str,
+    output_pixel_hash: str,
+    history: dict[str, str | None],
+) -> dict[str, Any]:
+    return {
+        "source_transfer_syntax": source_syntax,
+        "target_transfer_syntax": target_syntax,
+        "source_compression_type": source_compression_type(source_syntax),
+        "prior_lossy_compression": history["lossy_image_compression"] == "01",
+        "lossy_image_compression": history["lossy_image_compression"],
+        "lossy_method": history["lossy_method"],
+        "lossy_ratio": history["lossy_ratio"],
+        "reencode_policy_version": (
+            REENCODE_POLICY_VERSION
+            if source_syntax in SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES
+            else "lossless-target-v1"
+        ),
+        "source_pixel_sha256": source_pixel_hash,
+        "output_pixel_sha256": output_pixel_hash,
+        "pixel_verified": True,
+    }
+
+
+def encode_lossless_dataset(
+    dataset: Dataset,
+    variant: Variant,
+    stage: str,
+    metadata: dict[str, Any],
+) -> None:
+    try:
+        if (
+            variant.uid == str(JPEG2000Lossless)
+            and min(int(dataset.Rows), int(dataset.Columns)) < 32
+        ):
+            encode_small_jpeg2000(dataset, variant)
+        else:
+            dataset.compress(
+                variant.uid,
+                encoding_plugin=variant.plugin,
+                generate_instance_uid=False,
+            )
+    except Exception as exc:
+        message = str(exc)
+        if "pixel data encoder" in message or "plugins" in message:
+            raise LosslessCompressionError(stage, message[:500], metadata) from exc
+        raise LosslessCompressionError(
+            stage,
+            f"Lossless encoding failed ({type(exc).__name__}: {message})"[:500],
+            metadata,
+        ) from exc
+
+
+def write_and_verify(
+    encoded: Dataset,
+    source: Dataset,
+    source_pixels: np.ndarray,
+    source_pixel_hash: str,
+    expected_syntax: str,
+    source_pixel_metadata: dict[str, Any],
+    destination: Path,
+    context: dict[str, Any],
+) -> VerifiedCompression:
+    context["stage"] = "write_output"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    encoded.save_as(destination, enforce_file_format=True)
+    context["stage"] = "read_output"
+    result = pydicom.dcmread(destination)
+    context["stage"] = "decode_output_pixels"
+    output_pixels = decode_pixels(result, context["stage"], "Output Pixel Data", context["metadata"])
+    validate_decoded_pixel_shape(
+        output_pixels,
+        source_pixel_metadata,
+        context["stage"],
+        "Output Pixel Data",
+        context["metadata"],
+    )
+    context["stage"] = "verify_pixel_integrity"
+    output_pixel_hash = verify_decoded_pixels(
+        source_pixels,
+        output_pixels,
+        source_pixel_hash,
+        context["metadata"],
+    )
+    context["stage"] = "validate_output_metadata"
+    verify_output_metadata(
+        source,
+        result,
+        expected_syntax,
+        source_pixel_metadata,
+        context["metadata"],
+    )
+    return VerifiedCompression(
+        source_pixel_hash,
+        build_provenance(
+            str(source.file_meta.TransferSyntaxUID),
+            expected_syntax,
+            source_pixel_hash,
+            output_pixel_hash,
+            lossy_history_snapshot(source),
+        ),
+    )
+
+
+def compress_verified_dicom(
     source: Path,
     destination: Path,
     transfer_syntax: str,
-) -> str:
-    """Compress uncompressed DICOM or pass through a valid lossless instance."""
+) -> VerifiedCompression:
     context: dict[str, Any] = {
         "stage": "initialization",
         "metadata": {"target_transfer_syntax": transfer_syntax},
     }
     try:
-        return _compress_verified_file(source, destination, transfer_syntax, context)
+        return _compress_verified_dicom(source, destination, transfer_syntax, context)
     except Exception as exc:
         if not getattr(exc, "stage", None):
             setattr(exc, "stage", context["stage"])
         if not getattr(exc, "metadata", None):
             setattr(exc, "metadata", context["metadata"])
         if not getattr(exc, "diagnostic_message", None):
-            setattr(
-                exc,
-                "diagnostic_message",
-                f"Worker raised {type(exc).__name__}",
-            )
+            setattr(exc, "diagnostic_message", f"Worker raised {type(exc).__name__}")
         raise
 
 
-def _compress_verified_file(
+def compress_verified_file(
+    source: Path,
+    destination: Path,
+    transfer_syntax: str,
+) -> str:
+    """Compress, decode, verify, and return the canonical decoded pixel hash."""
+    return compress_verified_dicom(source, destination, transfer_syntax).pixel_hash
+
+
+def _compress_verified_dicom(
     source: Path,
     destination: Path,
     transfer_syntax: str,
     context: dict[str, Any],
-) -> str:
+) -> VerifiedCompression:
     variants = {
         str(JPEG2000Lossless): Variant(
             "jpeg2000-lossless", str(JPEG2000Lossless), "pylibjpeg", True
@@ -650,148 +1166,201 @@ def _compress_verified_file(
     if destination.exists():
         raise FileExistsError(f"Compressed output already exists: {destination.name}")
 
-    context["stage"] = "read_source"
-    original = pydicom.dcmread(source)
-    source_syntax = str(getattr(original.file_meta, "TransferSyntaxUID", "") or "")
-    source_syntax_label = source_syntax or "<missing>"
-    context["metadata"].update(safe_dataset_metadata(original, source_syntax_label))
-    context["stage"] = "validate_source"
-
-    if "PixelData" not in original:
-        raise LosslessCompressionError(
-            "validate_source",
-            f"Source syntax {source_syntax_label}: file has no Pixel Data (7FE0,0010)",
-            context["metadata"],
-        )
-    if not original.PixelData:
-        raise LosslessCompressionError(
-            "validate_source",
-            f"Source syntax {source_syntax_label}: Pixel Data (7FE0,0010) is empty",
-            context["metadata"],
-        )
-
-    if source_syntax in LOSSLESS_TRANSFER_SYNTAXES:
-        context["stage"] = "decode_source"
-        try:
-            original_pixels = np.asarray(original.pixel_array).copy()
-        except Exception as exc:
+    try:
+        context["stage"] = "read_source"
+        original = pydicom.dcmread(source)
+        source_syntax = str(getattr(original.file_meta, "TransferSyntaxUID", "") or "")
+        source_syntax_label = source_syntax or "<missing>"
+        context["metadata"].update(safe_dataset_metadata(original, source_syntax_label))
+        context["stage"] = "validate_source"
+        if "PixelData" not in original or not original.PixelData:
             raise LosslessCompressionError(
-                "decode_source",
-                f"Source syntax {source_syntax}: lossless Pixel Data could not be decoded "
-                f"({type(exc).__name__}: {exc})",
-                context["metadata"],
-            ) from exc
-        if original_pixels.size == 0:
-            raise LosslessCompressionError(
-                "decode_source",
-                f"Source syntax {source_syntax}: decoded Pixel Data is empty",
+                "validate_source",
+                f"Source syntax {source_syntax_label}: Pixel Data (7FE0,0010) is missing or empty",
                 context["metadata"],
             )
-        original_pixel_hash = hashlib.sha256(
-            original_pixels.tobytes(order="C")
-        ).hexdigest()
 
-        context["stage"] = "write_pass_through"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
+        if source_syntax in LOSSLESS_TRANSFER_SYNTAXES:
+            context["stage"] = "decode_source_pixels"
+            source_pixels = decode_pixels(
+                original,
+                context["stage"],
+                f"Source syntax {source_syntax}",
+                context["metadata"],
+            )
+            source_pixel_hash = canonical_pixel_hash(source_pixels)
+            source_pixel_metadata = validate_source_pixel_metadata(
+                original,
+                source_syntax,
+                context["metadata"],
+                require_encapsulated=True,
+            )
+            validate_decoded_pixel_shape(
+                source_pixels,
+                source_pixel_metadata,
+                "decode_source_pixels",
+                f"Source syntax {source_syntax}",
+                context["metadata"],
+            )
+            context["stage"] = "write_pass_through"
+            destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
             context["stage"] = "read_pass_through"
             copied = pydicom.dcmread(destination)
-            context["stage"] = "decode_pass_through"
-            copied_pixels = np.asarray(copied.pixel_array)
-            copied_pixel_hash = hashlib.sha256(
-                copied_pixels.tobytes(order="C")
-            ).hexdigest()
-            context["stage"] = "verify_pass_through"
-            if (
-                original_pixels.dtype != copied_pixels.dtype
-                or original_pixels.shape != copied_pixels.shape
-                or original_pixel_hash != copied_pixel_hash
-                or str(getattr(copied.file_meta, "TransferSyntaxUID", "")) != source_syntax
-            ):
+            context["stage"] = "decode_output_pixels"
+            copied_pixels = decode_pixels(
+                copied,
+                context["stage"],
+                "Pass-through Pixel Data",
+                context["metadata"],
+            )
+            validate_decoded_pixel_shape(
+                copied_pixels,
+                source_pixel_metadata,
+                context["stage"],
+                "Pass-through Pixel Data",
+                context["metadata"],
+            )
+            context["stage"] = "verify_pixel_integrity"
+            output_pixel_hash = verify_decoded_pixels(
+                source_pixels,
+                copied_pixels,
+                source_pixel_hash,
+                context["metadata"],
+            )
+            context["stage"] = "validate_output_metadata"
+            verify_output_metadata(
+                original,
+                copied,
+                source_syntax,
+                source_pixel_metadata,
+                context["metadata"],
+            )
+            return VerifiedCompression(
+                source_pixel_hash,
+                build_provenance(
+                    source_syntax,
+                    source_syntax,
+                    source_pixel_hash,
+                    output_pixel_hash,
+                    lossy_history_snapshot(original),
+                ),
+            )
+
+        if source_syntax in SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES:
+            context["stage"] = "validate_target_syntax"
+            if variant.uid != str(JPEG2000Lossless):
                 raise LosslessCompressionError(
-                    "verify_pass_through",
-                    f"Source syntax {source_syntax}: lossless pass-through pixel "
-                    "verification failed",
+                    "validate_target_syntax",
+                    "JPEG Baseline source re-encoding requires JPEG 2000 Lossless target",
                     context["metadata"],
                 )
-            return original_pixel_hash
-        except Exception:
-            destination.unlink(missing_ok=True)
-            raise
+            context["stage"] = "validate_source_pixels"
+            source_pixel_metadata = validate_source_pixel_metadata(
+                original,
+                source_syntax,
+                context["metadata"],
+                require_encapsulated=True,
+                require_8bit=True,
+            )
+            context["stage"] = "validate_lossy_history"
+            history = validate_lossy_history(original, source_syntax, context["metadata"])
+            context["stage"] = "decode_source_pixels"
+            source_pixels = decode_pixels(
+                original,
+                context["stage"],
+                f"Source syntax {source_syntax}",
+                context["metadata"],
+            )
+            validate_decoded_pixel_shape(
+                source_pixels,
+                source_pixel_metadata,
+                context["stage"],
+                f"Source syntax {source_syntax}",
+                context["metadata"],
+            )
+            source_pixel_hash = canonical_pixel_hash(source_pixels)
+            context["metadata"]["source_pixel_sha256"] = source_pixel_hash
+            context["stage"] = "build_uncompressed_intermediate"
+            intermediate = build_uncompressed_intermediate(
+                original,
+                source_pixels,
+                context["metadata"],
+            )
+            context["stage"] = "encode_jpeg2000_lossless"
+            encoded = copy.deepcopy(intermediate)
+            encode_lossless_dataset(
+                encoded,
+                variant,
+                context["stage"],
+                context["metadata"],
+            )
+            verified = write_and_verify(
+                encoded,
+                original,
+                source_pixels,
+                source_pixel_hash,
+                variant.uid,
+                source_pixel_metadata,
+                destination,
+                context,
+            )
+            verified.provenance["lossy_image_compression"] = history["lossy_image_compression"]
+            verified.provenance["lossy_method"] = history["lossy_method"]
+            verified.provenance["lossy_ratio"] = history["lossy_ratio"]
+            return verified
 
-    context["stage"] = "validate_source_syntax"
-    if source_syntax not in UNCOMPRESSED_TRANSFER_SYNTAXES:
-        uid = UID(source_syntax) if source_syntax else UID("")
-        if source_syntax and uid.is_compressed:
+        context["stage"] = "validate_source_syntax"
+        if source_syntax not in UNCOMPRESSED_TRANSFER_SYNTAXES:
+            uid = UID(source_syntax) if source_syntax else UID("")
+            if source_syntax and uid.is_compressed:
+                raise LosslessCompressionError(
+                    "validate_source_syntax",
+                    f"Source syntax {source_syntax}: lossy or unknown-compression transfer syntax "
+                    "is not accepted for lossless ingest",
+                    context["metadata"],
+                )
             raise LosslessCompressionError(
                 "validate_source_syntax",
-                f"Source syntax {source_syntax}: lossy or unknown-compression transfer syntax "
-                "is not accepted for lossless ingest",
+                f"Source syntax {source_syntax_label}: unknown or unsupported transfer syntax",
                 context["metadata"],
             )
-        raise LosslessCompressionError(
-            "validate_source_syntax",
-            f"Source syntax {source_syntax_label}: unknown or unsupported transfer syntax",
+
+        context["stage"] = "decode_source_pixels"
+        source_pixels = decode_pixels(
+            original,
+            context["stage"],
+            f"Source syntax {source_syntax}",
             context["metadata"],
         )
-
-    context["stage"] = "decode_source"
-    original_pixels = np.asarray(original.pixel_array).copy()
-    original_pixel_hash = hashlib.sha256(
-        original_pixels.tobytes(order="C")
-    ).hexdigest()
-
-    context["stage"] = "encode_pixels"
-    encoded = copy.deepcopy(original)
-    try:
-        if (
-            variant.uid == str(JPEG2000Lossless)
-            and min(int(encoded.Rows), int(encoded.Columns)) < 32
-        ):
-            encode_small_jpeg2000(encoded, variant)
-        else:
-            encoded.compress(
-                variant.uid,
-                encoding_plugin=variant.plugin,
-                generate_instance_uid=False,
-            )
-    except Exception as exc:
-        message = str(exc)
-        if "pixel data encoder" in message or "plugins" in message:
-            raise LosslessCompressionError(
-                "encode_pixels",
-                message[:500],
-                context["metadata"],
-            ) from exc
-        raise
-
-    context["stage"] = "write_output"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        encoded.save_as(destination, enforce_file_format=True)
-        context["stage"] = "read_output"
-        result = pydicom.dcmread(destination)
-        context["stage"] = "decode_output"
-        decoded_pixels = np.asarray(result.pixel_array)
-        decoded_pixel_hash = hashlib.sha256(
-            decoded_pixels.tobytes(order="C")
-        ).hexdigest()
-        context["stage"] = "verify_output"
-        if (
-            original_pixels.dtype != decoded_pixels.dtype
-            or original_pixels.shape != decoded_pixels.shape
-            or original_pixel_hash != decoded_pixel_hash
-            or not metadata_preserved(original, result)
-            or not result.file_meta
-            or str(result.file_meta.TransferSyntaxUID) != variant.uid
-        ):
-            raise LosslessCompressionError(
-                "verify_output",
-                "Lossless DICOM compression verification failed",
-                context["metadata"],
-            )
-        return original_pixel_hash
+        source_pixel_hash = canonical_pixel_hash(source_pixels)
+        source_pixel_metadata = validate_source_pixel_metadata(
+            original,
+            source_syntax,
+            context["metadata"],
+            require_encapsulated=False,
+        )
+        validate_decoded_pixel_shape(
+            source_pixels,
+            source_pixel_metadata,
+            "decode_source_pixels",
+            f"Source syntax {source_syntax}",
+            context["metadata"],
+        )
+        context["metadata"]["source_pixel_sha256"] = source_pixel_hash
+        context["stage"] = "encode_pixels"
+        encoded = copy.deepcopy(original)
+        encode_lossless_dataset(encoded, variant, context["stage"], context["metadata"])
+        return write_and_verify(
+            encoded,
+            original,
+            source_pixels,
+            source_pixel_hash,
+            variant.uid,
+            source_pixel_metadata,
+            destination,
+            context,
+        )
     except Exception:
         destination.unlink(missing_ok=True)
         raise

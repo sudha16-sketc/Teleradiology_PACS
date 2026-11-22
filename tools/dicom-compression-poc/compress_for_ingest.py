@@ -10,6 +10,7 @@ import re
 import sys
 
 DIAGNOSTIC_PREFIX = "AXIS_DICOM_DIAGNOSTIC="
+RESULT_PREFIX = "AXIS_DICOM_RESULT="
 SAFE_METADATA_KEYS = frozenset(
     {
         "source_transfer_syntax",
@@ -18,8 +19,20 @@ SAFE_METADATA_KEYS = frozenset(
         "columns",
         "samples_per_pixel",
         "bits_allocated",
+        "bits_stored",
+        "high_bit",
         "pixel_representation",
+        "photometric_interpretation",
         "number_of_frames",
+        "source_compression_type",
+        "prior_lossy_compression",
+        "lossy_image_compression",
+        "lossy_method",
+        "lossy_ratio",
+        "reencode_policy_version",
+        "source_pixel_sha256",
+        "output_pixel_sha256",
+        "pixel_verified",
     }
 )
 
@@ -65,7 +78,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        from benchmark import compress_verified_file
+        from benchmark import compress_verified_dicom
     except SystemExit as exc:
         emit_diagnostic(
             "runtime_dependency",
@@ -79,7 +92,7 @@ def main() -> int:
         return 2
 
     try:
-        pixel_hash = compress_verified_file(
+        verified = compress_verified_dicom(
             args.input,
             args.output,
             args.transfer_syntax,
@@ -95,7 +108,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(pixel_hash)
+    payload = {
+        "pixel_hash": verified.pixel_hash,
+        "provenance": verified.provenance,
+    }
+    print(RESULT_PREFIX + json.dumps(payload, sort_keys=True, separators=(",", ":")))
     return 0
 
 

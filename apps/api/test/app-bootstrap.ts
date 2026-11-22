@@ -8,6 +8,7 @@ import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter
 import { correlationMiddleware } from '../src/common/observability/correlation.middleware.js';
 import { limitUploadBody } from '../src/common/security/upload-size.middleware.js';
 import { REDIS_CLIENT, type RedisCommands } from '../src/redis/redis-client.interface.js';
+import { BACKUP_STORAGE, type BackupStorage } from '../src/backup/backup-storage.js';
 
 // Prisma maps BIGINT columns (e.g. BackupRun.sizeBytes) to JS BigInt, which
 // JSON.stringify cannot serialize. Keep responses JSON-safe in the test harness.
@@ -120,14 +121,19 @@ export function createInMemoryRedisClient(): RedisCommands {
   };
 }
 
-export async function createTestApp(): Promise<{
+export async function createTestApp(
+  options: { backupStorage?: BackupStorage } = {},
+): Promise<{
   app: INestApplication;
   server: unknown;
 }> {
-  const moduleFixture = await Test.createTestingModule({ imports: [AppModule] })
+  let builder = Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(REDIS_CLIENT)
-    .useValue(createInMemoryRedisClient())
-    .compile();
+    .useValue(createInMemoryRedisClient());
+  if (options.backupStorage) {
+    builder = builder.overrideProvider(BACKUP_STORAGE).useValue(options.backupStorage);
+  }
+  const moduleFixture = await builder.compile();
 
   // abortOnError:false keeps a bootstrap error from process.exit() killing
   // the Jest worker; the error is instead thrown up to the test suite.

@@ -59,6 +59,15 @@ export function buildP10Dicom(
   parts.push(element(0x0008, 0x0060, 'CS', opts.modality ?? 'MR'));
   if (all.study) parts.push(element(0x0020, 0x000d, 'UI', studyUid));
   if (all.series) parts.push(element(0x0020, 0x000e, 'UI', seriesUid));
+  parts.push(element(0x0028, 0x0002, 'US', '\u0001\u0000'));
+  parts.push(element(0x0028, 0x0004, 'CS', 'MONOCHROME2'));
+  parts.push(element(0x0028, 0x0010, 'US', '\u0008\u0000'));
+  parts.push(element(0x0028, 0x0011, 'US', '\u0008\u0000'));
+  parts.push(element(0x0028, 0x0100, 'US', '\u0008\u0000'));
+  parts.push(element(0x0028, 0x0101, 'US', '\u0008\u0000'));
+  parts.push(element(0x0028, 0x0102, 'US', '\u0007\u0000'));
+  parts.push(element(0x0028, 0x0103, 'US', '\u0000\u0000'));
+  parts.push(element(0x7fe0, 0x0010, 'OW', '\u0000'.repeat(64)));
   return Buffer.concat(parts);
 }
 

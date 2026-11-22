@@ -206,8 +206,11 @@ presence of `axis_session`, so any value is enough for a smoke test.
 3. On the hospital "Submit Study" flow, pick the real DICOM (either the raw
    `.dcm` or zipped as `study.zip`).
 4. The API validates the ZIP, parses DICOM, losslessly compresses each instance,
-   verifies its decoded pixel hash, then stores only verified files in Orthanc,
-   persists `Patient → Study → Series → Instance` in PostgreSQL; the study is
+   verifies its decoded pixel hash, then stores only verified files in Orthanc.
+   JPEG Baseline input with valid lossy history is decoded and re-encoded to
+   JPEG 2000 Lossless while preserving `LossyImageCompression` and its method/
+   ratio; other lossy syntaxes are rejected. The API then persists
+   `Patient → Study → Series → Instance` in PostgreSQL; the study is
    released to the manager worklist as `UNASSIGNED` and emitted
    `STUDY_UPLOADED` + `DICOM_IMPORTED` audit events.
 5. A manager assigns the study to a radiologist.

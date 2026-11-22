@@ -471,7 +471,10 @@ horizontal space.
 ```
 1. Hospital uploads DICOM through the authenticated Axis ingest endpoint.
 2. The API validates the instance, compresses it losslessly, and verifies the
-   decoded pixel SHA-256 hash before making any storage request for that file.
+   canonical decoded pixel SHA-256 hash before making any storage request for
+   that file. JPEG Baseline sources with valid mandatory lossy history are
+   decoded and re-encoded to JPEG 2000 Lossless with the history preserved;
+   other lossy syntaxes are rejected.
 3. Only the verified compressed instance is posted to Orthanc over the private
    API network; direct REST, STOW-RS, and DICOM C-STORE uploads are disabled.
 4. Axis creates Study/Series/Instance records in PostgreSQL.

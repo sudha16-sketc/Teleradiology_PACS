@@ -544,8 +544,10 @@ The authenticated imaging endpoints are:
 - `POST /api/dicom/reingest/:studyUid` — authorized recovery from original
   DICOM files (multipart field `file`, ZIP or individual instances). Files are
   parsed, UID-checked, losslessly compressed and pixel-hash verified before they
-  reach Orthanc, and only then reflected as available. Reports, assignments,
-  tenants, and clinical statuses are preserved.
+  reach Orthanc, and only then reflected as available. JPEG Baseline sources are
+  accepted when their mandatory lossy history is present and are re-encoded to
+  JPEG 2000 Lossless while that history is preserved; all other lossy syntaxes
+  are rejected. Reports, assignments, tenants, and clinical statuses are preserved.
 - `GET|POST /api/admin/dicom-reconciliation` — ADMIN-only, paginated
   reconciliation runs. `POST` accepts `page`, `pageSize` (max 50), and optional
   `hospitalId`; results are recorded and never delete or overwrite DICOM data.

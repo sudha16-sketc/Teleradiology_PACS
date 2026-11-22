@@ -81,7 +81,11 @@ the deployable artifact. The API worker runs `python3` with that build-created
 site-packages directory on `PYTHONPATH`. Set `AXIS_DICOM_PYTHON` only when using
 an external interpreter; missing codec/runtime dependencies cause ingest to fail
 closed. Run `pnpm dicom:verify` after deployment to re-check the installed worker
-without changing application startup behavior.
+without changing application startup behavior. The verifier now also exercises a
+synthetic JPEG Baseline → JPEG 2000 Lossless conversion with exact pixel-hash
+verification and lossy-history preservation. Production ingest accepts JPEG
+Baseline only with `LossyImageCompression=01`, method `ISO_10918_1`, and a
+positive finite ratio; all other lossy syntaxes remain rejected.
 
 After deployment, access Orthanc only from the API's private network.
 Unauthenticated `/system`, `/studies`, `/patients`, `/plugins` and

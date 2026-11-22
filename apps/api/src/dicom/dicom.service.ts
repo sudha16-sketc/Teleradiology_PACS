@@ -9,15 +9,20 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { orthancBaseUrl } from '../common/config/orthanc-url.js';
+import { createHash } from 'node:crypto';
 import { readFile } from 'fs/promises';
 import AdmZip from 'adm-zip';
 import { Prisma } from '@prisma/client';
 import type { Modality, StudyPriority, Subspecialty, UserRole } from '@prisma/client';
 import { extractDicomArchive, type ExtractedArchive } from './zip-archive.js';
 import { parseDicomBuffer, validateDicomIdentifiers, type ParsedDicom } from './dicom.parser.js';
-import { isValidDicomUid } from './dicom.constants.js';
+import { classifySourceCompression, isValidDicomUid } from './dicom.constants.js';
 import { DicomWebService } from '../dicomweb/dicomweb.service.js';
-import { compressDicomBuffer } from './dicom-compression.js';
+import {
+  compressDicomBufferDetailed,
+  DicomCompressionError,
+  type DicomCompressionProvenance,
+} from './dicom-compression.js';
 import type { ImagingAvailabilityResult } from '@axis/types';
 
 export interface IngestUser {
@@ -42,6 +47,8 @@ interface OrthancStored {
   orthancSeriesId: string;
   orthancStudyId: string;
   orthancPatientId: string;
+  compressionProvenance: DicomCompressionProvenance;
+  instanceId?: string;
 }
 
 const MODALITY_MAP: Record<string, Modality> = {
@@ -67,6 +74,86 @@ function isZip(buffer: Buffer): boolean {
 
 function normalizeUid(uid: string | null | undefined): string {
   return (uid ?? '').replace(/[\u0000\s]+/g, '');
+}
+
+function safeInstanceKey(parsed: ParsedDicom): string {
+  return createHash('sha256')
+    .update('axis-dicom-instance-key:v1\0')
+    .update(normalizeUid(parsed.sopInstanceUid))
+    .digest('hex');
+}
+
+function uniformProvenanceHash(
+  provenance: DicomCompressionProvenance[],
+  key: 'sourcePixelSha256' | 'outputPixelSha256',
+): string | undefined {
+  const values = provenance
+    .map((item) => item[key])
+    .filter((item): item is string => typeof item === 'string');
+  if (values.length === 0 || values.length !== provenance.length) return undefined;
+  return values.every((value) => value === values[0]) ? values[0] : undefined;
+}
+
+function diagnosticSyntax(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function compressionAuditMetadata(stored: OrthancStored[]): Record<string, unknown> {
+  const provenance = stored.map((item) => ({
+    ...item.compressionProvenance,
+    instanceId: item.instanceId,
+  }));
+  const sources = [
+    ...new Set(
+      provenance
+        .map((item) => item.sourceTransferSyntax)
+        .filter((item): item is string => Boolean(item)),
+    ),
+  ];
+  const targets = [
+    ...new Set(
+      provenance
+        .map((item) => item.targetTransferSyntax)
+        .filter((item): item is string => Boolean(item)),
+    ),
+  ];
+  return {
+    compressionPolicy: 'jpeg-baseline-lossless-reencode-v1',
+    compressionVerifiedCount: provenance.filter((item) => item.pixelVerified).length,
+    compressionReencodedCount: provenance.filter(
+      (item) => item.reencodePolicyVersion === 'jpeg-baseline-lossless-v1',
+    ).length,
+    compressionPriorLossyCount: provenance.filter((item) => item.priorLossyCompression).length,
+    compressionSourceTransferSyntaxes: sources,
+    compressionTargetTransferSyntaxes: targets,
+    compressionProvenanceCount: provenance.length,
+    compressionInstanceIds: provenance
+      .map((item) => item.instanceId)
+      .filter((item): item is string => Boolean(item)),
+    sourcePixelSha256: uniformProvenanceHash(provenance, 'sourcePixelSha256'),
+    outputPixelSha256: uniformProvenanceHash(provenance, 'outputPixelSha256'),
+    compressionProvenance: provenance,
+  };
+}
+
+function compressionFailureMetadata(error: unknown): Record<string, unknown> {
+  if (error instanceof DicomCompressionError) {
+    const metadata = error.diagnostic?.metadata ?? {};
+    return {
+      status: 'FAILED',
+      reason: error.message,
+      failureStage: error.failureStage || 'unknown',
+      errorType: error.diagnostic?.errorType,
+      diagnostic: error.diagnostic ?? {},
+      sourceTransferSyntax: diagnosticSyntax(metadata.source_transfer_syntax),
+      targetTransferSyntax: diagnosticSyntax(metadata.target_transfer_syntax),
+    };
+  }
+  return {
+    status: 'FAILED',
+    reason: error instanceof Error ? error.message : String(error),
+    failureStage: 'unknown',
+  };
 }
 
 @Injectable()
@@ -173,11 +260,11 @@ export class DicomService {
    * heuristic completely.
    */
   private async storeRawInstance(buffer: Buffer, parsed: ParsedDicom): Promise<OrthancStored> {
-    const compressed = await compressDicomBuffer(buffer);
+    const compression = await compressDicomBufferDetailed(buffer);
     const res = await this.orthancFetch('/instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/dicom' },
-      body: new Uint8Array(compressed) as unknown as BodyInit,
+      body: new Uint8Array(compression.buffer) as unknown as BodyInit,
     });
     const body = (await res.json()) as any;
     // Orthanc is idempotent by SOP Instance UID: an already-stored instance
@@ -200,6 +287,10 @@ export class DicomService {
       orthancSeriesId: body.ParentSeries,
       orthancStudyId: body.ParentStudy,
       orthancPatientId: body.ParentPatient,
+      compressionProvenance: {
+        ...compression.provenance,
+        instanceKey: safeInstanceKey(parsed),
+      },
     };
   }
 
@@ -489,7 +580,7 @@ export class DicomService {
 
         for (const inst of group) {
           const sopUid = inst.parsed.sopInstanceUid as string;
-          await this.prisma.instance.upsert({
+          const instance = await this.prisma.instance.upsert({
             where: { sopInstanceUid: sopUid },
             update: {
               orthancInstanceId: inst.orthancInstanceId,
@@ -507,6 +598,7 @@ export class DicomService {
               sopClassUid: inst.parsed.sopClassUid || '',
             },
           });
+          inst.instanceId = instance.id;
         }
       }
 
@@ -552,7 +644,9 @@ export class DicomService {
         seriesCount: seriesGroups.size,
         instanceCount: stored.length,
         transferSyntax: first.transferSyntaxName,
+        sourceCompressionClass: classifySourceCompression(first.transferSyntaxUid),
         availability: availability.state,
+        ...compressionAuditMetadata(stored),
       });
 
       return {
@@ -566,7 +660,7 @@ export class DicomService {
       // Emit a DICOM_IMPORT_FAILED audit if we already created a study record.
       if (study?.id) {
         await this.auditEntry(user, 'DICOM_IMPORT_FAILED', study.id, {
-          reason: (err as Error).message,
+          ...compressionFailureMetadata(err),
         }).catch(() => undefined);
         await this.prisma.study
           .update({ where: { id: study.id }, data: { status: 'CANCELLED' } })
@@ -758,6 +852,7 @@ export class DicomService {
             : await this.prisma.instance.create({
                 data: { sopInstanceUid: sopUid, ...instanceData },
               });
+          item.instanceId = instance.id;
           instanceByUid.set(sopUid, instance);
         }
       }
@@ -791,13 +886,15 @@ export class DicomService {
         storedCount: stored.length,
         seriesCount,
         instanceCount,
+        sourceCompressionClass: classifySourceCompression(parsedList[0]?.transferSyntaxUid),
         availability: availability.state,
+        ...compressionAuditMetadata(stored),
       });
       return { study: updatedStudy, availability, storedCount: stored.length };
     } catch (err) {
       await this.auditEntry(user, 'DICOM_REINGEST', study.id, {
         status: 'FAILED',
-        reason: (err as Error).message,
+        ...compressionFailureMetadata(err),
       }).catch(() => undefined);
       if (err instanceof BadRequestException || err instanceof ForbiddenException) {
         throw err;

@@ -49,11 +49,16 @@ function dicomElement(
   value: string | Buffer,
 ): Buffer {
   const bytes = Buffer.isBuffer(value) ? value : padEven(value);
-  const header = Buffer.alloc(8);
+  const longVr = ['OB', 'OW', 'OF', 'SQ', 'UT', 'UN'].includes(vr);
+  const header = Buffer.alloc(longVr ? 12 : 8);
   header.writeUInt16LE(group, 0);
   header.writeUInt16LE(element, 2);
   header.write(vr, 4, 2, 'latin1');
-  header.writeUInt16LE(bytes.length, 6);
+  if (longVr) {
+    header.writeUInt32LE(bytes.length, 8);
+  } else {
+    header.writeUInt16LE(bytes.length, 6);
+  }
   return Buffer.concat([header, bytes]);
 }
 
@@ -78,6 +83,15 @@ function makeDicom(studyUid: string, seriesUid: string, sopUid: string): Buffer 
     dicomElement(0x0020, 0x000e, 'UI', seriesUid),
     dicomElement(0x0020, 0x0011, 'IS', '1'),
     dicomElement(0x0020, 0x0013, 'IS', '1'),
+    dicomElement(0x0028, 0x0002, 'US', Buffer.from([1, 0])),
+    dicomElement(0x0028, 0x0004, 'CS', 'MONOCHROME2'),
+    dicomElement(0x0028, 0x0010, 'US', Buffer.from([8, 0])),
+    dicomElement(0x0028, 0x0011, 'US', Buffer.from([8, 0])),
+    dicomElement(0x0028, 0x0100, 'US', Buffer.from([8, 0])),
+    dicomElement(0x0028, 0x0101, 'US', Buffer.from([8, 0])),
+    dicomElement(0x0028, 0x0102, 'US', Buffer.from([7, 0])),
+    dicomElement(0x0028, 0x0103, 'US', Buffer.from([0, 0])),
+    dicomElement(0x7fe0, 0x0010, 'OW', Buffer.alloc(64)),
   ]);
 }
 

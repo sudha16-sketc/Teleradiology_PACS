@@ -71,6 +71,10 @@ describe('single-login OHIF DICOMweb access', () => {
     await request(server).get(path()).expect(401);
   });
 
+  it('does not expose mutation routes to unauthenticated callers', async () => {
+    await request(server).post(path()).expect(401);
+  });
+
   it('returns 401 for an invalid session cookie', async () => {
     await request(server)
       .get(path())
@@ -114,9 +118,30 @@ describe('single-login OHIF DICOMweb access', () => {
 
   it('rejects DICOMweb mutations even for an assigned radiologist', async () => {
     const agent = await loginAgent(server, USERS.RAD1);
-    await agent.post(path()).expect(405);
-    await agent.put(path()).expect(405);
-    await agent.delete(path()).expect(405);
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('[]', { status: 200 }),
+    );
+
+    try {
+      await agent.post(path()).expect(405);
+      await agent.put(path()).expect(405);
+      await agent.patch(path()).expect(405);
+      await agent.delete(path()).expect(405);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('preserves CORS preflight for unsupported DICOMweb methods', async () => {
+    const res = await request(server)
+      .options(path())
+      .set('Origin', 'https://example.test')
+      .set('Access-Control-Request-Method', 'POST')
+      .expect(204);
+
+    expect(res.headers['access-control-allow-origin']).toBe('https://example.test');
+    expect(res.headers['access-control-allow-methods']).toContain('POST');
   });
 
   it('does not forward accept-encoding or upstream compression headers', async () => {

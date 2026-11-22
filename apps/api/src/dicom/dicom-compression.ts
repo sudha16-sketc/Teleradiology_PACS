@@ -22,6 +22,7 @@ const RUNTIME_SITE_PACKAGES = resolve(
   'site-packages',
 );
 const DIAGNOSTIC_PREFIX = 'AXIS_DICOM_DIAGNOSTIC=';
+const RESULT_PREFIX = 'AXIS_DICOM_RESULT=';
 const SAFE_METADATA_KEYS = new Set([
   'source_transfer_syntax',
   'target_transfer_syntax',
@@ -29,8 +30,20 @@ const SAFE_METADATA_KEYS = new Set([
   'columns',
   'samples_per_pixel',
   'bits_allocated',
+  'bits_stored',
+  'high_bit',
   'pixel_representation',
+  'photometric_interpretation',
   'number_of_frames',
+  'source_compression_type',
+  'prior_lossy_compression',
+  'lossy_image_compression',
+  'lossy_method',
+  'lossy_ratio',
+  'reencode_policy_version',
+  'source_pixel_sha256',
+  'output_pixel_sha256',
+  'pixel_verified',
 ]);
 const LOSSLESS_TRANSFER_SYNTAXES = new Set([
   '1.2.840.10008.1.2.4.90',
@@ -50,6 +63,38 @@ export type CompressionDiagnostic = {
   message?: string;
   metadata?: Record<string, unknown>;
 };
+
+export type DicomCompressionProvenance = {
+  instanceKey?: string;
+  sourceTransferSyntax?: string;
+  targetTransferSyntax?: string;
+  sourceCompressionType?: string;
+  priorLossyCompression?: boolean;
+  lossyImageCompression?: string;
+  lossyMethod?: string;
+  lossyRatio?: string;
+  reencodePolicyVersion?: string;
+  sourcePixelSha256?: string;
+  outputPixelSha256?: string;
+  pixelVerified?: boolean;
+};
+
+export type DicomCompressionResult = {
+  buffer: Buffer;
+  pixelHash: string;
+  provenance: DicomCompressionProvenance;
+};
+
+export class DicomCompressionError extends ServiceUnavailableException {
+  constructor(
+    message: string,
+    readonly diagnostic?: CompressionDiagnostic,
+    readonly failureStage = 'unknown',
+  ) {
+    super(message);
+    this.name = 'DicomCompressionError';
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -100,6 +145,73 @@ export function parseCompressionDiagnostic(stderr: string): CompressionDiagnosti
   return undefined;
 }
 
+type StringProvenanceKey =
+  | 'sourceTransferSyntax'
+  | 'targetTransferSyntax'
+  | 'sourceCompressionType'
+  | 'lossyImageCompression'
+  | 'lossyMethod'
+  | 'lossyRatio'
+  | 'reencodePolicyVersion'
+  | 'sourcePixelSha256'
+  | 'outputPixelSha256';
+
+function safeProvenance(value: unknown): DicomCompressionProvenance {
+  if (!isRecord(value)) return {};
+  const provenance: DicomCompressionProvenance = {};
+  const strings: Array<[StringProvenanceKey, string]> = [
+    ['sourceTransferSyntax', 'source_transfer_syntax'],
+    ['targetTransferSyntax', 'target_transfer_syntax'],
+    ['sourceCompressionType', 'source_compression_type'],
+    ['lossyImageCompression', 'lossy_image_compression'],
+    ['lossyMethod', 'lossy_method'],
+    ['lossyRatio', 'lossy_ratio'],
+    ['reencodePolicyVersion', 'reencode_policy_version'],
+    ['sourcePixelSha256', 'source_pixel_sha256'],
+    ['outputPixelSha256', 'output_pixel_sha256'],
+  ];
+  for (const [target, source] of strings) {
+    const entry = value[source];
+    if (typeof entry === 'string') {
+      Object.assign(provenance, { [target]: entry.slice(0, 100) });
+    }
+  }
+  for (const [target, source] of [
+    ['priorLossyCompression', 'prior_lossy_compression'],
+    ['pixelVerified', 'pixel_verified'],
+  ] as const) {
+    const entry = value[source];
+    if (typeof entry === 'boolean') {
+      Object.assign(provenance, { [target]: entry });
+    }
+  }
+  return provenance;
+}
+
+export function parseCompressionResult(stdout: string): Omit<DicomCompressionResult, 'buffer'> | undefined {
+  const lines = stdout.split(/\r?\n/);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].trim();
+    if (line.startsWith(RESULT_PREFIX)) {
+      try {
+        const parsed: unknown = JSON.parse(line.slice(RESULT_PREFIX.length));
+        if (!isRecord(parsed) || typeof parsed.pixel_hash !== 'string') continue;
+        if (!/^[a-f0-9]{64}$/i.test(parsed.pixel_hash)) continue;
+        return {
+          pixelHash: parsed.pixel_hash,
+          provenance: safeProvenance(parsed.provenance),
+        };
+      } catch {
+        continue;
+      }
+    }
+    if (/^[a-f0-9]{64}$/i.test(line)) {
+      return { pixelHash: line.toLowerCase(), provenance: {} };
+    }
+  }
+  return undefined;
+}
+
 export function inferCompressionFailureStage(error: unknown, stderr: string): string {
   const failure = error as ExecFileFailure;
   const message = `${failure?.message ?? ''} ${stderr}`;
@@ -115,10 +227,19 @@ export function inferCompressionFailureStage(error: unknown, stderr: string): st
   if (message.includes('no Pixel Data') || message.includes('Pixel Data (7FE0,0010) is empty')) {
     return 'source_pixel_data';
   }
+  if (message.includes('LossyImageCompression') || message.includes('lossy method')) {
+    return 'validate_lossy_history';
+  }
+  if (message.includes('JPEG Baseline requires') || message.includes('pixel metadata')) {
+    return 'validate_source_pixels';
+  }
+  if (message.includes('Uncompressed intermediate')) return 'build_uncompressed_intermediate';
+  if (message.includes('could not be decoded')) return 'decode_source_pixels';
+  if (message.includes('pixels are not exactly equal')) return 'verify_pixel_integrity';
   if (message.includes('configured DICOM transfer syntax')) return 'configured_transfer_syntax';
   if (message.includes('transfer syntax')) return 'source_transfer_syntax';
   if (message.includes('verification failed')) return 'pixel_verification';
-  return 'compression_process';
+  return 'unknown';
 }
 
 function pythonExecutable(): string {
@@ -152,7 +273,7 @@ function transferSyntax(): string {
   return configured;
 }
 
-export async function compressDicomBuffer(input: Buffer): Promise<Buffer> {
+export async function compressDicomBufferDetailed(input: Buffer): Promise<DicomCompressionResult> {
   const workDir = await mkdtemp(join(tmpdir(), 'axis-dicom-compress-'));
   const inputPath = join(workDir, 'source.dcm');
   const outputPath = join(workDir, 'verified.dcm');
@@ -169,7 +290,7 @@ export async function compressDicomBuffer(input: Buffer): Promise<Buffer> {
     stage = 'validate_configuration';
     configuredTransferSyntax = transferSyntax();
     stage = 'python_worker';
-    await execFileAsync(
+    const { stdout } = await execFileAsync(
       pythonExecutable(),
       [
         COMPRESSION_SCRIPT,
@@ -187,8 +308,14 @@ export async function compressDicomBuffer(input: Buffer): Promise<Buffer> {
         env: pythonEnvironment(),
       },
     );
+    stage = 'parse_worker_result';
+    const parsed = parseCompressionResult(outputText(stdout));
+    if (!parsed) {
+      throw new Error('DICOM compression worker did not return a valid result');
+    }
     stage = 'read_output';
-    return await readFile(outputPath);
+    const buffer = await readFile(outputPath);
+    return { buffer, ...parsed };
   } catch (error: unknown) {
     const failure = error as ExecFileFailure;
     const stderr = outputText(failure?.stderr);
@@ -218,11 +345,18 @@ export async function compressDicomBuffer(input: Buffer): Promise<Buffer> {
       metadata: diagnostic?.metadata ?? {},
     });
 
-    throw new ServiceUnavailableException(
+    const compressionError = new DicomCompressionError(
       'Lossless DICOM compression or pixel verification failed',
-      { cause: error },
+      diagnostic,
+      resolvedStage,
     );
+    (compressionError as Error & { cause?: unknown }).cause = error;
+    throw compressionError;
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
+}
+
+export async function compressDicomBuffer(input: Buffer): Promise<Buffer> {
+  return (await compressDicomBufferDetailed(input)).buffer;
 }

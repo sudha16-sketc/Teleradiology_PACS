@@ -2,7 +2,9 @@
 
 ## Status
 
-Design only. No implementation is proposed as a completed change. This document assumes the team decision to use only lossless compression and never permit lossy transfer syntaxes.
+Design rationale plus the implemented ingest policy. The original design proposed fail-open fallback; the current implementation is fail-closed and never posts an instance whose decode/re-encode/verification did not succeed.
+
+Current supported source classes are uncompressed Explicit/Implicit VR Little Endian, already-lossless JPEG-LS/JPEG 2000 pass-through, and JPEG Baseline (`1.2.840.10008.1.2.4.50`) re-encoding. JPEG Baseline is accepted only with `LossyImageCompression=01`, a positive finite ratio, and `ISO_10918_1` method. It is decoded, wrapped in an Explicit VR Little Endian intermediate, encoded to JPEG 2000 Lossless (`1.2.840.10008.1.2.4.90`), and verified by exact decoded-pixel equality. The original lossy history is preserved; the stored file is lossless only relative to the decoded JPEG Baseline pixels and must not be described as recovering the original acquisition pixels. All other compressed/private syntaxes are rejected.
 
 ## Existing upload, storage, and viewing behavior
 
@@ -25,6 +27,7 @@ Required order:
 2. **Capture the original.** Compute SHA-256 over the exact uploaded instance bytes and record original size. Keep the original buffer/file until the entire success or fallback decision completes.
 3. **Determine transfer syntax.**
    - If the input transfer syntax is one of the lossless target syntaxes (`1.2.840.10008.1.2.4.90`, `1.2.840.10008.1.2.4.80`, or `1.2.840.10008.1.2.5`) and recompression is not expected to improve storage materially, skip recompression.
+   - If the input transfer syntax is JPEG Baseline (`1.2.840.10008.1.2.4.50`), verify the mandatory lossy history and re-encode with JPEG 2000 Lossless (`1.2.840.10008.1.2.4.90`); reject any other configured target.
    - Otherwise, select the target using a preconfigured policy. Recommended policy: JPEG 2000 Lossless for CT/MR-style multi-frame or 8/16-bit data only after real codec testing; JPEG-LS Lossless where supported and benchmarked; never RLE as the target except for explicit compatibility needs. The final target must be a lossless UID, not a lossy UID.
    - Already-compressed J2K/JPEG-LS/RLE inputs must be decoded before recompression only as a POC process. Production can skip if already under policy or first validate/reencode.
 4. **Write to a temporary file.** The compressor receives the original instance and writes exactly one candidate DICOM file to a temporary directory. No in-place replacement and no overwrite of upload or staging files.
@@ -42,15 +45,13 @@ For reingest, repeat the same sequence before `storeRawInstance()`. It must neve
 
 ### Failure fallback
 
-The compressor is fail-open with respect to clinical availability:
+The implemented compressor is fail-closed:
 
-- If parsing/compression, metadata verification, pixel verification, temp-file write, or candidate verification fails, retain and POST the original unchanged bytes.
-- Do not add lossy tags or convert a file outside the configured lossless targets.
-- Log an error with study/series/SOP UIDs and a bounded reason.
-- Audit `outcome=FALLBACK_ORIGINAL`, `verified=no`, and the failure stage.
-- Continue ingest only if the original passes all existing validation and Orthanc storage succeeds.
-- If Orthanc also rejects the original, the existing ingest failure behavior remains unchanged.
-- The original staging file is removed only by normal request cleanup after Orthanc has confirmed storage of the fallback or candidate.
+- If parsing, lossy-history validation, decode, metadata verification, pixel verification, temp-file write, or candidate verification fails, no candidate is posted to Orthanc and no output file remains.
+- Do not add lossy tags, reset lossy history, or convert a file outside the configured lossless targets.
+- Log a bounded diagnostic with the failure stage, error type, and allowlisted metadata only.
+- Audit `DICOM_IMPORT_FAILED` or `DICOM_REINGEST` failure metadata with the diagnostic and failure stage.
+- Existing staging cleanup still removes the source temp files after each request.
 
 ## 2. Implementation options
 
@@ -184,6 +185,8 @@ Minimum fields:
 | `correlationId` | Existing request/correlation ID when available |
 
 The metadata snapshot and pixel verification result must be included as booleans, counts, and a bounded mismatch summary. Do not place patient name or full tag values into audit metadata.
+
+The current implementation writes these fields into the existing `AuditLog.metadata` JSON on `DICOM_IMPORTED`, `DICOM_IMPORT_FAILED`, and `DICOM_REINGEST` events; no Prisma schema change or migration is required. `compressionProvenance` contains per-instance source/target syntax, source compression class, prior-lossy flag, preserved lossy method/ratio, policy version, source/output canonical pixel SHA-256, and exact-verification result. The API also writes a correlated structured log on every worker failure.
 
 ## 4. Backup and retention impact
 

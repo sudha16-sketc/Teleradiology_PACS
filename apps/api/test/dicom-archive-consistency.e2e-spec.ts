@@ -1,15 +1,21 @@
 import 'reflect-metadata';
 import request from 'supertest';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { createTestApp } from './app-bootstrap.js';
 import { loginAgent, USERS, prisma } from './helpers.js';
 import { buildP10Dicom } from './dicom-fixture.js';
 import { orthancBaseUrl } from '../src/common/config/orthanc-url.js';
+import * as dicomCompression from '../src/dicom/dicom-compression.js';
 import type { INestApplication } from '@nestjs/common';
 
-jest.mock('../src/dicom/dicom-compression.js', () => ({
-  compressDicomBuffer: async (buffer: Buffer) => buffer,
-}));
+jest.mock('../src/dicom/dicom-compression.js', () => {
+  const actual = jest.requireActual('../src/dicom/dicom-compression.js');
+  return {
+    ...actual,
+    compressDicomBuffer: jest.fn(),
+    compressDicomBufferDetailed: jest.fn(),
+  };
+});
 
 let app: INestApplication;
 let server: any;
@@ -45,6 +51,53 @@ function normalizeUid(value: unknown): string {
     .split('')
     .filter((char) => char !== '\u0000' && !/\s/.test(char))
     .join('');
+}
+
+function compressionFailure(): dicomCompression.DicomCompressionError {
+  return new dicomCompression.DicomCompressionError(
+    'Lossless DICOM compression or pixel verification failed',
+    {
+      stage: 'verify_pixel_integrity',
+      errorType: 'LosslessCompressionError',
+      message: 'Decoded output pixels are not exactly equal',
+      metadata: {
+        source_transfer_syntax: '1.2.840.10008.1.2.4.50',
+        target_transfer_syntax: '1.2.840.10008.1.2.4.90',
+        rows: 8,
+        columns: 8,
+      },
+    },
+    'verify_pixel_integrity',
+  );
+}
+
+const compressMock = jest.mocked(dicomCompression.compressDicomBuffer);
+const compressDetailedMock = jest.mocked(dicomCompression.compressDicomBufferDetailed);
+
+function resetCompressionMock(): void {
+  compressMock.mockReset();
+  compressMock.mockImplementation(async (buffer) => buffer);
+  compressDetailedMock.mockReset();
+  compressDetailedMock.mockImplementation(async (buffer) => {
+    const hash = createHash('sha256').update(buffer).digest('hex');
+    return {
+      buffer,
+      pixelHash: hash,
+      provenance: {
+        sourceTransferSyntax: '1.2.840.10008.1.2.4.50',
+        targetTransferSyntax: '1.2.840.10008.1.2.4.90',
+        sourceCompressionType: 'jpeg-baseline',
+        priorLossyCompression: true,
+        lossyImageCompression: '01',
+        lossyMethod: 'ISO_10918_1',
+        lossyRatio: '4.0',
+        reencodePolicyVersion: 'jpeg-baseline-lossless-v1',
+        sourcePixelSha256: hash,
+        outputPixelSha256: hash,
+        pixelVerified: true,
+      },
+    };
+  });
 }
 
 async function createIndexedStudy(data: {
@@ -107,6 +160,10 @@ beforeAll(async () => {
   app = built.app;
   server = built.server;
   hospitalAgent = await loginAgent(server, USERS.H_CGH);
+});
+
+beforeEach(() => {
+  resetCompressionMock();
 });
 
 afterEach(async () => {
@@ -302,11 +359,20 @@ describe('DICOM archive consistency', () => {
     const seriesUid = `${studyUid}.2`;
     const sopUid = `${studyUid}.3`;
     const raw = buildP10Dicom({ studyUid, seriesUid, sopUid, modality: 'CT' });
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
 
     const upload = await hospitalAgent
       .post('/api/dicom/ingest')
       .attach('file', raw, { filename: 'archive-consistency.dcm', contentType: 'application/octet-stream' });
     expect(upload.status).toBe(201);
+
+    const postIndex = fetchSpy.mock.calls.findIndex(([input, init]) => (
+      String(input).endsWith('/instances') && init?.method === 'POST'
+    ));
+    expect(postIndex).toBeGreaterThanOrEqual(0);
+    expect(fetchSpy.mock.invocationCallOrder[postIndex]).toBeGreaterThan(
+      compressDetailedMock.mock.invocationCallOrder[0],
+    );
 
     const study = await prisma.study.findUniqueOrThrow({ where: { studyInstanceUid: studyUid } });
     createdStudyIds.push(study.id);
@@ -332,5 +398,175 @@ describe('DICOM archive consistency', () => {
     const res = await request(server).get('/api/health/ready').expect(200);
     const dicomweb = res.body.components.find((component: { name: string }) => component.name === 'dicomweb');
     expect(dicomweb).toMatchObject({ name: 'dicomweb', status: 'up' });
+  });
+
+  it('associates each provenance entry with its indexed instance', async () => {
+    const studyUid = uid();
+    const firstSopUid = `${studyUid}.31`;
+    const secondSopUid = `${studyUid}.32`;
+    const raws = [
+      buildP10Dicom({ studyUid, seriesUid: `${studyUid}.3`, sopUid: firstSopUid, modality: 'CT' }),
+      buildP10Dicom({ studyUid, seriesUid: `${studyUid}.3`, sopUid: secondSopUid, modality: 'CT' }),
+    ];
+
+    const upload = await hospitalAgent
+      .post('/api/dicom/ingest')
+      .attach('file', raws[0], { filename: 'instance-one.dcm', contentType: 'application/octet-stream' })
+      .attach('file', raws[1], { filename: 'instance-two.dcm', contentType: 'application/octet-stream' });
+    expect(upload.status).toBe(201);
+
+    const study = await prisma.study.findUniqueOrThrow({ where: { studyInstanceUid: studyUid } });
+    createdStudyIds.push(study.id);
+    createdPatientIds.push(study.patientId);
+    if (study.orthancStudyId) createdOrthancStudyIds.push(study.orthancStudyId);
+
+    const instances = await prisma.instance.findMany({
+      where: { studyId: study.id },
+      select: { id: true, sopInstanceUid: true },
+    });
+    expect(instances).toHaveLength(2);
+
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { resourceId: study.id, action: 'DICOM_IMPORTED' },
+      orderBy: { timestamp: 'desc' },
+    });
+    const metadata = audit.metadata as Record<string, unknown>;
+    const provenance = metadata.compressionProvenance as Array<Record<string, unknown>>;
+    expect(provenance).toHaveLength(2);
+    expect(metadata.compressionProvenanceCount).toBe(2);
+    expect(metadata.sourcePixelSha256).toBeUndefined();
+    expect(metadata.outputPixelSha256).toBeUndefined();
+
+    const expectedSopByKey = new Map(
+      [firstSopUid, secondSopUid].map((sopUid) => [
+        createHash('sha256')
+          .update('axis-dicom-instance-key:v1\0')
+          .update(sopUid)
+          .digest('hex'),
+        sopUid,
+      ]),
+    );
+    const keys = new Set<string>();
+    for (const entry of provenance) {
+      expect(typeof entry.instanceId).toBe('string');
+      expect(entry.instanceKey).toMatch(/^[a-f0-9]{64}$/);
+      const expectedSopUid = expectedSopByKey.get(entry.instanceKey as string);
+      expect(expectedSopUid).toBeTruthy();
+      const linkedInstance = instances.find((instance) => instance.id === entry.instanceId);
+      expect(normalizeUid(linkedInstance?.sopInstanceUid)).toBe(expectedSopUid);
+      keys.add(entry.instanceKey as string);
+    }
+    expect(keys.size).toBe(2);
+    const auditText = JSON.stringify(audit.metadata);
+    expect(auditText).not.toContain(firstSopUid);
+    expect(auditText).not.toContain(secondSopUid);
+  });
+
+  it('fails ingest before the Orthanc POST and audits the resolved failure stage', async () => {
+    const studyUid = uid();
+    const raw = buildP10Dicom({
+      studyUid,
+      seriesUid: `${studyUid}.2`,
+      sopUid: `${studyUid}.3`,
+      modality: 'CT',
+    });
+    compressDetailedMock.mockRejectedValue(compressionFailure());
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      calls.push({ url: String(input), init });
+      return probeResponse(200);
+    });
+
+    const upload = await hospitalAgent
+      .post('/api/dicom/ingest')
+      .attach('file', raw, { filename: 'compression-failure.dcm', contentType: 'application/octet-stream' });
+    expect(upload.status).toBe(503);
+    expect(calls.some((call) => call.url.endsWith('/instances') && call.init?.method === 'POST')).toBe(false);
+
+    const failed = await prisma.study.findUniqueOrThrow({ where: { studyInstanceUid: studyUid } });
+    createdStudyIds.push(failed.id);
+    createdPatientIds.push(failed.patientId);
+    expect(failed.status).toBe('CANCELLED');
+    expect(failed.imagingAvailability).not.toBe('AVAILABLE');
+    expect(failed.orthancStudyId).toBeNull();
+    expect(failed.seriesCount).toBe(0);
+    expect(failed.instanceCount).toBe(0);
+
+    const failureAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { resourceId: failed.id, action: 'DICOM_IMPORT_FAILED' },
+      orderBy: { timestamp: 'desc' },
+    });
+    expect(failureAudit.correlationId).toBeTruthy();
+    expect(failureAudit.metadata).toMatchObject({
+      status: 'FAILED',
+      failureStage: 'verify_pixel_integrity',
+      sourceTransferSyntax: '1.2.840.10008.1.2.4.50',
+      targetTransferSyntax: '1.2.840.10008.1.2.4.90',
+    });
+    expect(
+      await prisma.auditLog.findFirst({
+        where: { resourceId: failed.id, action: 'DICOM_IMPORTED' },
+      }),
+    ).toBeNull();
+  });
+
+  it('leaves existing imaging intact when reingest compression fails', async () => {
+    const { studyId, studyUid } = await createIndexedStudy({
+      status: 'UNASSIGNED',
+      imagingAvailability: 'AVAILABLE',
+      orthancStudyId: 'orth-existing',
+    });
+    const seriesUid = `${studyUid}.2`;
+    const sopUid = `${studyUid}.3`;
+    const series = await prisma.series.create({
+      data: {
+        seriesInstanceUid: seriesUid,
+        studyId,
+        modality: 'CT',
+        seriesNumber: 1,
+        instanceCount: 1,
+        orthancSeriesId: 'orth-series-existing',
+      },
+    });
+    const instance = await prisma.instance.create({
+      data: {
+        sopInstanceUid: sopUid,
+        seriesId: series.id,
+        studyId,
+        instanceNumber: 1,
+        sopClassUid: '1.2.840.10008.5.1.4.1.1.2',
+        orthancInstanceId: 'orth-instance-existing',
+      },
+    });
+    const raw = buildP10Dicom({ studyUid, seriesUid, sopUid, modality: 'CT' });
+    compressDetailedMock.mockRejectedValue(compressionFailure());
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      calls.push({ url: String(input), init });
+      return probeResponse(200);
+    });
+
+    const res = await hospitalAgent
+      .post(`/api/dicom/reingest/${encodeURIComponent(studyUid)}`)
+      .attach('file', raw, { filename: 'failed-reingest.dcm', contentType: 'application/octet-stream' });
+    expect(res.status).toBe(503);
+    expect(calls.some((call) => call.url.endsWith('/instances') && call.init?.method === 'POST')).toBe(false);
+
+    const preservedInstance = await prisma.instance.findUniqueOrThrow({ where: { id: instance.id } });
+    expect(preservedInstance.orthancInstanceId).toBe('orth-instance-existing');
+    const preservedStudy = await prisma.study.findUniqueOrThrow({ where: { id: studyId } });
+    expect(preservedStudy.imagingAvailability).toBe('AVAILABLE');
+    expect(preservedStudy.orthancStudyId).toBe('orth-existing');
+    expect(preservedStudy.instanceCount).toBe(1);
+
+    const failureAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { resourceId: studyId, action: 'DICOM_REINGEST' },
+      orderBy: { timestamp: 'desc' },
+    });
+    expect(failureAudit.metadata).toMatchObject({
+      status: 'FAILED',
+      failureStage: 'verify_pixel_integrity',
+      sourceTransferSyntax: '1.2.840.10008.1.2.4.50',
+    });
   });
 });
