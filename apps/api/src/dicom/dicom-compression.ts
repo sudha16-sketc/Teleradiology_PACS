@@ -20,6 +20,12 @@ const LOSSLESS_TRANSFER_SYNTAXES = new Set([
   '1.2.840.10008.1.2.4.80',
 ]);
 
+export function dicomCompressionEnabled(): boolean {
+  const configured = process.env.AXIS_DICOM_COMPRESSION_ENABLED;
+  if (configured === undefined) return true;
+  return !['0', 'false', 'no', 'off'].includes(configured.trim().toLowerCase());
+}
+
 function pythonExecutable(): string {
   if (process.env.AXIS_DICOM_PYTHON) return process.env.AXIS_DICOM_PYTHON;
   const venvExecutable = join(
@@ -43,6 +49,8 @@ function transferSyntax(): string {
 }
 
 export async function compressDicomBuffer(input: Buffer): Promise<Buffer> {
+  if (!dicomCompressionEnabled()) return input;
+
   const workDir = await mkdtemp(join(tmpdir(), 'axis-dicom-compress-'));
   const inputPath = join(workDir, 'source.dcm');
   const outputPath = join(workDir, 'verified.dcm');

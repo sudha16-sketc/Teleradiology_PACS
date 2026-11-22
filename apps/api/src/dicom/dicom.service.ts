@@ -5,6 +5,7 @@ import {
   ServiceUnavailableException,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -17,7 +18,10 @@ import { extractDicomArchive, type ExtractedArchive } from './zip-archive.js';
 import { parseDicomBuffer, validateDicomIdentifiers, type ParsedDicom } from './dicom.parser.js';
 import { isValidDicomUid } from './dicom.constants.js';
 import { DicomWebService } from '../dicomweb/dicomweb.service.js';
-import { compressDicomBuffer } from './dicom-compression.js';
+import {
+  compressDicomBuffer,
+  dicomCompressionEnabled,
+} from './dicom-compression.js';
 import type { ImagingAvailabilityResult } from '@axis/types';
 
 export interface IngestUser {
@@ -70,7 +74,7 @@ function normalizeUid(uid: string | null | undefined): string {
 }
 
 @Injectable()
-export class DicomService {
+export class DicomService implements OnModuleInit {
   private readonly logger = new Logger(DicomService.name);
 
   constructor(
@@ -78,6 +82,14 @@ export class DicomService {
     private readonly audit: AuditService,
     private readonly dicomweb: DicomWebService,
   ) {}
+
+  onModuleInit(): void {
+    if (!dicomCompressionEnabled()) {
+      this.logger.log(
+        'DICOM lossless compression is disabled; ingest and backup storage will pass buffers through unchanged.',
+      );
+    }
+  }
 
   private orthancBase(): string {
     return orthancBaseUrl();
@@ -173,7 +185,9 @@ export class DicomService {
    * heuristic completely.
    */
   private async storeRawInstance(buffer: Buffer, parsed: ParsedDicom): Promise<OrthancStored> {
-    const compressed = await compressDicomBuffer(buffer);
+    const compressed = dicomCompressionEnabled()
+      ? await compressDicomBuffer(buffer)
+      : buffer;
     const res = await this.orthancFetch('/instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/dicom' },
