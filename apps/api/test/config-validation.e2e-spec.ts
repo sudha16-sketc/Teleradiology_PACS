@@ -72,6 +72,17 @@ describe('production Orthanc URL validation', () => {
     expect(() => assertRequiredEnv()).toThrow(/must use https in production/);
   });
 
+  it('rejects a loopback Orthanc URL in production without an explicit escape hatch', () => {
+    productionEnv('http://localhost:18042');
+    expect(() => assertRequiredEnv()).toThrow(/loopback is not reachable/);
+  });
+
+  it('allows loopback Orthanc only with the explicit production escape hatch', () => {
+    productionEnv('http://localhost:18042');
+    process.env.AXIS_ALLOW_LOOPBACK_ORTHANC = '1';
+    expect(() => assertRequiredEnv()).not.toThrow();
+  });
+
   it('normalizes an origin-only URL without appending a path', () => {
     process.env.ORTHANC_URL = 'https://orthanc.example.test/';
     expect(orthancBaseUrl()).toBe('https://orthanc.example.test');
