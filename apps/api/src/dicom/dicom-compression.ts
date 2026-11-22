@@ -40,6 +40,8 @@ const SAFE_METADATA_KEYS = new Set([
   'lossy_image_compression',
   'lossy_method',
   'lossy_ratio',
+  'lossy_history_normalized',
+  'lossy_history_normalization_reason',
   'reencode_policy_version',
   'source_pixel_sha256',
   'output_pixel_sha256',
@@ -73,6 +75,8 @@ export type DicomCompressionProvenance = {
   lossyImageCompression?: string;
   lossyMethod?: string;
   lossyRatio?: string;
+  lossyHistoryNormalized?: boolean;
+  lossyHistoryNormalizationReason?: string;
   reencodePolicyVersion?: string;
   sourcePixelSha256?: string;
   outputPixelSha256?: string;
@@ -152,6 +156,7 @@ type StringProvenanceKey =
   | 'lossyImageCompression'
   | 'lossyMethod'
   | 'lossyRatio'
+  | 'lossyHistoryNormalizationReason'
   | 'reencodePolicyVersion'
   | 'sourcePixelSha256'
   | 'outputPixelSha256';
@@ -166,6 +171,7 @@ function safeProvenance(value: unknown): DicomCompressionProvenance {
     ['lossyImageCompression', 'lossy_image_compression'],
     ['lossyMethod', 'lossy_method'],
     ['lossyRatio', 'lossy_ratio'],
+    ['lossyHistoryNormalizationReason', 'lossy_history_normalization_reason'],
     ['reencodePolicyVersion', 'reencode_policy_version'],
     ['sourcePixelSha256', 'source_pixel_sha256'],
     ['outputPixelSha256', 'output_pixel_sha256'],
@@ -178,6 +184,7 @@ function safeProvenance(value: unknown): DicomCompressionProvenance {
   }
   for (const [target, source] of [
     ['priorLossyCompression', 'prior_lossy_compression'],
+    ['lossyHistoryNormalized', 'lossy_history_normalized'],
     ['pixelVerified', 'pixel_verified'],
   ] as const) {
     const entry = value[source];

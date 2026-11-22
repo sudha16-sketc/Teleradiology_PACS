@@ -29,6 +29,8 @@ SAFE_METADATA_KEYS = frozenset(
         "lossy_image_compression",
         "lossy_method",
         "lossy_ratio",
+        "lossy_history_normalized",
+        "lossy_history_normalization_reason",
         "reencode_policy_version",
         "source_pixel_sha256",
         "output_pixel_sha256",

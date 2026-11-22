@@ -203,6 +203,7 @@ class CompressForIngestTests(unittest.TestCase):
                 str(JPEG2000Lossless),
             )
             self.assertTrue(provenance["prior_lossy_compression"])
+            self.assertFalse(provenance["lossy_history_normalized"])
             self.assertEqual(
                 provenance["reencode_policy_version"],
                 "jpeg-baseline-lossless-v1",
@@ -218,7 +219,66 @@ class CompressForIngestTests(unittest.TestCase):
             )
             self.assertTrue(source.exists())
 
-    def test_multiframe_jpeg_baseline_is_reencoded_frame_by_frame(self) -> None:
+    def test_jpeg_baseline_missing_history_is_normalized_without_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "baseline-missing-history.dcm"
+            output = Path(work) / "verified.dcm"
+            source_pixels = write_jpeg_baseline_dicom(
+                source,
+                np.random.default_rng(17).integers(
+                    0, 256, size=(64, 64), dtype=np.uint8
+                ),
+                include_history=False,
+            )
+            source_bytes = source.read_bytes()
+
+            verified = compress_verified_dicom(source, output, str(JPEG2000Lossless))
+            result = pydicom.dcmread(output)
+
+            self.assertEqual(
+                str(result.file_meta.TransferSyntaxUID),
+                str(JPEG2000Lossless),
+            )
+            self.assertEqual(str(result.LossyImageCompression), "01")
+            self.assertEqual(
+                str(result.LossyImageCompressionMethod),
+                "ISO_10918_1",
+            )
+            self.assertNotIn("LossyImageCompressionRatio", result)
+            np.testing.assert_array_equal(np.asarray(result.pixel_array), source_pixels)
+            self.assertEqual(source.read_bytes(), source_bytes)
+            self.assertTrue(verified.provenance["pixel_verified"])
+            self.assertTrue(verified.provenance["lossy_history_normalized"])
+            self.assertEqual(
+                verified.provenance["lossy_history_normalization_reason"],
+                "jpeg-baseline-transfer-syntax",
+            )
+
+    def test_jpeg_baseline_preserves_method_without_inventing_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "baseline-no-ratio.dcm"
+            output = Path(work) / "verified.dcm"
+            write_jpeg_baseline_dicom(
+                source,
+                np.arange(64 * 64, dtype=np.uint8).reshape((64, 64)),
+                include_history=False,
+            )
+            dataset = pydicom.dcmread(source)
+            dataset.LossyImageCompression = "01"
+            dataset.LossyImageCompressionMethod = "ISO_10918_1"
+            dataset.save_as(source, enforce_file_format=True)
+
+            compress_verified_file(source, output, str(JPEG2000Lossless))
+            result = pydicom.dcmread(output)
+
+            self.assertEqual(str(result.LossyImageCompression), "01")
+            self.assertEqual(
+                str(result.LossyImageCompressionMethod),
+                "ISO_10918_1",
+            )
+            self.assertNotIn("LossyImageCompressionRatio", result)
+
+    def test_multiframe_jpeg_baseline_without_history_is_reencoded_frame_by_frame(self) -> None:
         with tempfile.TemporaryDirectory() as work:
             source = Path(work) / "multiframe-baseline.dcm"
             output = Path(work) / "verified.dcm"
@@ -228,7 +288,11 @@ class CompressForIngestTests(unittest.TestCase):
                 size=(3, 48, 64),
                 dtype=np.uint8,
             )
-            source_pixels = write_multiframe_jpeg_baseline_dicom(source, frames)
+            source_pixels = write_multiframe_jpeg_baseline_dicom(
+                source,
+                frames,
+                include_history=False,
+            )
 
             verified = compress_verified_dicom(source, output, str(JPEG2000Lossless))
             result = pydicom.dcmread(output)
@@ -241,8 +305,11 @@ class CompressForIngestTests(unittest.TestCase):
                 str(result.file_meta.TransferSyntaxUID),
                 str(JPEG2000Lossless),
             )
+            self.assertEqual(str(result.LossyImageCompression), "01")
+            self.assertNotIn("LossyImageCompressionRatio", result)
             self.assertEqual(verified.pixel_hash, canonical_pixel_hash(source_pixels))
             self.assertTrue(verified.provenance["pixel_verified"])
+            self.assertTrue(verified.provenance["lossy_history_normalized"])
             self.assertEqual(
                 verified.provenance["source_pixel_sha256"],
                 verified.provenance["output_pixel_sha256"],
@@ -291,21 +358,33 @@ class CompressForIngestTests(unittest.TestCase):
             self.assertEqual(context.exception.stage, "decode_source_pixels")
             self.assertFalse(output.exists())
 
-    def test_jpeg_baseline_rejects_missing_lossy_history(self) -> None:
-        with tempfile.TemporaryDirectory() as work:
-            source = Path(work) / "baseline.dcm"
-            output = Path(work) / "verified.dcm"
-            write_jpeg_baseline_dicom(
-                source,
-                np.arange(64 * 64, dtype=np.uint8).reshape((64, 64)),
-                include_history=False,
-            )
+    def test_jpeg_baseline_rejects_inconsistent_lossy_history(self) -> None:
+        invalid_values = (
+            ("LossyImageCompression", "00"),
+            ("LossyImageCompressionMethod", "UNSUPPORTED"),
+            ("LossyImageCompressionRatio", "0"),
+        )
+        for keyword, value in invalid_values:
+            with self.subTest(keyword=keyword), tempfile.TemporaryDirectory() as work:
+                source = Path(work) / "baseline.dcm"
+                output = Path(work) / "verified.dcm"
+                write_jpeg_baseline_dicom(
+                    source,
+                    np.arange(64 * 64, dtype=np.uint8).reshape((64, 64)),
+                    include_history=False,
+                )
+                dataset = pydicom.dcmread(source)
+                dataset.LossyImageCompression = "01"
+                dataset.LossyImageCompressionMethod = "ISO_10918_1"
+                dataset.LossyImageCompressionRatio = "4.0"
+                setattr(dataset, keyword, value)
+                dataset.save_as(source, enforce_file_format=True)
 
-            with self.assertRaises(LosslessCompressionError) as context:
-                compress_verified_file(source, output, str(JPEG2000Lossless))
+                with self.assertRaises(LosslessCompressionError) as context:
+                    compress_verified_file(source, output, str(JPEG2000Lossless))
 
-            self.assertEqual(context.exception.stage, "validate_lossy_history")
-            self.assertFalse(output.exists())
+                self.assertEqual(context.exception.stage, "validate_lossy_history")
+                self.assertFalse(output.exists())
 
     def test_jpeg_baseline_rejects_non_jpeg2000_target(self) -> None:
         with tempfile.TemporaryDirectory() as work:
