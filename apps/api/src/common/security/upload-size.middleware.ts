@@ -21,6 +21,30 @@ export function limitUploadBody(req: Request, res: Response, next: NextFunction)
       next(new PayloadTooLargeException('Upload exceeds the maximum allowed size'));
       return;
     }
+  } else {
+    let received = 0;
+    let exceeded = false;
+    const onData = (chunk: Buffer | Uint8Array) => {
+      if (exceeded) return;
+      received += Buffer.isBuffer(chunk)
+        ? chunk.length
+        : Buffer.byteLength(chunk);
+      if (received > DICOM_LIMITS.MAX_UPLOAD_BYTES) {
+        exceeded = true;
+        req.removeListener('data', onData);
+        req.removeListener('end', onEnd);
+        req.destroy();
+        next(new PayloadTooLargeException('Upload exceeds the maximum allowed size'));
+      }
+    };
+    const onEnd = () => {
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+    };
+    req.on('data', onData);
+    req.once('end', onEnd);
+    next();
+    return;
   }
   next();
 }
