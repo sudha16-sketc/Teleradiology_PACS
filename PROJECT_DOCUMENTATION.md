@@ -717,7 +717,7 @@ In the worklist:
 | **UsersModule** | `GET /users`, `GET /users/:id`, `POST /users`, `PATCH /users/:id` | User CRUD |
 | **HospitalsModule** | `GET /hospitals`, `GET /hospitals/:id` | Hospital listing with sites |
 | **AuditModule** | `GET /audit` | Paginated audit log queries |
-| **AnalyticsModule** | `GET /analytics/overview`, `GET /analytics/tat`, `GET /analytics/hospital-performance` | Operational metrics |
+| **AnalyticsModule** | `GET /analytics/overview`, `GET /analytics/tat`, `GET /analytics/hospital-performance`, `GET /analytics/mis-report` | Operational metrics and scoped MIS workbook export |
 | **AIModule** | `GET /ai/jobs`, `GET /ai/jobs/:id` | AI job tracking |
 | **PrismaModule** | (global) | Database access for all modules |
 
@@ -1147,6 +1147,7 @@ All endpoints prefixed with `/api`. Backend runs on port 4000.
 | `GET` | `/api/analytics/overview` | Summary metrics |
 | `GET` | `/api/analytics/tat` | TAT distribution |
 | `GET` | `/api/analytics/hospital-performance` | Per-hospital performance |
+| `GET` | `/api/analytics/mis-report` | Download the 24-column MIS `.xlsx` report (ADMIN or hospital-scoped MANAGER) |
 
 ### Audit
 

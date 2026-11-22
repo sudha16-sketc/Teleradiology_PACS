@@ -148,6 +148,10 @@ async function request<T>(
   method: string,
   path: string,
   options: RequestOptions & { body?: unknown } = {},
+  parseResponse: (response: Response) => Promise<T> = async (response) => {
+    const text = await response.text();
+    return text ? (JSON.parse(text) as T) : (undefined as T);
+  },
 ): Promise<T> {
   const {
     params,
@@ -226,14 +230,16 @@ async function request<T>(
   if (response.status === 204) {
     return undefined as T;
   }
-  const text = await response.text();
-  if (!text) return undefined as T;
-  return JSON.parse(text) as T;
+  return parseResponse(response);
 }
 
 export const apiClient = {
   get<T>(path: string, options?: RequestOptions): Promise<T> {
     return request<T>("GET", path, options);
+  },
+
+  getBlob(path: string, options?: RequestOptions): Promise<Blob> {
+    return request<Blob>("GET", path, options, (response) => response.blob());
   },
 
   post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {

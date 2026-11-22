@@ -184,6 +184,34 @@ Response fields for the overview are derived as follows:
 - `tat.averageTotalMinutes` — mean of `completedAt - (receivedAt ?? createdAt)` over completed studies.
 - `sla.breaches` — server-computed list of in-progress studies past deadline.
 
+### MIS Excel export
+
+`GET /api/analytics/mis-report` is available to ADMIN and MANAGER roles. ADMIN
+exports across hospitals; MANAGER scope comes only from the authenticated
+account's `hospitalId`. Managers without a hospital assignment are denied.
+The endpoint writes a streaming workbook to a private temporary file before
+returning it, reads studies in deterministic 500-row batches, and removes the
+temporary file after download. Additional worksheets are created only when the
+Excel row limit is reached; each repeats the same 24 headers.
+
+`Center / Site` uses the study's hospital name because `Study` has no site
+relationship. `Patient-Id` removes the hospital namespace added by DICOM
+ingestion and otherwise preserves the stored patient identifier. `Modality`
+uses the recorded source value; legacy studies without one export blank rather
+than the normalized workflow value.
+
+`TurnAroundTime` uses `completedAt - (receivedAt ?? createdAt)` for completed
+studies. `TatAssignedToSSignedOff` uses `signedOffAt - assignedAt`. Both values
+are rounded minutes; missing or negative intervals are blank. Stored server
+timestamps, including the latest `REPORT_VERIFIED` audit timestamp used for
+`Verified At`, are exported as UTC ISO-8601 strings. DICOM `studyDateTime` is built
+from a supplied study date and time only when its source is known; legacy rows
+and ingests without a valid supplied date export a blank rather than the
+ingestion-time fallback. The current schema does not retain the source timezone
+offset, so the value is exported as an unzoned wall-clock string.
+`historyCreatedAt` is nullable for studies created before the timestamp was
+introduced.
+
 ## Backups
 
 ### How it works

@@ -36,6 +36,7 @@
     "cookie-parser": "^1.4.7",
     "dicom-parser": "1.8.21",
     "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
     "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",

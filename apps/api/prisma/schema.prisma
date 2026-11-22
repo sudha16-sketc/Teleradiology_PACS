@@ -118,7 +118,9 @@ model Study {
   patientId             String
   accessionNumber       String            @unique
   studyDate             DateTime
+  studyDateProvided     Boolean           @default(false)
   studyTime             String            @default("")
+  sourceModality        String?
   modality              Modality
   bodyPart              String
   hospitalId            String
@@ -137,6 +139,7 @@ model Study {
   assignedBy            String?
   clinicalHistory       String            @default("")
   patientAge                Int?
+  historyCreatedAt      DateTime?
   dueAt                 DateTime?
   receivedAt            DateTime?
   reportingStartedAt    DateTime?

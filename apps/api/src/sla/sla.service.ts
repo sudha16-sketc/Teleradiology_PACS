@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { SlaPriority, AuditAction, AuditResource } from '@prisma/client';
 import { AuditService } from '../audit/audit.service.js';
 import type { OperationalOverview, SlaBreachItem, StudySlaComputation } from '@axis/types';
+import { minutesBetween } from './tat.js';
 
 /**
  * Fallback SLA thresholds (minutes) applied when no SlaConfig row exists for a
@@ -32,12 +33,6 @@ interface StudyLike {
   hospitalId?: string;
   patient?: { displayName?: string } | null;
   hospital?: { name?: string } | null;
-}
-
-function minutesBetween(from: Date | null | undefined, to: Date | null | undefined): number | null {
-  if (!from || !to) return null;
-  const ms = to.getTime() - from.getTime();
-  return Math.max(0, Math.round(ms / 60000));
 }
 
 @Injectable()

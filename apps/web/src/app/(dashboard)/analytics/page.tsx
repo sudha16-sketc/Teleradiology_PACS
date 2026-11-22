@@ -1,18 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Activity,
   Building2,
   Clock,
   TrendingUp,
   BarChart3,
+  Download,
   Loader2,
 } from "lucide-react";
 import { MetricCard } from "@/components/hospital/MetricCard";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
-import { apiClient } from "@/lib/api-client";
+import { apiClient, failureOf } from "@/lib/api-client";
+import { downloadMisReport } from "@/lib/mis-export";
 
 interface OverviewData {
   totalStudies: number;
@@ -55,6 +57,20 @@ export default function AnalyticsPage() {
   const [hospitalPerf, setHospitalPerf] = useState<HospitalPerf[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const exportReport = async () => {
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      await downloadMisReport();
+    } catch (error) {
+      setExportError(failureOf(error).message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -104,14 +120,35 @@ export default function AnalyticsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="font-heading text-2xl font-bold text-text-primary">
-          Analytics
-        </h1>
-        <p className="text-sm text-text-muted">
-          Operational insights and performance metrics
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="font-heading text-2xl font-bold text-text-primary">
+            Analytics
+          </h1>
+          <p className="text-sm text-text-muted">
+            Operational insights and performance metrics
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void exportReport()}
+          disabled={isExporting}
+          className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isExporting ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Download size={16} />
+          )}
+          {isExporting ? "Exporting..." : "Export Excel"}
+        </button>
       </div>
+
+      {exportError && (
+        <p role="alert" className="text-sm text-error">
+          Excel export failed: {exportError}
+        </p>
+      )}
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard

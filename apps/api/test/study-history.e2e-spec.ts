@@ -90,6 +90,11 @@ describe('Study history form', () => {
       clinicalHistory: 'Detailed symptom chronology and relevant findings.',
       referringPhysician: 'Dr. Example',
     });
+    const storedStudy = await prisma.study.findUniqueOrThrow({
+      where: { studyInstanceUid: studyUid },
+      select: { historyCreatedAt: true },
+    });
+    expect(storedStudy.historyCreatedAt).toBeInstanceOf(Date);
 
     const response = await hospitalAgent
       .get(`/api/studies/${studyUid}/history`)

@@ -2,13 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, StudyStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SlaService } from '../sla/sla.service.js';
+import { minutesBetween } from '../sla/tat.js';
 import type { AuthenticatedUser } from '../auth/auth.constants.js';
-
-function minutesBetween(from: Date | null | undefined, to: Date | null | undefined): number | null {
-  if (!from || !to) return null;
-  const ms = to.getTime() - from.getTime();
-  return Math.max(0, Math.round(ms / 60000));
-}
 
 const BACKLOG_STATES: StudyStatus[] = [
   'HOSPITAL_SUBMITTED',

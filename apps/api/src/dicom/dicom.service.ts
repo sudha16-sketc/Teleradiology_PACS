@@ -228,7 +228,15 @@ export class DicomService {
     const month = parseInt(cleaned.slice(4, 6), 10);
     const day = parseInt(cleaned.slice(6, 8), 10);
     if (!year || !month || !day) return undefined;
-    return new Date(Date.UTC(year, month - 1, day));
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() !== month - 1 ||
+      parsed.getUTCDate() !== day
+    ) {
+      return undefined;
+    }
+    return parsed;
   }
 
   private parseTime(s?: string): string {
@@ -437,14 +445,15 @@ export class DicomService {
         },
       });
 
-      const studyDate = this.parseDate(first.studyDate) ?? new Date();
-      const accessionNumber = first.accessionNumber
-        ? first.accessionNumber
-        : `AX-${studyDate.toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now()}`;
-
       const existingStudy = await this.prisma.study.findUnique({
         where: { studyInstanceUid: studyUid },
       });
+
+      const parsedStudyDate = this.parseDate(first.studyDate);
+      const studyDate = parsedStudyDate ?? existingStudy?.studyDate ?? new Date();
+      const accessionNumber = first.accessionNumber
+        ? first.accessionNumber
+        : `AX-${studyDate.toISOString().slice(0, 10).replace(/-/g, '')}-${Date.now()}`;
 
       const seriesSet = new Set(parsedList.map((p) => p.seriesInstanceUid));
       const baseStudyData = {
@@ -453,7 +462,11 @@ export class DicomService {
         patientId: existingStudy?.patientId ?? patient.id,
         accessionNumber: existingStudy?.accessionNumber ?? accessionNumber,
         studyDate,
+        studyDateProvided:
+          parsedStudyDate !== undefined || existingStudy?.studyDateProvided === true,
         studyTime: this.parseTime(first.studyTime),
+        sourceModality:
+          first.modality?.trim() || existingStudy?.sourceModality || null,
         modality,
         bodyPart: first.bodyPart || '',
         hospitalId,
@@ -656,6 +669,7 @@ export class DicomService {
       });
 
       if (history) {
+        const historyCreatedAt = new Date();
         study = await this.prisma.$transaction(async (tx) => {
           await tx.patient.update({
             where: { id: study.patientId },
@@ -670,6 +684,7 @@ export class DicomService {
               patientAge: history.patientAge,
               referringPhysician: history.referringPhysician ?? '',
               clinicalHistory: history.clinicalHistory,
+              historyCreatedAt,
             },
             include: { patient: true, hospital: true },
           });

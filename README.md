@@ -922,6 +922,7 @@ All endpoints are prefixed with `/api`. The NestJS backend runs on port `4000`.
 | GET    | `/api/analytics/overview`          | Platform overview metrics  |
 | GET    | `/api/analytics/tat`               | Turnaround time distribution |
 | GET    | `/api/analytics/hospital-performance` | Per-hospital performance metrics |
+| GET    | `/api/analytics/mis-report`        | Download the authorized MIS workbook (`.xlsx`; ADMIN or hospital-scoped MANAGER) |
 
 ### Audit
 

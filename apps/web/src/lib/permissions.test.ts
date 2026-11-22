@@ -14,3 +14,12 @@ describe("hospital history access", () => {
     expect(roleHasAccess("HOSPITAL", "/hospitals/new")).toBe(true);
   });
 });
+
+describe("MIS analytics access", () => {
+  it("shows Analytics only to admin and manager roles", () => {
+    expect(navigationForRole("ADMIN").some((item) => item.href === "/analytics")).toBe(true);
+    expect(navigationForRole("MANAGER").some((item) => item.href === "/analytics")).toBe(true);
+    expect(navigationForRole("HOSPITAL").some((item) => item.href === "/analytics")).toBe(false);
+    expect(roleHasAccess("HOSPITAL", "/analytics")).toBe(false);
+  });
+});

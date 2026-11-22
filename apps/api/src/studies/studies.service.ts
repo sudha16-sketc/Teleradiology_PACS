@@ -237,6 +237,7 @@ export class StudiesService {
             },
           });
 
+      const historyCreatedAt = new Date();
       return tx.study.create({
         data: {
           studyInstanceUid,
@@ -245,11 +246,14 @@ export class StudiesService {
           patientAge: dto.patientAge,
           hospitalId,
           studyDate: dto.studyDate ? new Date(dto.studyDate) : new Date(),
+          studyDateProvided: Boolean(dto.studyDate),
+          sourceModality: dto.modality ?? null,
           modality: dto.modality || 'CT',
           bodyPart: dto.bodyPart || '',
           referringPhysician: dto.referringPhysician || '',
           studyDescription: dto.studyDescription || '',
           clinicalHistory: dto.clinicalHistory,
+          historyCreatedAt,
           priority: dto.priority || 'ROUTINE',
           subspecialty: dto.subspecialty || 'GENERAL',
           status: 'HOSPITAL_SUBMITTED',
