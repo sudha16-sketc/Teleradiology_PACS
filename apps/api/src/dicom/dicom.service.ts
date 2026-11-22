@@ -46,6 +46,21 @@ interface OrthancStored {
   orthancSeriesId: string;
   orthancStudyId: string;
   orthancPatientId: string;
+  newlyStored: boolean;
+}
+
+export async function compensateNewlyStoredInstances(
+  instanceIds: readonly string[],
+  deleteInstance: (instanceId: string) => Promise<void>,
+  onFailure?: (instanceId: string) => void,
+): Promise<void> {
+  for (const instanceId of instanceIds) {
+    try {
+      await deleteInstance(instanceId);
+    } catch {
+      onFailure?.(instanceId);
+    }
+  }
 }
 
 const MODALITY_MAP: Record<string, Modality> = {
@@ -214,6 +229,7 @@ export class DicomService implements OnModuleInit {
       orthancSeriesId: body.ParentSeries,
       orthancStudyId: body.ParentStudy,
       orthancPatientId: body.ParentPatient,
+      newlyStored: body.Status === 'Success',
     };
   }
 
@@ -451,10 +467,31 @@ export class DicomService implements OnModuleInit {
 
       // 6. Send each instance to Orthanc, capturing exact identifiers.
       const stored: OrthancStored[] = [];
-      for (const buf of rawBuffers) {
-        const parsed = parsedByBuffer.get(buf) as ParsedDicom;
-        const r = await this.storeRawInstance(buf, parsed);
-        stored.push(r);
+      try {
+        for (const buf of rawBuffers) {
+          const parsed = parsedByBuffer.get(buf) as ParsedDicom;
+          const r = await this.storeRawInstance(buf, parsed);
+          stored.push(r);
+        }
+      } catch (err) {
+        const newlyStoredIds = stored
+          .filter((item) => item.newlyStored)
+          .map((item) => item.orthancInstanceId);
+        await compensateNewlyStoredInstances(
+          newlyStoredIds,
+          async (instanceId) => {
+            await this.orthancFetch(
+              `/instances/${encodeURIComponent(instanceId)}`,
+              { method: 'DELETE' },
+            );
+          },
+          () => {
+            this.logger.warn(
+              'Failed to delete a partially stored DICOM instance after ingest failure',
+            );
+          },
+        );
+        throw err;
       }
 
       if (stored.length !== parsedList.length) {
