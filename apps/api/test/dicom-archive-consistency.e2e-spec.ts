@@ -7,9 +7,22 @@ import { buildP10Dicom } from './dicom-fixture.js';
 import { orthancBaseUrl } from '../src/common/config/orthanc-url.js';
 import type { INestApplication } from '@nestjs/common';
 
+jest.mock('../src/dicom/dicom-compression.js', () => ({
+  compressDicomBuffer: async (buffer: Buffer) => buffer,
+}));
+
 let app: INestApplication;
 let server: any;
 let hospitalAgent: any;
+
+const ORTHANC_TEST_USERNAME = process.env.ORTHANC_USERNAME ?? 'orthanc';
+const ORTHANC_TEST_PASSWORD = process.env.ORTHANC_PASSWORD ?? 'orthanc';
+
+function orthancAuthHeader(): Record<string, string> {
+  return {
+    Authorization: `Basic ${Buffer.from(`${ORTHANC_TEST_USERNAME}:${ORTHANC_TEST_PASSWORD}`).toString('base64')}`,
+  };
+}
 
 const createdStudyIds: string[] = [];
 const createdPatientIds: string[] = [];
@@ -83,6 +96,7 @@ async function cleanupCreated(): Promise<void> {
     for (const orthancStudyId of createdOrthancStudyIds.splice(0)) {
       await fetch(`${orthancBase}/studies/${encodeURIComponent(orthancStudyId)}`, {
         method: 'DELETE',
+        headers: orthancAuthHeader(),
       }).catch(() => undefined);
     }
   }
@@ -97,8 +111,8 @@ beforeAll(async () => {
 
 afterEach(async () => {
   jest.restoreAllMocks();
-  delete process.env.ORTHANC_USERNAME;
-  delete process.env.ORTHANC_PASSWORD;
+  process.env.ORTHANC_USERNAME = ORTHANC_TEST_USERNAME;
+  process.env.ORTHANC_PASSWORD = ORTHANC_TEST_PASSWORD;
   await cleanupCreated();
 });
 
@@ -306,7 +320,7 @@ describe('DICOM archive consistency', () => {
 
     const qido = await fetch(
       `${orthancBaseUrl()}/dicom-web/studies?StudyInstanceUID=${encodeURIComponent(studyUid)}`,
-      { headers: { Accept: 'application/dicom+json' } },
+      { headers: { ...orthancAuthHeader(), Accept: 'application/dicom+json' } },
     );
     expect(qido.status).toBe(200);
     const body = (await qido.json()) as unknown[];

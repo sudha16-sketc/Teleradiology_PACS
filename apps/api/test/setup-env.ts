@@ -17,6 +17,9 @@ process.env.AXIS_DICOM_MAX_UPLOAD_BYTES = '1048576';
 process.env.AXIS_DICOM_MAX_FILE_BYTES = '1048576';
 process.env.AXIS_DICOM_MAX_EXTRACTED_BYTES = '1048576';
 
+process.env.ORTHANC_USERNAME ??= 'orthanc';
+process.env.ORTHANC_PASSWORD ??= 'orthanc';
+
 process.on('uncaughtException', (err) => {
   // eslint-disable-next-line no-console
   console.error('UNCAUGHT:', err && err.stack ? err.stack : err);
