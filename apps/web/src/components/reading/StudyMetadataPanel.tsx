@@ -43,12 +43,12 @@ function FieldRow({
   mono?: boolean;
 }) {
   return (
-    <div className="flex justify-between py-1">
-      <span className="text-xs text-text-muted">{label}</span>
+    <div className="flex min-w-0 justify-between gap-3 py-1">
+      <span className="shrink-0 text-xs text-text-muted">{label}</span>
       <span
         className={clsx(
-          "text-right text-sm text-text-primary",
-          mono && "font-mono text-xs",
+          "min-w-0 break-words text-right text-sm text-text-primary",
+          mono && "break-all font-mono text-xs",
         )}
       >
         {value}
@@ -73,7 +73,14 @@ export function StudyMetadataPanel({ study }: StudyMetadataPanelProps) {
         <div className="flex flex-col gap-1">
           <FieldRow label="Name" value={study.patient.displayName} />
           <FieldRow label="Patient ID" value={study.patient.patientId} mono />
+          {study.patient.dateOfBirth ? (
+            <FieldRow
+              label="Date of Birth"
+              value={study.patient.dateOfBirth}
+            />
+          ) : null}
           <FieldRow label="Gender" value={study.patient.gender} />
+          <FieldRow label="Hospital ID" value={study.patient.hospitalId} mono />
           <FieldRow label="Accession" value={study.accessionNumber} mono />
           <FieldRow label="Study" value={study.studyDescription} />
           <FieldRow label="Modality" value={study.modality} />
@@ -90,6 +97,12 @@ export function StudyMetadataPanel({ study }: StudyMetadataPanelProps) {
             value={`${study.seriesCount} / ${study.instanceCount}`}
           />
         </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Clinical History">
+        <p className="whitespace-pre-wrap break-words text-sm text-text-primary">
+          {study.clinicalHistory?.trim() || "No clinical history provided."}
+        </p>
       </CollapsibleSection>
 
       <CollapsibleSection title="Study UID" defaultOpen={false}>
