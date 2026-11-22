@@ -26,11 +26,10 @@ describe("downloadMisReport", () => {
       configurable: true,
       value: revokeObjectURL,
     });
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
-      function (this: HTMLAnchorElement) {
-        clickedAnchor = this;
-      },
-    );
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {
+      clickedAnchor =
+        document.body.querySelector<HTMLAnchorElement>("a") ?? undefined;
+    });
   });
 
   afterEach(() => {
