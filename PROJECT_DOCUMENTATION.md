@@ -107,7 +107,7 @@ sign-off workflow, the audit trail, the analytics, and the hospital portal.
 ┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐┌──────┐
 │Postgr││Orthan││Redis ││Rabbit││Keycl ││MinIO ││OHIF  │
 │eSQL  ││c     ││      ││MQ    ││ock   ││      ││Viewer│
-│:5432 ││:8042 ││:6379 ││:5672 ││:8180 ││:9000 ││:3001 │
+│:5432 ││private││:6379 ││:5672 ││:8180 ││:9000 ││:3001 │
 └──────┘└──────┘└──────┘└──────┘└──────┘└──────┘└──────┘
 ```
 
@@ -119,9 +119,9 @@ sign-off workflow, the audit trail, the analytics, and the hospital portal.
 | Frontend → OHIF | iframe / redirect | DICOM image viewing |
 | Frontend → Keycloak | OIDC / OAuth2 | User authentication |
 | Backend → PostgreSQL | Prisma TCP | Metadata persistence |
-| Backend → Orthanc | DICOMweb (HTTP) | Study metadata queries |
-| Orthanc → Scanner | DICOM C-STORE (TCP :4242) | Receive images from modality |
-| OHIF → Orthanc | DICOMweb WADO-RS | Load images for display |
+| Backend → Orthanc | Private HTTP REST / DICOMweb | Verified instance storage and study queries |
+| Scanner / upload → Backend | Authenticated multipart HTTP | Lossless-compressed, pixel-hash-verified ingest |
+| OHIF → Backend | DICOMweb WADO-RS proxy | Load authorized images for display |
 | Backend → Redis | TCP | Session cache, rate limiting |
 | Backend → RabbitMQ | AMQP | Async job queues, events |
 | Backend → MinIO | S3 API | Object storage |
@@ -397,13 +397,15 @@ Every module follows the same pattern: **Controller** (handles HTTP) →
 ### The Complete Journey
 
 ```
-SCANNER/MODALITY
-      │
-      │ DICOM C-STORE (port 4242)
+HOSPITAL UPLOAD
+      │ authenticated multipart POST /api/dicom/ingest
       ▼
-ORTHANC (DICOM archive)
-      │
-      │ Axis ingests study metadata via DICOMweb QIDO-RS
+AXIS API
+      │ validate → JPEG 2000 Lossless / JPEG-LS → pixel-hash verification
+      │ only the verified compressed file is submitted
+      ▼
+ORTHANC (private network; STOW-RS and C-STORE disabled)
+      │ QIDO-RS metadata
       ▼
 ┌─────────────────────────────────────────────────────┐
 │                   AXIS WORKFLOW                      │
@@ -467,14 +469,15 @@ horizontal space.
 ### Study Ingestion Flow
 
 ```
-1. Scanner sends DICOM to Orthanc (C-STORE on port 4242)
-2. Orthanc stores the DICOM binary, indexes metadata
-3. Axis backend queries Orthanc via QIDO-RS:
-   GET http://localhost:8042/dicom-web/studies
-4. Axis creates Study/Series/Instance records in PostgreSQL
-5. Study appears as NEW in the worklist
-6. Routing rules evaluate and assign priority/subspecialty/radiologist
-7. Study transitions through the status lifecycle
+1. Hospital uploads DICOM through the authenticated Axis ingest endpoint.
+2. The API validates the instance, compresses it losslessly, and verifies the
+   decoded pixel SHA-256 hash before making any storage request for that file.
+3. Only the verified compressed instance is posted to Orthanc over the private
+   API network; direct REST, STOW-RS, and DICOM C-STORE uploads are disabled.
+4. Axis creates Study/Series/Instance records in PostgreSQL.
+5. Study appears as NEW in the worklist.
+6. Routing rules evaluate and assign priority/subspecialty/radiologist.
+7. Study transitions through the status lifecycle.
 ```
 
 ### Image Viewing Flow
@@ -482,9 +485,8 @@ horizontal space.
 ```
 1. Radiologist clicks a study in the worklist
 2. Frontend navigates to /reading/{studyInstanceUid}
-3. OHIF viewer loads, requests images from Orthanc via WADO-RS:
-   GET http://localhost:8042/dicom-web/studies/{uid}
-4. Orthanc returns DICOM binary data
+3. OHIF viewer requests images through the authenticated Axis DICOMweb proxy.
+4. The API authorizes the study and retrieves DICOM binary data from private Orthanc.
 5. OHIF decodes and renders the images
 6. Axis displays study metadata in the right panel
 ```
@@ -974,7 +976,7 @@ because Docker needs to pull the images.
 | PostgreSQL | `localhost:5432` | axis / axis_dev / axis_pacs |
 | Redis | `127.0.0.1:6379` | password from `REDIS_PASSWORD` in `.env` |
 | RabbitMQ | `localhost:5672` (AMQP), `localhost:15672` (console) | axis / axis_dev |
-| Orthanc | `localhost:8042` (HTTP), `localhost:4242` (DICOM) | orthanc / orthanc |
+| Orthanc | Private API network; no host ports | Dev-only service credentials |
 | Keycloak | `localhost:8180/auth` | admin / admin |
 | MinIO | `localhost:9000` (API), `localhost:9001` (console) | minioadmin / minioadmin |
 
@@ -1031,23 +1033,16 @@ You will see:
 
 ### Step 12: Upload DICOM Data (optional)
 
-If you have real DICOM files, upload them to Orthanc:
-
-```bash
-curl -X POST http://localhost:8042/dicom-web/stow-rs/studies \
-  -u orthanc:orthanc \
-  -H "Content-Type: multipart/related; type=application/dicom" \
-  --data-binary @your-dicom-file.dcm
-```
-
-Or use Orthanc's web interface at **http://localhost:8042** to upload via browser.
+Upload DICOM through the authenticated Axis ingest API or hospital UI. Do not
+upload directly to Orthanc through REST, STOW-RS, its web UI, or DICOM C-STORE;
+those paths bypass the required lossless compression and pixel-hash check.
 
 ### Step 13: Connect OHIF Viewer (optional)
 
 ```bash
 # Run OHIF in Docker:
 docker run -d -p 3001:80 \
-  -e DICOM_WEB_ROOT=http://host.docker.internal:8042/dicom-web \
+  -e DICOM_WEB_ROOT=http://host.docker.internal:4000/api/dicom-web \
   ohif/viewer:latest
 ```
 
@@ -1079,7 +1074,7 @@ Then access OHIF at **http://localhost:3001**.
 | **postgres** | `postgres:16-alpine` | 5432 | Primary database | `postgres_data` | `pg_isready` every 5s |
 | **redis** | `redis:7.4-alpine` (built from `infra/redis`) | 127.0.0.1:6379 | Authenticated sessions + reference-data cache | `redis_data` | authenticated `redis-cli ping` every 5s |
 | **rabbitmq** | `rabbitmq:3-management-alpine` | 5672, 15672 | Async messaging, job queues | — | `rabbitmq-diagnostics` every 10s |
-| **orthanc** | `jodogne/orthanc-plugins:latest` | 8042, 4242 | DICOM archive + DICOMweb | `orthanc_data` | `curl /is-alive` every 10s |
+| **orthanc** | `jodogne/orthanc-plugins:1.12.6` | Private network only; no host ports | DICOM archive + read-only DICOMweb | `orthanc_data` | Internal readiness check |
 | **keycloak** | `quay.io/keycloak/keycloak:24.0` | 8180 | OIDC identity provider | `keycloak_data` | — |
 | **minio** | `minio/minio:latest` | 9000, 9001 | S3 object storage | `minio_data` | — |
 
@@ -1293,8 +1288,8 @@ The worklist page contains 10 inline mock studies with realistic (but synthetic)
 | Frontend | http://localhost:3000 | 3000 |
 | API | http://localhost:4000/api | 4000 |
 | PostgreSQL | localhost:5432 | 5432 |
-| Orthanc | http://localhost:8042 | 8042 |
-| Orthanc DICOM | localhost:4242 | 4242 |
+| Orthanc | Private to API network; no host URL | — |
+| Orthanc DICOM | Disabled | — |
 | Redis | localhost:6379 | 6379 |
 | RabbitMQ | localhost:5672 / http://localhost:15672 | 5672 / 15672 |
 | Keycloak | http://localhost:8180/auth | 8180 |

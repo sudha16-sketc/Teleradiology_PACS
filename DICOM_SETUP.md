@@ -21,13 +21,15 @@ apps/api  DicomController → DicomService
       │  + 2. DICOM parsing & validation (parseDicomBuffer / validateDicomIdentifiers)
       │        • Part-10 meta header + dataset, required UID checks
       │  + 3. Persist Patient → Study (`RECEIVING`) + audit STUDY_UPLOADED
-      │  + 4. POST each instance  →  Orthanc REST /instances
-      │          (returns exact Patient/Series/Study/Instance internal IDs)
-      │  + 5. Persist Series + Instance rows (with orthanc* IDs)
-      │  + 6. Finalize Study `UNASSIGNED`, create WorklistItem
+      │  + 4. Losslessly compress each instance in temp storage
+      │        • Decode compressed pixels and require matching SHA-256 hash
+      │  + 5. POST only the verified compressed instance → Orthanc REST /instances
+      │        (returns exact Patient/Series/Study/Instance internal IDs)
+      │  + 6. Persist Series + Instance rows (with orthanc* IDs)
+      │  + 7. Finalize Study `UNASSIGNED`, create WorklistItem
       │        + audit DICOM_IMPORTED
       ▼
-   PostgreSQL (axis_pacs)             Orthanc (localhost:8042)
+   PostgreSQL (axis_pacs)             Orthanc (private API network)
    Patient / Study / Series /         stores the actual pixel data,
    Instance / WorklistItem            exposes DICOMweb
                                         │
@@ -39,12 +41,14 @@ apps/api  DicomController → DicomService
 
 Key design decisions (avoiding brittle heuristics):
 
-- **Per-instance `POST /instances`** instead of STOW-RS batch. Orthanc returns
-  the exact `ParentStudy` / `ParentSeries` / `ParentPatient` / `ID` in a single
-  response, so we map real PACS identifiers back to PostgreSQL rows with no
-  "find new study" guesswork. Orthanc is idempotent by SOP Instance UID and
-  may answer `Status: "Success"` **or** `Status: "AlreadyStored"`; both are
-  treated as success.
+- **Per-instance `POST /instances`** instead of STOW-RS batch. Each file is
+  JPEG 2000 Lossless or JPEG-LS Lossless compressed and its decoded pixel hash
+  is verified before Orthanc receives it. Orthanc returns the exact
+  `ParentStudy` / `ParentSeries` / `ParentPatient` / `ID` in a single response,
+  so we map real PACS identifiers back to PostgreSQL rows with no "find new
+  study" guesswork. Orthanc is idempotent by SOP Instance UID and may answer
+  `Status: "Success"` **or** `Status: "AlreadyStored"`; both are treated as
+  success.
 - **Hospital ownership always comes from the authenticated user**
   (`request.user.hospitalId`), never from the request body.
 
@@ -86,30 +90,35 @@ governed by your organization's policies.
 
 ## 3. Orthanc setup
 
-- Container: `axis-orthanc`, bound to `http://localhost:8042`.
+- Container: `axis-orthanc`, private to the API network; no host ports are
+  published.
 - Config: `infra/orthanc/orthanc.json`
-  - DICOMweb plugin enabled (`/dicom-web`).
-  - `AuthenticationEnabled: false` for the dev image.
+  - DICOMweb read plugin enabled (`/dicom-web`); STOW-RS is disabled.
+  - DICOM C-STORE listener is disabled.
+  - HTTP authentication is enabled; local development uses the non-production
+    credentials `orthanc` / `orthanc`.
 - REST auth (used by the API, from `apps/api/.env`):
   `ORTHANC_USERNAME=orthanc`, `ORTHANC_PASSWORD=orthanc`.
 
-Verify it is reachable:
+Verify it is running from inside the container:
 
 ```bash
-curl -s http://localhost:8042/system | head -c 300
+docker compose exec orthanc curl -s -u orthanc:orthanc http://localhost:8042/system
 # → {"Version":"...","ApiVersion":27, ...}
 ```
 
-Instances you POST land at `/instances` and are also exposed over DICOMweb
-(e.g. `GET /dicom-web/studies`).
+Do not send DICOM data directly to Orthanc. API and Orthanc must share a private
+network; configure the API's `ORTHANC_URL` to the private service URL.
 
 ---
 
 ## 4. apps/api environment (`apps/api/.env`)
 
 ```ini
-ORTHANC_URL=http://localhost:8042
-DICOMWEB_URL=http://localhost:8042/dicom-web
+ORTHANC_URL=http://axis-orthanc:8042
+AXIS_DICOM_LOSSLESS_TRANSFER_SYNTAX=1.2.840.10008.1.2.4.90
+# Optional; uses the POC .venv when present, otherwise python3 (python on Windows).
+# AXIS_DICOM_PYTHON=/path/to/python
 ORTHANC_USERNAME=orthanc
 ORTHANC_PASSWORD=orthanc
 # Optional DICOM limits (bytes / counts) — defaults are 200 MiB / 4000 entries.
@@ -133,7 +142,7 @@ DATABASE_URL="postgresql://axis:axis_dev@localhost:5432/axis_pacs_test" npx pris
 ## 5. DICOMweb proxy (`/api/dicom-web`)
 
 `apps/web/next.config.mjs` rewrites `/api/:path*` to the API (`:4000`). The API
-exposes a full DICOMweb proxy at `/api/dicom-web` that:
+exposes a read-only QIDO-RS / WADO-RS proxy at `/api/dicom-web` that:
 
 - authenticates via `axis_session` cookie + RBAC, then
 - forwards QIDO-RS / WADO-RS / WADO-URI to Orthanc's `/dicom-web`.
@@ -191,11 +200,13 @@ presence of `axis_session`, so any value is enough for a smoke test.
 
 ## 7. Import procedure (manual E2E)
 
-1. Start the API + web dev servers (and ensure postgres, orthanc, ohif are up).
+1. Start the API + web dev servers with the API on Orthanc's private Docker
+   network (and ensure postgres, orthanc, ohif are up).
 2. Log in as a hospital user (e.g. `registrar@citygeneral.com`).
 3. On the hospital "Submit Study" flow, pick the real DICOM (either the raw
    `.dcm` or zipped as `study.zip`).
-4. The API validates the ZIP, parses DICOM, stores instances in Orthanc, and
+4. The API validates the ZIP, parses DICOM, losslessly compresses each instance,
+   verifies its decoded pixel hash, then stores only verified files in Orthanc,
    persists `Patient → Study → Series → Instance` in PostgreSQL; the study is
    released to the manager worklist as `UNASSIGNED` and emitted
    `STUDY_UPLOADED` + `DICOM_IMPORTED` audit events.

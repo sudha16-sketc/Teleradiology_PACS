@@ -49,35 +49,39 @@ probe verifies both the QIDO endpoint and that `/plugins` contains `dicom-web`.
 
 ### Orthanc deployment
 
-Orthanc runs on the existing public Render web service; do not create a new paid
-private service. Configure the service Build settings with Runtime `Docker`,
-Dockerfile Path `infra/orthanc/Dockerfile.prod`, and Docker Context
-`infra/orthanc`. Keep its existing disk mounted at `/var/lib/orthanc/db` and
-leave the Render HTTP health check path unset so the default TCP probe on `8042`
-is used.
+Orthanc must run as a private Render service reachable over the private
+network. Do not deploy it as a public web service or expose its HTTP or DICOM
+ports. Configure Runtime `Docker`, Dockerfile Path
+`infra/orthanc/Dockerfile.prod`, and Docker Context `infra/orthanc`. Keep its
+persistent disk mounted at `/var/lib/orthanc/db`.
 
 Set these values on the Orthanc service:
 
 ```text
-PORT=8042
 ORTHANC_AUTH_ENABLED=true
 ORTHANC_USERNAME=<generated non-default username>
 ORTHANC_PASSWORD=<generated strong secret>
 ```
 
 `infra/orthanc/orthanc.prod.json` requires all three `ORTHANC_*` auth variables;
-missing values stop startup. Set the same credentials on the API plus
-`ORTHANC_URL=https://<public-orthanc-origin>` with no `/dicom-web` suffix. If the
-API and a private `axis-orthanc` service share a Render private network, use
-`ORTHANC_URL=http://axis-orthanc:8042` instead; startup validation allows that
-exact private hostname. Never put these credentials in the frontend or OHIF
-configuration. Never point a health check at DICOM port `4242`; non-DICOM probes
-there cause repeated `Unrecognized PDU type` log entries. Probe port `8042` or
+missing values stop startup. Set the same credentials on the API and use
+`ORTHANC_URL=http://axis-orthanc:8042`, with no `/dicom-web` suffix. Never put
+these credentials in the frontend or OHIF configuration. Orthanc STOW-RS and
+its DICOM C-STORE listener are disabled; all uploads, including recovery, must
+pass the API's lossless compression and pixel-hash verification. Never point a
+health check at DICOM port `4242`; non-DICOM probes there cause repeated
+`Unrecognized PDU type` log entries. Check readiness through
 `/api/health/ready`.
 
-After deployment, unauthenticated `/system`, `/studies`, `/patients`, `/plugins`
-and `/dicom-web/studies` must return `401`. With credentials, `/system` must
-report `Axis Orthanc 1.13.1`, `/plugins` must include `dicom-web`, and
+The API runtime must include `tools/dicom-compression-poc` and Python 3.12 with
+its `requirements.txt` installed. Set `AXIS_DICOM_PYTHON` to the Python
+executable when it is not the API process's default; missing codec/runtime
+dependencies cause ingest to fail closed.
+
+After deployment, access Orthanc only from the API's private network.
+Unauthenticated `/system`, `/studies`, `/patients`, `/plugins` and
+`/dicom-web/studies` must return `401`. With credentials, `/system` must report
+`Axis Orthanc 1.13.1`, `/plugins` must include `dicom-web`, and
 `/dicom-web/studies` must return `200`. Compare the authenticated `/studies`
 count before and after the rebuild to confirm no DICOM data was lost.
 

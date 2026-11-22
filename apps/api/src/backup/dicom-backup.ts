@@ -9,6 +9,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { BackupEnv, ArtifactResult } from './backup-ops.js';
 import { sha256File, verifyChecksum } from './backup-ops.js';
 import { parseDicomBuffer, validateDicomIdentifiers } from '../dicom/dicom.parser.js';
+import { compressDicomBuffer } from '../dicom/dicom-compression.js';
 
 interface DicomManifest {
   version: number;
@@ -262,10 +263,11 @@ class OrthancBackupClient {
     orthancStudyId: string;
     orthancPatientId: string;
   }> {
+    const compressed = await compressDicomBuffer(buffer);
     const response = await this.request('/instances', {
       method: 'POST',
       headers: { 'Content-Type': 'application/dicom' },
-      body: new Uint8Array(buffer) as unknown as BodyInit,
+      body: new Uint8Array(compressed) as unknown as BodyInit,
     });
     const body = (await response.json()) as {
       Status?: string;
