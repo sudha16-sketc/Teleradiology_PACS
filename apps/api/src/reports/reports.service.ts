@@ -35,6 +35,25 @@ const DRAFTABLE_STATES: StudyStatus[] = [
   StudyStatus.REPORT_DRAFT,
 ];
 
+const REPORT_AUTHOR_SELECT = {
+  id: true,
+  email: true,
+  displayName: true,
+  role: true,
+  status: true,
+  phone: true,
+  organization: true,
+  licenseNumber: true,
+  requestedRole: true,
+  rejectionReason: true,
+  approvedAt: true,
+  approvedById: true,
+  hospitalId: true,
+  subspecialty: true,
+  isActive: true,
+  createdAt: true,
+} satisfies Prisma.UserSelect;
+
 interface Actor {
   id: string;
   role: UserRole;
@@ -131,7 +150,7 @@ export class ReportsService {
   private async getLatestReport(studyId: string) {
     return this.prisma.report.findFirst({
       where: { studyId },
-      include: { author: true },
+      include: { author: { select: REPORT_AUTHOR_SELECT } },
       orderBy: { version: 'desc' },
     });
   }
@@ -210,7 +229,7 @@ export class ReportsService {
           study: {
             include: { patient: true, hospital: true },
           },
-          author: true,
+          author: { select: REPORT_AUTHOR_SELECT },
         },
         orderBy: { updatedAt: 'desc' },
         take,
@@ -256,7 +275,7 @@ export class ReportsService {
           study: {
             include: { patient: true, hospital: true },
           },
-          author: true,
+          author: { select: REPORT_AUTHOR_SELECT },
         },
         orderBy: { updatedAt: 'desc' },
         take,
@@ -281,7 +300,7 @@ export class ReportsService {
       this.assertHospitalReportVisibility(study, user);
     }
 
-    const include = { author: true, versions: true, changeRequests: true };
+    const include = { author: { select: REPORT_AUTHOR_SELECT }, versions: true, changeRequests: true };
 
     // Radiologists need the newest active row for editing (including a fresh
     // amendment draft). Reviewers and hospital users must never be shown that
@@ -330,7 +349,7 @@ export class ReportsService {
 
     const versions = await this.prisma.reportVersion.findMany({
       where: { report: { studyId: study.id } },
-      include: { author: true },
+      include: { author: { select: REPORT_AUTHOR_SELECT } },
       orderBy: [{ version: 'asc' }, { createdAt: 'asc' }],
     });
 
@@ -413,7 +432,7 @@ export class ReportsService {
             ...effectiveContent,
             contentHash: contentHash(effectiveContent),
           },
-          include: { author: true },
+          include: { author: { select: REPORT_AUTHOR_SELECT } },
         });
         return { report, created: false };
       }
@@ -427,7 +446,7 @@ export class ReportsService {
           ...content,
           contentHash: hash,
         },
-        include: { author: true },
+        include: { author: { select: REPORT_AUTHOR_SELECT } },
       });
       return { report, created: true };
     });
@@ -761,7 +780,7 @@ export class ReportsService {
           ...content,
           contentHash: hash,
         },
-        include: { author: true },
+        include: { author: { select: REPORT_AUTHOR_SELECT } },
       });
 
       await tx.study.update({
@@ -963,7 +982,7 @@ export class ReportsService {
     const report = await this.prisma.report.findFirst({
       where: { studyId: study.id, status: { in: ['SIGNED', 'MANAGER_APPROVED'] } },
       orderBy: { version: 'desc' },
-      include: { author: true },
+      include: { author: { select: REPORT_AUTHOR_SELECT } },
     });
     if (!report) throw new NotFoundException(`No final report found for study ${studyUid}`);
     if (user.role === 'HOSPITAL') {

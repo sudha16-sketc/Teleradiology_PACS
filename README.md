@@ -429,8 +429,11 @@ there produce repeated `Unrecognized PDU type` log entries. Probe HTTP port
 Do not point cron-job.org at `/`, `/api/admin/retention/execute`, or the Orthanc
 origin. The example host `https://teleradiology-pacs-2.onrender.com` is the
 Orthanc service in this repository's deployment notes; authenticated Orthanc
-returns `401` to unauthenticated HTTP requests. Use the separate Render API
-origin (`https://<api-host>`) with an explicit API path.
+returns `401` to unauthenticated HTTP requests, including
+`/app/explorer.html`. A cron-job.org `401` on that URL is expected service
+behavior, not an API failure; never disable Orthanc authentication to make it
+pass. Use the separate Render API origin (`https://<api-host>`) with an explicit
+API path.
 
 For availability monitoring only, configure cron-job.org with:
 

@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { createTestApp } from './app-bootstrap.js';
 import { loginAgent, USERS, prisma } from './helpers.js';
+import { ReportsService } from '../src/reports/reports.service.js';
 import type { INestApplication } from '@nestjs/common';
 import { StudyStatus } from '@prisma/client';
 import { createHash } from 'crypto';
@@ -81,6 +82,13 @@ function expectedHash(content: Record<string, unknown>): string {
       ]),
     )
     .digest('hex');
+}
+
+function expectNoAuthorSecrets(reports: any[]) {
+  for (const report of reports) {
+    expect(report.author).not.toHaveProperty('passwordHash');
+    expect(report.author).not.toHaveProperty('authVersion');
+  }
 }
 
 beforeAll(async () => {
@@ -833,6 +841,7 @@ describe('Phase 4 — Reporting', () => {
       const uids = res.body.data.map((r: any) => r.study?.studyInstanceUid);
       expect(uids).toContain(studyA.studyInstanceUid);
       expect(uids).not.toContain(studyB.studyInstanceUid);
+      expectNoAuthorSecrets(res.body.data);
     });
 
     it('REPORT-20b: manager sees all reports', async () => {
@@ -840,6 +849,28 @@ describe('Phase 4 — Reporting', () => {
       const uids = res.body.data.map((r: any) => r.study?.studyInstanceUid);
       expect(uids).toContain(studyA.studyInstanceUid);
       expect(uids).toContain(studyB.studyInstanceUid);
+      expectNoAuthorSecrets(res.body.data);
+    });
+
+    it('REPORT-20c: unexpected list failures keep correlation ids and hide details', async () => {
+      const correlationId = 'web-test-reports-500';
+      const listSpy = jest
+        .spyOn(app.get(ReportsService), 'list')
+        .mockRejectedValueOnce(new Error('synthetic reports failure'));
+
+      try {
+        const res = await rad1Agent
+          .get('/api/reports')
+          .set('x-request-id', correlationId)
+          .expect(500);
+        expect(res.body).toMatchObject({
+          statusCode: 500,
+          message: 'Internal server error',
+        });
+        expect(res.headers['x-request-id']).toBe(correlationId);
+      } finally {
+        listSpy.mockRestore();
+      }
     });
   });
 
