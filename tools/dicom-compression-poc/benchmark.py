@@ -689,48 +689,89 @@ def validate_lossy_history(
     source_syntax: str,
     metadata: dict[str, Any],
 ) -> dict[str, str | None]:
-    history = lossy_history_snapshot(dataset)
-    metadata.update(history)
-    if history["lossy_image_compression"] != "01":
+    normalized = False
+    has_compression = "LossyImageCompression" in dataset
+    compression_values = (
+        _as_values(getattr(dataset, "LossyImageCompression"))
+        if has_compression
+        else []
+    )
+    if not has_compression:
+        normalized = True
+    elif compression_values != ["01"]:
         raise LosslessCompressionError(
             "validate_lossy_history",
             f"Source syntax {source_syntax}: LossyImageCompression must be '01'",
-            metadata,
+            {**metadata, **lossy_history_snapshot(dataset)},
         )
-    methods = _as_values(getattr(dataset, "LossyImageCompressionMethod", None))
-    ratios = _as_values(getattr(dataset, "LossyImageCompressionRatio", None))
-    if not methods or not ratios:
+
+    has_method = "LossyImageCompressionMethod" in dataset
+    methods = (
+        _as_values(getattr(dataset, "LossyImageCompressionMethod"))
+        if has_method
+        else []
+    )
+    if not has_method:
+        methods = [JPEG_BASELINE_METHOD]
+        normalized = True
+    elif not methods:
         raise LosslessCompressionError(
             "validate_lossy_history",
-            f"Source syntax {source_syntax}: lossy method and ratio are required",
-            metadata,
-        )
-    if len(methods) != len(ratios):
-        raise LosslessCompressionError(
-            "validate_lossy_history",
-            f"Source syntax {source_syntax}: lossy method and ratio counts differ",
-            metadata,
-        )
-    try:
-        parsed_ratios = [float(str(value)) for value in ratios]
-    except (TypeError, ValueError) as exc:
-        raise LosslessCompressionError(
-            "validate_lossy_history",
-            f"Source syntax {source_syntax}: malformed LossyImageCompressionRatio",
-            metadata,
-        ) from exc
-    if not all(math.isfinite(value) and value > 0 for value in parsed_ratios):
-        raise LosslessCompressionError(
-            "validate_lossy_history",
-            f"Source syntax {source_syntax}: lossy ratio must be positive and finite",
-            metadata,
+            f"Source syntax {source_syntax}: LossyImageCompressionMethod is empty",
+            {**metadata, **lossy_history_snapshot(dataset)},
         )
     if str(methods[-1]) != JPEG_BASELINE_METHOD:
         raise LosslessCompressionError(
             "validate_lossy_history",
             f"Source syntax {source_syntax}: unsupported LossyImageCompressionMethod",
-            metadata,
+            {**metadata, **lossy_history_snapshot(dataset)},
         )
+
+    has_ratio = "LossyImageCompressionRatio" in dataset
+    ratios = (
+        _as_values(getattr(dataset, "LossyImageCompressionRatio"))
+        if has_ratio
+        else []
+    )
+    if has_ratio:
+        if not ratios:
+            raise LosslessCompressionError(
+                "validate_lossy_history",
+                f"Source syntax {source_syntax}: LossyImageCompressionRatio is empty",
+                {**metadata, **lossy_history_snapshot(dataset)},
+            )
+        if len(methods) != len(ratios):
+            raise LosslessCompressionError(
+                "validate_lossy_history",
+                f"Source syntax {source_syntax}: lossy method and ratio counts differ",
+                {**metadata, **lossy_history_snapshot(dataset)},
+            )
+        try:
+            parsed_ratios = [float(str(value)) for value in ratios]
+        except (TypeError, ValueError) as exc:
+            raise LosslessCompressionError(
+                "validate_lossy_history",
+                f"Source syntax {source_syntax}: malformed LossyImageCompressionRatio",
+                {**metadata, **lossy_history_snapshot(dataset)},
+            ) from exc
+        if not all(math.isfinite(value) and value > 0 for value in parsed_ratios):
+            raise LosslessCompressionError(
+                "validate_lossy_history",
+                f"Source syntax {source_syntax}: lossy ratio must be positive and finite",
+                {**metadata, **lossy_history_snapshot(dataset)},
+            )
+
+    if not has_compression:
+        dataset.LossyImageCompression = "01"
+    if not has_method:
+        dataset.LossyImageCompressionMethod = JPEG_BASELINE_METHOD
+    history = lossy_history_snapshot(dataset)
+    metadata.update(history)
+    metadata["prior_lossy_compression"] = True
+    metadata["lossy_history_normalized"] = normalized
+    metadata["lossy_history_normalization_reason"] = (
+        "jpeg-baseline-transfer-syntax" if normalized else None
+    )
     return history
 
 
@@ -1308,6 +1349,12 @@ def _compress_verified_dicom(
             verified.provenance["lossy_image_compression"] = history["lossy_image_compression"]
             verified.provenance["lossy_method"] = history["lossy_method"]
             verified.provenance["lossy_ratio"] = history["lossy_ratio"]
+            verified.provenance["lossy_history_normalized"] = context["metadata"][
+                "lossy_history_normalized"
+            ]
+            verified.provenance["lossy_history_normalization_reason"] = context[
+                "metadata"
+            ]["lossy_history_normalization_reason"]
             return verified
 
         context["stage"] = "validate_source_syntax"

@@ -34,6 +34,8 @@ describe('DICOM compression diagnostics', () => {
         '"lossy_image_compression":"01",' +
         '"lossy_method":"ISO_10918_1",' +
         '"lossy_ratio":"4.0",' +
+        '"lossy_history_normalized":true,' +
+        '"lossy_history_normalization_reason":"jpeg-baseline-transfer-syntax",' +
         '"reencode_policy_version":"jpeg-baseline-lossless-v1",' +
         '"source_pixel_sha256":"' + 'b'.repeat(64) + '",' +
         '"output_pixel_sha256":"' + 'b'.repeat(64) + '",' +
@@ -50,6 +52,8 @@ describe('DICOM compression diagnostics', () => {
       lossyImageCompression: '01',
       lossyMethod: 'ISO_10918_1',
       lossyRatio: '4.0',
+      lossyHistoryNormalized: true,
+      lossyHistoryNormalizationReason: 'jpeg-baseline-transfer-syntax',
       reencodePolicyVersion: 'jpeg-baseline-lossless-v1',
       sourcePixelSha256: 'b'.repeat(64),
       outputPixelSha256: 'b'.repeat(64),

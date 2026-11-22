@@ -53,13 +53,15 @@ function normalizeUid(value: unknown): string {
     .join('');
 }
 
-function compressionFailure(): dicomCompression.DicomCompressionError {
+function compressionFailure(
+  failureStage = 'verify_pixel_integrity',
+): dicomCompression.DicomCompressionError {
   return new dicomCompression.DicomCompressionError(
     'Lossless DICOM compression or pixel verification failed',
     {
-      stage: 'verify_pixel_integrity',
+      stage: failureStage,
       errorType: 'LosslessCompressionError',
-      message: 'Decoded output pixels are not exactly equal',
+      message: 'Synthetic compression failure',
       metadata: {
         source_transfer_syntax: '1.2.840.10008.1.2.4.50',
         target_transfer_syntax: '1.2.840.10008.1.2.4.90',
@@ -67,7 +69,7 @@ function compressionFailure(): dicomCompression.DicomCompressionError {
         columns: 8,
       },
     },
-    'verify_pixel_integrity',
+    failureStage,
   );
 }
 
@@ -462,7 +464,11 @@ describe('DICOM archive consistency', () => {
     expect(auditText).not.toContain(secondSopUid);
   });
 
-  it('fails ingest before the Orthanc POST and audits the resolved failure stage', async () => {
+  it.each([
+    'validate_lossy_history',
+    'encode_jpeg2000_lossless',
+    'verify_pixel_integrity',
+  ])('fails ingest before the Orthanc POST when %s fails', async (failureStage) => {
     const studyUid = uid();
     const raw = buildP10Dicom({
       studyUid,
@@ -470,7 +476,7 @@ describe('DICOM archive consistency', () => {
       sopUid: `${studyUid}.3`,
       modality: 'CT',
     });
-    compressDetailedMock.mockRejectedValue(compressionFailure());
+    compressDetailedMock.mockRejectedValue(compressionFailure(failureStage));
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       calls.push({ url: String(input), init });
@@ -499,7 +505,7 @@ describe('DICOM archive consistency', () => {
     expect(failureAudit.correlationId).toBeTruthy();
     expect(failureAudit.metadata).toMatchObject({
       status: 'FAILED',
-      failureStage: 'verify_pixel_integrity',
+      failureStage,
       sourceTransferSyntax: '1.2.840.10008.1.2.4.50',
       targetTransferSyntax: '1.2.840.10008.1.2.4.90',
     });
