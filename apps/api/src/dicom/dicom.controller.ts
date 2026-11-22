@@ -6,6 +6,7 @@ import {
   BadRequestException,
   Param,
   Req,
+  Logger,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import multer from 'multer';
@@ -19,6 +20,21 @@ import { DICOM_LIMITS } from './dicom.constants.js';
 import type { Request } from 'express';
 
 type UploadRequest = Request & { axisUploadDir?: string };
+
+export async function cleanupUploadDirectory(
+  request: UploadRequest,
+  removeDirectory: typeof rm = rm,
+  logger: Pick<Logger, 'warn'> = new Logger(DicomController.name),
+): Promise<void> {
+  const uploadDir = request.axisUploadDir;
+  if (!uploadDir) return;
+  request.axisUploadDir = undefined;
+  try {
+    await removeDirectory(uploadDir, { recursive: true, force: true });
+  } catch {
+    logger.warn('DICOM upload staging directory cleanup failed');
+  }
+}
 
 /**
  * Writes each multipart file to a fresh per-request temp directory instead of
@@ -112,17 +128,7 @@ export class DicomController {
 
       return { data: result };
     } finally {
-      // Remove the per-request upload staging directory (and any files within
-      // it) regardless of outcome. `files` may be empty if Multer aborted, so
-      // always attempt the directory removal.
-      if (request.axisUploadDir) {
-        const uploadDir = request.axisUploadDir;
-        request.axisUploadDir = undefined;
-        await rm(uploadDir, {
-          recursive: true,
-          force: true,
-        });
-      }
+      await cleanupUploadDirectory(request);
     }
   }
 
@@ -152,14 +158,7 @@ export class DicomController {
         data: await this.dicomService.reingestDicom(files, studyUid, user),
       };
     } finally {
-      if (request.axisUploadDir) {
-        const uploadDir = request.axisUploadDir;
-        request.axisUploadDir = undefined;
-        await rm(uploadDir, {
-          recursive: true,
-          force: true,
-        });
-      }
+      await cleanupUploadDirectory(request);
     }
   }
 }
