@@ -9,6 +9,7 @@ import csv
 import hashlib
 from io import BytesIO
 import math
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ try:
     from pydicom.encaps import encapsulate, generate_frames
     from pydicom.uid import (
         ExplicitVRLittleEndian,
+        ImplicitVRLittleEndian,
         JPEG2000,
         JPEG2000Lossless,
         JPEGBaseline8Bit,
@@ -42,6 +44,16 @@ TRANSFER_SYNTAX_TAG = 0x00020010
 FILE_META_GROUP_LENGTH_TAG = 0x00020000
 PIXEL_GROUPS = {0x0028, 0x7FE0}
 LOSSY_TAGS = {0x00282110, 0x00282112, 0x00282114}
+LOSSLESS_TRANSFER_SYNTAXES = {
+    "1.2.840.10008.1.2.4.80",   # JPEG-LS Lossless
+    "1.2.840.10008.1.2.4.90",   # JPEG 2000 Lossless
+    "1.2.840.10008.1.2.4.201",  # HTJ2K Lossless
+    "1.2.840.10008.1.2.5",      # RLE Lossless
+}
+UNCOMPRESSED_TRANSFER_SYNTAXES = {
+    str(ExplicitVRLittleEndian),
+    str(ImplicitVRLittleEndian),
+}
 CSV_FIELDS = [
     "file",
     "modality",
@@ -551,7 +563,7 @@ def compress_verified_file(
     destination: Path,
     transfer_syntax: str,
 ) -> str:
-    """Write a losslessly compressed instance only after pixel-hash verification."""
+    """Compress uncompressed DICOM or pass through a valid lossless instance."""
     variants = {
         str(JPEG2000Lossless): Variant(
             "jpeg2000-lossless", str(JPEG2000Lossless), "pylibjpeg", True
@@ -572,6 +584,68 @@ def compress_verified_file(
         raise FileExistsError(f"Compressed output already exists: {destination.name}")
 
     original = pydicom.dcmread(source)
+    source_syntax = str(getattr(original.file_meta, "TransferSyntaxUID", "") or "")
+    source_syntax_label = source_syntax or "<missing>"
+
+    if "PixelData" not in original:
+        raise ValueError(
+            f"Source syntax {source_syntax_label}: file has no Pixel Data (7FE0,0010)"
+        )
+    if not original.PixelData:
+        raise ValueError(
+            f"Source syntax {source_syntax_label}: Pixel Data (7FE0,0010) is empty"
+        )
+
+    if source_syntax in LOSSLESS_TRANSFER_SYNTAXES:
+        try:
+            original_pixels = np.asarray(original.pixel_array).copy()
+        except Exception as exc:
+            raise ValueError(
+                f"Source syntax {source_syntax}: lossless Pixel Data could not be decoded "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
+        if original_pixels.size == 0:
+            raise ValueError(
+                f"Source syntax {source_syntax}: decoded Pixel Data is empty"
+            )
+        original_pixel_hash = hashlib.sha256(
+            original_pixels.tobytes(order="C")
+        ).hexdigest()
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copyfile(source, destination)
+            copied = pydicom.dcmread(destination)
+            copied_pixels = np.asarray(copied.pixel_array)
+            copied_pixel_hash = hashlib.sha256(
+                copied_pixels.tobytes(order="C")
+            ).hexdigest()
+            if (
+                original_pixels.dtype != copied_pixels.dtype
+                or original_pixels.shape != copied_pixels.shape
+                or original_pixel_hash != copied_pixel_hash
+                or str(getattr(copied.file_meta, "TransferSyntaxUID", "")) != source_syntax
+            ):
+                raise ValueError(
+                    f"Source syntax {source_syntax}: lossless pass-through pixel "
+                    "verification failed"
+                )
+            return original_pixel_hash
+        except Exception:
+            destination.unlink(missing_ok=True)
+            raise
+
+    if source_syntax not in UNCOMPRESSED_TRANSFER_SYNTAXES:
+        uid = UID(source_syntax) if source_syntax else UID("")
+        if source_syntax and uid.is_compressed:
+            raise ValueError(
+                f"Source syntax {source_syntax}: lossy or unknown-compression transfer syntax "
+                "is not accepted for lossless ingest"
+            )
+        raise ValueError(
+            f"Source syntax {source_syntax_label}: unknown or unsupported transfer syntax"
+        )
+
     original_pixels = np.asarray(original.pixel_array).copy()
     original_pixel_hash = hashlib.sha256(
         original_pixels.tobytes(order="C")

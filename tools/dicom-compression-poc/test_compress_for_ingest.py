@@ -10,9 +10,11 @@ import unittest
 import numpy as np
 import pydicom
 from pydicom.dataset import FileDataset, FileMetaDataset
+from pydicom.encaps import encapsulate
 from pydicom.errors import InvalidDicomError
 from pydicom.uid import (
     ExplicitVRLittleEndian,
+    JPEGBaseline8Bit,
     JPEGLSLossless,
     JPEG2000Lossless,
     SecondaryCaptureImageStorage,
@@ -52,6 +54,57 @@ def write_test_dicom(path: Path) -> np.ndarray:
 
 
 class CompressForIngestTests(unittest.TestCase):
+    def test_cxr004_lossless_jpeg_ls_passes_through_unchanged(self) -> None:
+        source = Path(__file__).with_name("samples") / "cxr004.dcm"
+        if not source.is_file():
+            self.skipTest("samples/cxr004.dcm is not present")
+
+        with tempfile.TemporaryDirectory() as work:
+            output = Path(work) / "verified.dcm"
+            input_dataset = pydicom.dcmread(source)
+            input_pixels = np.asarray(input_dataset.pixel_array)
+            input_hash = hashlib.sha256(input_pixels.tobytes(order="C")).hexdigest()
+            input_syntax = str(input_dataset.file_meta.TransferSyntaxUID)
+
+            pixel_hash = compress_verified_file(
+                source,
+                output,
+                str(JPEG2000Lossless),
+            )
+            result = pydicom.dcmread(output)
+            output_pixels = np.asarray(result.pixel_array)
+
+            self.assertEqual(pixel_hash, input_hash)
+            self.assertEqual(
+                hashlib.sha256(output_pixels.tobytes(order="C")).hexdigest(),
+                input_hash,
+            )
+            self.assertEqual(
+                str(result.file_meta.TransferSyntaxUID),
+                input_syntax,
+            )
+            self.assertEqual(output.read_bytes(), source.read_bytes())
+
+    def test_lossy_syntax_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "lossy.dcm"
+            output = Path(work) / "verified.dcm"
+            write_test_dicom(source)
+            dataset = pydicom.dcmread(source)
+            dataset.file_meta.TransferSyntaxUID = JPEGBaseline8Bit
+            dataset.PixelData = encapsulate([dataset.PixelData])
+            dataset["PixelData"].VR = "OB"
+            dataset["PixelData"].is_undefined_length = True
+            dataset.save_as(source, enforce_file_format=True)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                r"Source syntax 1\.2\.840\.10008\.1\.2\.4\.50.*lossy",
+            ):
+                compress_verified_file(source, output, str(JPEG2000Lossless))
+
+            self.assertFalse(output.exists())
+
     def test_lossless_encoders_preserve_pixels_and_select_requested_syntax(self) -> None:
         for syntax in (JPEG2000Lossless, JPEGLSLossless):
             with self.subTest(transfer_syntax=str(syntax)), tempfile.TemporaryDirectory() as work:
