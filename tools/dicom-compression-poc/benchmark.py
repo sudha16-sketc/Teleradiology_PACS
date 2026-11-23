@@ -161,6 +161,7 @@ SUPPORTED_LOSSY_SOURCE_TRANSFER_SYNTAXES = {str(JPEGBaseline8Bit)}
 JPEG_BASELINE_METHOD = "ISO_10918_1"
 REENCODE_POLICY_VERSION = "jpeg-baseline-lossless-v1"
 MONOCHROME_PHOTOMETRIC_INTERPRETATIONS = {"MONOCHROME1", "MONOCHROME2"}
+RGB_PHOTOMETRIC_INTERPRETATIONS = {"RGB"}
 CSV_FIELDS = [
     "file",
     "modality",
@@ -805,24 +806,48 @@ def validate_source_pixel_metadata(
             f"Source syntax {source_syntax}: NumberOfFrames must be positive",
             metadata,
         )
-    if samples_per_pixel != 1:
+    if samples_per_pixel not in (1, 3):
         raise LosslessCompressionError(
             stage,
-            f"Source syntax {source_syntax}: only single-sample images are supported",
+            f"Source syntax {source_syntax}: only monochrome or RGB images are supported",
             metadata,
         )
-    if photometric_interpretation not in MONOCHROME_PHOTOMETRIC_INTERPRETATIONS:
+    if samples_per_pixel == 1 and photometric_interpretation not in MONOCHROME_PHOTOMETRIC_INTERPRETATIONS:
         raise LosslessCompressionError(
             stage,
             f"Source syntax {source_syntax}: unsupported PhotometricInterpretation",
             metadata,
         )
-    if "PlanarConfiguration" in dataset:
+    if samples_per_pixel == 3 and photometric_interpretation not in RGB_PHOTOMETRIC_INTERPRETATIONS:
+        raise LosslessCompressionError(
+            stage,
+            f"Source syntax {source_syntax}: three-sample images must use RGB",
+            metadata,
+        )
+    if samples_per_pixel == 1 and "PlanarConfiguration" in dataset:
         raise LosslessCompressionError(
             stage,
             f"Source syntax {source_syntax}: PlanarConfiguration must be absent for monochrome pixels",
             metadata,
         )
+    if samples_per_pixel == 3:
+        if (bits_allocated, bits_stored, high_bit, pixel_representation) != (
+            8,
+            8,
+            7,
+            0,
+        ):
+            raise LosslessCompressionError(
+                stage,
+                f"Source syntax {source_syntax}: RGB requires unsigned 8-bit pixels",
+                metadata,
+            )
+        if int(getattr(dataset, "PlanarConfiguration", -1)) != 0:
+            raise LosslessCompressionError(
+                stage,
+                f"Source syntax {source_syntax}: RGB PlanarConfiguration must be 0",
+                metadata,
+            )
     if require_8bit and (bits_allocated, bits_stored, high_bit, pixel_representation) != (
         8,
         8,
@@ -903,7 +928,15 @@ def validate_decoded_pixel_shape(
     rows = int(pixel_metadata["rows"])
     columns = int(pixel_metadata["columns"])
     frames = int(pixel_metadata["number_of_frames"])
-    expected = (rows, columns) if frames == 1 else (frames, rows, columns)
+    samples_per_pixel = int(pixel_metadata.get("samples_per_pixel", 1))
+    if samples_per_pixel == 1:
+        expected = (rows, columns) if frames == 1 else (frames, rows, columns)
+    else:
+        expected = (
+            (rows, columns, 3)
+            if frames == 1
+            else (frames, rows, columns, 3)
+        )
     if tuple(pixels.shape) != expected:
         raise LosslessCompressionError(
             stage,
@@ -1010,10 +1043,18 @@ def verify_output_metadata(
                 f"Output {name} does not match source",
                 metadata,
             )
-    if "PlanarConfiguration" in output:
+    samples_per_pixel = int(source_pixel_metadata["samples_per_pixel"])
+    if samples_per_pixel == 1:
+        if "PlanarConfiguration" in output:
+            raise LosslessCompressionError(
+                "validate_output_metadata",
+                "Output PlanarConfiguration must be absent for monochrome pixels",
+                metadata,
+            )
+    elif int(getattr(output, "PlanarConfiguration", -1)) != 0:
         raise LosslessCompressionError(
             "validate_output_metadata",
-            "Output PlanarConfiguration must be absent for monochrome pixels",
+            "Output RGB PlanarConfiguration must be 0",
             metadata,
         )
     if str(output["PixelData"].VR) != "OB" or not output["PixelData"].is_undefined_length:

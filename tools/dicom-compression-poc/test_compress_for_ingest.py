@@ -62,6 +62,36 @@ def write_test_dicom(path: Path) -> np.ndarray:
     return pixels
 
 
+def write_rgb_test_dicom(path: Path) -> np.ndarray:
+    pixels = np.random.default_rng(42).integers(
+        0,
+        256,
+        size=(64, 64, 3),
+        dtype=np.uint8,
+    )
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    dataset = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
+    dataset.SOPClassUID = file_meta.MediaStorageSOPClassUID
+    dataset.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    dataset.StudyInstanceUID = generate_uid()
+    dataset.SeriesInstanceUID = generate_uid()
+    dataset.Rows = pixels.shape[0]
+    dataset.Columns = pixels.shape[1]
+    dataset.SamplesPerPixel = 3
+    dataset.PhotometricInterpretation = "RGB"
+    dataset.PlanarConfiguration = 0
+    dataset.BitsAllocated = 8
+    dataset.BitsStored = 8
+    dataset.HighBit = 7
+    dataset.PixelRepresentation = 0
+    dataset.PixelData = pixels.tobytes()
+    dataset.save_as(path, enforce_file_format=True)
+    return pixels
+
+
 def write_jpeg_baseline_dicom(
     path: Path,
     pixels: np.ndarray,
@@ -436,6 +466,34 @@ class CompressForIngestTests(unittest.TestCase):
                 self.assertEqual(str(result.file_meta.TransferSyntaxUID), str(syntax))
                 np.testing.assert_array_equal(result.pixel_array, expected_pixels)
                 self.assertTrue(source.exists())
+
+    def test_rgb_lossless_encoder_preserves_pixels(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            source = Path(work) / "rgb-source.dcm"
+            output = Path(work) / "rgb-verified.dcm"
+            expected_pixels = write_rgb_test_dicom(source)
+
+            pixel_hash = compress_verified_file(
+                source,
+                output,
+                str(JPEG2000Lossless),
+            )
+            result = pydicom.dcmread(output)
+            output_pixels = np.asarray(result.pixel_array)
+
+            self.assertEqual(
+                pixel_hash,
+                hashlib.sha256(expected_pixels.tobytes(order="C")).hexdigest(),
+            )
+            self.assertEqual(
+                str(result.file_meta.TransferSyntaxUID),
+                str(JPEG2000Lossless),
+            )
+            self.assertEqual(int(result.SamplesPerPixel), 3)
+            self.assertEqual(str(result.PhotometricInterpretation), "RGB")
+            self.assertEqual(int(result.PlanarConfiguration), 0)
+            np.testing.assert_array_equal(output_pixels, expected_pixels)
+            self.assertTrue(source.exists())
 
     def test_rejects_unsupported_syntax_without_creating_output(self) -> None:
         with tempfile.TemporaryDirectory() as work:
