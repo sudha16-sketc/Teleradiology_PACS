@@ -796,6 +796,7 @@ enum ReconciliationRunStatus {
 enum Modality {
   CT
   MRI
+  OT
   XR
   US
   NM

@@ -27,8 +27,8 @@ export const MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
 /** Cap on how many files one selection may contribute. */
 export const MAX_FILES = 5_000;
 
-/** Accepted extensions. A whole study is often exported as one ZIP. */
-export const ACCEPT_EXT = /\.(zip|dcm|dicom)$/i;
+/** Accepted extensions. A whole study can also be a collection of PNG/JPEG images. */
+export const ACCEPT_EXT = /\.(zip|dcm|dicom|png|jpe?g)$/i;
 
 /** A file that has been accepted for upload. */
 export interface SelectedFile {
@@ -133,7 +133,7 @@ export function validateSelection(
       ok: false,
       code: "empty",
       message:
-        "No DICOM files found. Select .dcm/.dicom files or a .zip archive.",
+        "No supported files found. Select DICOM/ZIP or PNG/JPEG files.",
     };
   }
 

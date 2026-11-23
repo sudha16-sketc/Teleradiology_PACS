@@ -509,8 +509,8 @@ export default function SubmitStudyPage() {
               </h2>
 
               <p className="mt-1 text-sm text-muted-foreground">
-                Upload a DICOM file, multiple DICOM files, a
-                folder, or a ZIP archive.
+                Upload DICOM/ZIP data or multiple PNG/JPEG images
+                to create one study.
               </p>
             </div>
 
@@ -526,7 +526,7 @@ export default function SubmitStudyPage() {
                   ref={inputRef}
                   type="file"
                   multiple
-                  accept=".dcm,.dicom,.zip,application/zip"
+                  accept=".dcm,.dicom,.zip,.png,.jpg,.jpeg,application/zip,image/png,image/jpeg"
                   onChange={handleBrowserFiles}
                   className="hidden"
                 />
@@ -624,8 +624,8 @@ export default function SubmitStudyPage() {
 
               <h3 className="text-base font-semibold">
                 {dragActive
-                  ? "Drop your DICOM files here"
-                  : "Drag & drop your DICOM files here"}
+                  ? "Drop DICOM/ZIP or PNG/JPEG files here"
+                  : "Drag & drop DICOM/ZIP or PNG/JPEG files here"}
               </h3>
 
               <p className="mt-2 text-sm text-muted-foreground">
@@ -633,7 +633,7 @@ export default function SubmitStudyPage() {
               </p>
 
               <p className="mt-2 text-xs text-muted-foreground">
-                Supported: .dcm, .dicom, .zip
+                Supported: .dcm, .dicom, .zip, .png, .jpg, .jpeg
               </p>
 
               <div

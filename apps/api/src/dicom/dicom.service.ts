@@ -25,6 +25,11 @@ import {
 } from './dicom-compression.js';
 import type { StudyHistoryForm } from './dto/dicom-history.dto.js';
 import type { ImagingAvailabilityResult } from '@axis/types';
+import {
+  convertPngJpegFiles,
+  hasImageExtension,
+  hasImageSignature,
+} from './dicom-image-converter.js';
 
 export interface IngestUser {
   id: string;
@@ -66,7 +71,7 @@ const MODALITY_MAP: Record<string, Modality> = {
   CR: 'CR',
   RF: 'Fluoro',
   ES: 'US',
-  OT: 'CT',
+  OT: 'OT',
 };
 
 function isZip(buffer: Buffer): boolean {
@@ -367,8 +372,38 @@ export class DicomService {
     const readUpload = async (f: Express.Multer.File): Promise<Buffer> =>
       f.path ? readFile(f.path) : Promise.resolve(f.buffer as Buffer);
 
-    let fileBuffer: Buffer;
-    if (files.length === 1) {
+    const imageFiles: Express.Multer.File[] = [];
+    const nonImageFiles: Express.Multer.File[] = [];
+    for (const file of files) {
+      if (hasImageExtension(file.originalname || file.filename || '')) {
+        imageFiles.push(file);
+      } else {
+        nonImageFiles.push(file);
+      }
+    }
+
+    let convertedImageBuffers: Buffer[] | null = null;
+    if (imageFiles.length > 0) {
+      if (nonImageFiles.length > 0) {
+        throw new BadRequestException(
+          'PNG/JPEG images cannot be mixed with DICOM or ZIP files in one upload',
+        );
+      }
+      for (const file of files) {
+        const source = await readUpload(file);
+        if (!hasImageSignature(source)) {
+          throw new BadRequestException(
+            'A selected image is not a valid PNG or JPEG file',
+          );
+        }
+      }
+      convertedImageBuffers = await convertPngJpegFiles(files, hospitalId, history);
+    }
+
+    let fileBuffer: Buffer | null = null;
+    if (convertedImageBuffers) {
+      fileBuffer = null;
+    } else if (files.length === 1) {
       // A single upload: if it is a ZIP it is passed to the hardened
       // extraction pipeline untouched; if it is a raw DICOM instance it is
       // validated and ingested directly (no in-memory re-zip round-trip).
@@ -390,13 +425,17 @@ export class DicomService {
     try {
       // 1. Collect the raw DICOM instances (single file or safely extracted ZIP).
       const rawBuffers: Buffer[] = [];
-      if (isZip(fileBuffer)) {
-        archive = await extractDicomArchive(fileBuffer);
-        for (const f of archive.files) {
-          rawBuffers.push(await readFile(f));
+      if (convertedImageBuffers) {
+        rawBuffers.push(...convertedImageBuffers);
+      } else if (fileBuffer) {
+        if (isZip(fileBuffer)) {
+          archive = await extractDicomArchive(fileBuffer);
+          for (const f of archive.files) {
+            rawBuffers.push(await readFile(f));
+          }
+        } else {
+          rawBuffers.push(fileBuffer);
         }
-      } else {
-        rawBuffers.push(fileBuffer);
       }
 
       if (rawBuffers.length === 0) {

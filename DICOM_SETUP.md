@@ -52,6 +52,35 @@ Key design decisions (avoiding brittle heuristics):
 - **Hospital ownership always comes from the authenticated user**
   (`request.user.hospitalId`), never from the request body.
 
+### PNG/JPEG Secondary Capture conversion
+
+Hospital users may upload one or more `.png`, `.jpg`, or `.jpeg` files through
+the same `/api/dicom/ingest` study submission endpoint. The API:
+
+1. validates the filename and actual PNG/JPEG signature,
+2. invokes `convert_png_jpeg_to_dicom.py` with Pillow, NumPy, and pydicom,
+3. creates one shared Study UID and one shared Series UID,
+4. creates one unique SOP Instance UID per image,
+5. marks the images as DICOM Secondary Capture (`OT`, SOP Class
+   `1.2.840.10008.5.1.4.1.1.7`), and
+6. sends every validated instance through the normal DICOM compression,
+   Orthanc, PostgreSQL, availability, and audit pipeline.
+
+PNG/JPEG uploads cannot be mixed with DICOM/ZIP files. The default limits are
+25 MiB per image, 100 MiB total, 100 images, and 20,000 pixels per dimension.
+They can be configured with:
+
+```ini
+AXIS_IMAGE_MAX_FILE_BYTES=26214400
+AXIS_IMAGE_MAX_TOTAL_BYTES=104857600
+AXIS_IMAGE_MAX_IMAGES=100
+AXIS_IMAGE_MAX_DIMENSION=20000
+```
+
+The converted source pixels are validated independently after pydicom writes
+and reopens each file. RGB remains RGB, grayscale remains grayscale, and
+animated or multipage formats are rejected.
+
 ---
 
 ## 2. Real, de-identified DICOM dataset

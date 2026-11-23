@@ -38,7 +38,7 @@ use tauri_plugin_fs::FsExt;
 /// Mirrors `ACCEPT_EXT` in the web client so a file accepted in the browser is
 /// also offered by the native picker. A ZIP archive is accepted because a
 /// whole study is commonly exported as one.
-const ALLOWED_EXTENSIONS: [&str; 3] = ["dcm", "dicom", "zip"];
+const ALLOWED_EXTENSIONS: [&str; 6] = ["dcm", "dicom", "zip", "png", "jpg", "jpeg"];
 
 /// Per-file cap, mirroring the browser-side limit.
 const MAX_FILE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -323,8 +323,8 @@ pub async fn pick_dicom_files<R: Runtime>(
             let selected = app
                 .dialog()
                 .file()
-                .set_title("Select DICOM study files")
-                .add_filter("DICOM study", &ALLOWED_EXTENSIONS)
+                .set_title("Select DICOM or PNG/JPEG study files")
+                .add_filter("DICOM / PNG / JPEG", &ALLOWED_EXTENSIONS)
                 .add_filter("ZIP archive", &["zip"])
                 .blocking_pick_files();
 
