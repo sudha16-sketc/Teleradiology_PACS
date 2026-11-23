@@ -36,6 +36,17 @@ const PRODUCTION_REQUIRED: Array<{ key: string; why: string }> = [
 export function assertRequiredEnv(): void {
   const missing: string[] = [];
 
+  const compressionSetting = process.env.AXIS_DICOM_COMPRESSION_ENABLED;
+  if (
+    isProduction() &&
+    compressionSetting !== undefined &&
+    ['0', 'false', 'no', 'off'].includes(compressionSetting.trim().toLowerCase())
+  ) {
+    missing.push(
+      'AXIS_DICOM_COMPRESSION_ENABLED (must not be false in production; lossless DICOM compression is mandatory)',
+    );
+  }
+
   // Independent of environment name: a configured signing secret must be real
   // and strong (never a known-weak value or too short). A MISSING secret in
   // development falls back to an ephemeral random per-process secret, so it is

@@ -18,6 +18,7 @@ import { extractDicomArchive, type ExtractedArchive } from './zip-archive.js';
 import { parseDicomBuffer, validateDicomIdentifiers, type ParsedDicom } from './dicom.parser.js';
 import { isValidDicomUid } from './dicom.constants.js';
 import { DicomWebService } from '../dicomweb/dicomweb.service.js';
+import { log } from '../common/observability/structured-logger.js';
 import {
   compressDicomBuffer,
   dicomCompressionEnabled,
@@ -106,6 +107,14 @@ export class DicomService implements OnModuleInit {
     }
   }
 
+  private warnCompressionDisabledOnIngest(): void {
+    if (!dicomCompressionEnabled()) {
+      this.logger.warn(
+        'DICOM lossless compression is disabled for this non-production ingest',
+      );
+    }
+  }
+
   private orthancBase(): string {
     return orthancBaseUrl();
   }
@@ -124,7 +133,21 @@ export class DicomService implements OnModuleInit {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
   }
 
-  private async orthancFetch(path: string, options: RequestInit = {}) {
+  private orthancStoreTimeoutMs(): number {
+    const raw = process.env.AXIS_ORTHANC_STORE_TIMEOUT_MS;
+    if (!raw) return 300000;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 300000;
+  }
+
+  private async orthancFetch(
+    path: string,
+    options: RequestInit = {},
+  ) {
+    const isInstanceStore = path === '/instances' && options.method?.toUpperCase() === 'POST';
+    const timeoutMs = isInstanceStore
+      ? this.orthancStoreTimeoutMs()
+      : this.orthancTimeoutMs();
     const url = `${this.orthancBase()}${path}`;
     const headers: Record<string, string> = {
       ...(options.headers as Record<string, string> | undefined),
@@ -133,10 +156,15 @@ export class DicomService implements OnModuleInit {
     if (auth) headers.Authorization = auth;
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.orthancTimeoutMs());
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const storeStartedAt = isInstanceStore ? process.hrtime.bigint() : undefined;
+    let responseStatus: number | undefined;
+    let outcome: 'response' | 'error' = 'error';
     let res: Awaited<ReturnType<typeof fetch>>;
     try {
       res = await fetch(url, { ...options, headers, signal: controller.signal });
+      responseStatus = res.status;
+      outcome = 'response';
     } catch (err) {
       clearTimeout(timer);
       // Never leak internal Orthanc URL/endpoint details (C27) or hang a
@@ -149,6 +177,16 @@ export class DicomService implements OnModuleInit {
       );
     } finally {
       clearTimeout(timer);
+      if (storeStartedAt !== undefined) {
+        log('info', 'orthanc_instance_store', {
+          route: '/instances',
+          method: 'POST',
+          durationMs: Math.round(Number(process.hrtime.bigint() - storeStartedAt) / 1e6),
+          timeoutMs,
+          status: responseStatus,
+          outcome,
+        });
+      }
     }
 
     if (!res.ok) {
@@ -276,6 +314,7 @@ export class DicomService implements OnModuleInit {
   }
 
   async ingestDicom(files: Express.Multer.File[], originalName: string, user: IngestUser): Promise<IngestResult> {
+    this.warnCompressionDisabledOnIngest();
     const hospitalId = user?.hospitalId;
     if (!hospitalId) {
       throw new ForbiddenException('Your account is not linked to a hospital');
@@ -640,6 +679,7 @@ export class DicomService implements OnModuleInit {
     studyInstanceUid: string,
     user: IngestUser,
   ): Promise<{ study: unknown; availability: ImagingAvailabilityResult; storedCount: number }> {
+    this.warnCompressionDisabledOnIngest();
     if (!isValidDicomUid(studyInstanceUid)) {
       throw new BadRequestException('Invalid StudyInstanceUID');
     }

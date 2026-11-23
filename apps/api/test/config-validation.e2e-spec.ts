@@ -12,6 +12,7 @@ const KEYS = [
   'EMAIL_FROM',
   'NEXT_PUBLIC_APP_URL',
   'AXIS_ALLOW_LOOPBACK_ORTHANC',
+  'AXIS_DICOM_COMPRESSION_ENABLED',
 ] as const;
 
 type Saved = Record<string, string | undefined>;
@@ -80,6 +81,23 @@ describe('production Orthanc URL validation', () => {
   it('allows loopback Orthanc only with the explicit production escape hatch', () => {
     productionEnv('http://localhost:18042');
     process.env.AXIS_ALLOW_LOOPBACK_ORTHANC = '1';
+    expect(() => assertRequiredEnv()).not.toThrow();
+  });
+
+  it.each(['false', '0', 'no', 'off', ' FALSE '])(
+    'rejects disabled compression in production: %s',
+    (value) => {
+      productionEnv('https://orthanc.example.test');
+      process.env.AXIS_DICOM_COMPRESSION_ENABLED = value;
+      expect(() => assertRequiredEnv()).toThrow(
+        /AXIS_DICOM_COMPRESSION_ENABLED.*must not be false in production.*lossless DICOM compression is mandatory/,
+      );
+    },
+  );
+
+  it('allows enabled compression in production', () => {
+    productionEnv('https://orthanc.example.test');
+    process.env.AXIS_DICOM_COMPRESSION_ENABLED = 'true';
     expect(() => assertRequiredEnv()).not.toThrow();
   });
 
