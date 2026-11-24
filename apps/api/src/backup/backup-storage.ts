@@ -20,7 +20,7 @@ export const BACKUP_STORAGE = Symbol('BACKUP_STORAGE');
 
 export interface ArtifactMetadata {
   backupRunId: string;
-  artifact: 'database' | 'dicom' | 'retention';
+  artifact: 'database' | 'dicom' | 'retention' | 'manual-deletion';
   checksum: string;
   createdAt: string;
 }

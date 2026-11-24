@@ -23,3 +23,14 @@ describe("MIS analytics access", () => {
     expect(roleHasAccess("HOSPITAL", "/analytics")).toBe(false);
   });
 });
+
+describe("Recently Deleted access", () => {
+  it("allows Admin and Manager but hides the archive from other roles", () => {
+    expect(roleHasAccess("ADMIN", "/settings/recently-deleted")).toBe(true);
+    expect(roleHasAccess("MANAGER", "/settings/recently-deleted")).toBe(true);
+    expect(roleHasAccess("RADIOLOGIST", "/settings/recently-deleted")).toBe(false);
+    expect(roleHasAccess("HOSPITAL", "/settings/recently-deleted")).toBe(false);
+    expect(navigationForRole("MANAGER").some((item) => item.href === "/settings/recently-deleted")).toBe(true);
+    expect(navigationForRole("HOSPITAL").some((item) => item.href === "/settings/recently-deleted")).toBe(false);
+  });
+});

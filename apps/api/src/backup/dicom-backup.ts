@@ -474,12 +474,28 @@ export interface DicomRestoreResult {
   instanceCount: number;
 }
 
-export async function restoreDicomArchive(
+export interface DicomRestoreMappings {
+  studies: Array<{
+    studyInstanceUid: string;
+    orthancStudyId: string;
+    orthancPatientId: string;
+    series: Array<{
+      seriesInstanceUid: string;
+      orthancSeriesId: string;
+      instances: Array<{
+        sopInstanceUid: string;
+        orthancInstanceId: string;
+      }>;
+    }>;
+  }>;
+}
+
+async function restoreDicomArchiveCore(
   archivePath: string,
   expectedChecksum: string,
   env: BackupEnv,
-  prisma: PrismaClient,
-): Promise<DicomRestoreResult> {
+  prisma?: PrismaClient,
+): Promise<DicomRestoreResult & { mappings: DicomRestoreMappings }> {
   if (!(await verifyChecksum(archivePath, expectedChecksum))) {
     throw new Error('DICOM restore archive checksum mismatch');
   }
@@ -496,26 +512,42 @@ export async function restoreDicomArchive(
     let instanceCount = 0;
     let seriesCount = 0;
     const restoredStudies = new Set<string>();
+    const mappings: DicomRestoreMappings = { studies: [] };
     for (const study of manifest.studies) {
-      const dbStudy = await prisma.study.findUnique({
-        where: { studyInstanceUid: study.studyInstanceUid },
-        select: { id: true },
-      });
-      if (!dbStudy) {
+      const dbStudy = prisma
+        ? await prisma.study.findUnique({
+            where: { studyInstanceUid: study.studyInstanceUid },
+            select: { id: true },
+          })
+        : null;
+      if (prisma && !dbStudy) {
         throw new Error(
           `DICOM restore requires study ${study.studyInstanceUid} to exist in the PostgreSQL database`,
         );
       }
+      const studyMapping: DicomRestoreMappings['studies'][number] = {
+        studyInstanceUid: study.studyInstanceUid,
+        orthancStudyId: '',
+        orthancPatientId: '',
+        series: [],
+      };
       for (const series of study.series) {
-        const dbSeries = await prisma.series.findUnique({
-          where: { seriesInstanceUid: series.seriesInstanceUid },
-          select: { id: true },
-        });
-        if (!dbSeries) {
+        const dbSeries = prisma
+          ? await prisma.series.findUnique({
+              where: { seriesInstanceUid: series.seriesInstanceUid },
+              select: { id: true },
+            })
+          : null;
+        if (prisma && !dbSeries) {
           throw new Error(
             `DICOM restore requires series ${series.seriesInstanceUid} to exist in the PostgreSQL database`,
           );
         }
+        const seriesMapping: DicomRestoreMappings['studies'][number]['series'][number] = {
+          seriesInstanceUid: series.seriesInstanceUid,
+          orthancSeriesId: '',
+          instances: [],
+        };
         for (const item of series.instances) {
           const buffer = await fs.readFile(safeArchivePath(scratchDir, item.file));
           if (createHash('sha256').update(buffer).digest('hex') !== item.sha256) {
@@ -533,11 +565,13 @@ export async function restoreDicomArchive(
           ) {
             throw new Error('Restored DICOM file UIDs did not match the archive manifest');
           }
-          const dbInstance = await prisma.instance.findUnique({
-            where: { sopInstanceUid: item.sopInstanceUid },
-            select: { id: true },
-          });
-          if (!dbInstance) {
+          const dbInstance = prisma
+            ? await prisma.instance.findUnique({
+                where: { sopInstanceUid: item.sopInstanceUid },
+                select: { id: true },
+              })
+            : null;
+          if (prisma && !dbInstance) {
             throw new Error(
               `DICOM restore requires instance ${item.sopInstanceUid} to exist in the PostgreSQL database`,
             );
@@ -551,25 +585,36 @@ export async function restoreDicomArchive(
             series.seriesInstanceUid,
             item.sopInstanceUid,
           );
-          await prisma.study.update({
-            where: { id: dbStudy.id },
-            data: {
-              orthancStudyId: stored.orthancStudyId,
-              orthancPatientId: stored.orthancPatientId,
-            },
+          studyMapping.orthancStudyId = stored.orthancStudyId;
+          studyMapping.orthancPatientId = stored.orthancPatientId;
+          seriesMapping.orthancSeriesId = stored.orthancSeriesId;
+          seriesMapping.instances.push({
+            sopInstanceUid: item.sopInstanceUid,
+            orthancInstanceId: stored.orthancInstanceId,
           });
-          await prisma.series.update({
-            where: { id: dbSeries.id },
-            data: { orthancSeriesId: stored.orthancSeriesId },
-          });
-          await prisma.instance.update({
-            where: { id: dbInstance.id },
-            data: { orthancInstanceId: stored.orthancInstanceId },
-          });
+          if (prisma && dbStudy && dbSeries && dbInstance) {
+            await prisma.study.update({
+              where: { id: dbStudy.id },
+              data: {
+                orthancStudyId: stored.orthancStudyId,
+                orthancPatientId: stored.orthancPatientId,
+              },
+            });
+            await prisma.series.update({
+              where: { id: dbSeries.id },
+              data: { orthancSeriesId: stored.orthancSeriesId },
+            });
+            await prisma.instance.update({
+              where: { id: dbInstance.id },
+              data: { orthancInstanceId: stored.orthancInstanceId },
+            });
+          }
           instanceCount += 1;
         }
+        studyMapping.series.push(seriesMapping);
         seriesCount += 1;
       }
+      mappings.studies.push(studyMapping);
       restoredStudies.add(study.studyInstanceUid);
     }
     if (instanceCount !== manifest.instanceCount || seriesCount !== manifest.seriesCount) {
@@ -579,8 +624,36 @@ export async function restoreDicomArchive(
       studyCount: restoredStudies.size,
       seriesCount,
       instanceCount,
+      mappings,
     };
   } finally {
     await fs.rm(scratchDir, { recursive: true, force: true });
   }
+}
+
+export async function restoreDicomArchiveObjects(
+  archivePath: string,
+  expectedChecksum: string,
+  env: BackupEnv,
+): Promise<DicomRestoreResult & { mappings: DicomRestoreMappings }> {
+  return restoreDicomArchiveCore(archivePath, expectedChecksum, env);
+}
+
+export async function restoreDicomArchive(
+  archivePath: string,
+  expectedChecksum: string,
+  env: BackupEnv,
+  prisma: PrismaClient,
+): Promise<DicomRestoreResult> {
+  const restored = await restoreDicomArchiveCore(
+    archivePath,
+    expectedChecksum,
+    env,
+    prisma,
+  );
+  return {
+    studyCount: restored.studyCount,
+    seriesCount: restored.seriesCount,
+    instanceCount: restored.instanceCount,
+  };
 }

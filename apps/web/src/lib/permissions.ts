@@ -22,6 +22,7 @@ interface RouteRule {
 export const ROUTE_RULES: RouteRule[] = [
   { prefix: "/admin", roles: ["ADMIN"] },
   { prefix: "/settings/templates", roles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
+  { prefix: "/settings/recently-deleted", roles: ["ADMIN", "MANAGER"] },
   { prefix: "/settings", roles: ["ADMIN"] },
   { prefix: "/audit", roles: ["ADMIN"] },
   { prefix: "/operations", roles: ["ADMIN"] },
@@ -60,6 +61,7 @@ export const NAV_DEFS: NavDefinition[] = [
   // Shared clinical view
   { href: "/reading", label: "Reading", allowedRoles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
   { href: "/settings/templates", label: "Report Templates", allowedRoles: ["ADMIN", "MANAGER", "RADIOLOGIST"] },
+  { href: "/settings/recently-deleted", label: "Recently Deleted", allowedRoles: ["ADMIN", "MANAGER"] },
   // Hospital
   { href: "/hospitals", label: "My Studies", allowedRoles: ["HOSPITAL"] },
   { href: "/hospitals/submit", label: "Create New Study", allowedRoles: ["HOSPITAL"] },

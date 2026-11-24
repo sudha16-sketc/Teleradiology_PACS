@@ -71,6 +71,9 @@ export type AuditAction =
   | 'RETENTION_LOCK_APPLIED'
   | 'RETENTION_LOCK_RELEASED'
   | 'DELETION_FAILED'
+  | 'MANUAL_DATA_DELETED'
+  | 'MANUAL_DATA_RESTORED'
+  | 'MANUAL_DATA_PURGED'
   | 'DICOM_AVAILABILITY_CHECK'
   | 'DICOM_RECONCILIATION'
   | 'DICOM_REINGEST';
@@ -92,7 +95,8 @@ export type AuditResource =
   | 'RETENTION'
   | 'RETENTION_NOTIFICATION'
   | 'RETENTION_ARCHIVE'
-  | 'LEGAL_HOLD';
+  | 'LEGAL_HOLD'
+  | 'MANUAL_DELETION';
 
 export interface AuditLogEntry {
   id: string;

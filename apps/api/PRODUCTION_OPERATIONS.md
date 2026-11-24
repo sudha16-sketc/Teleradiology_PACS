@@ -249,6 +249,29 @@ from B2 when needed), validates the DB dump, and moves the run to `VERIFIED`
 only when all requested artifacts pass. Verification, restore, object deletion,
 and retention operations emit audit rows.
 
+### Manual deletion and recovery
+
+Manual deletion operates on whole studies, including their patient record when
+no other study references it, related reports and workflow records, supporting
+files, and DICOM instances. Only Admin and Manager roles can delete or restore;
+Managers are limited to their hospital. Admins alone can permanently purge.
+
+The API archives and checksum-verifies the study metadata, supporting files,
+and DICOMweb export before removing the active PostgreSQL graph. Production
+deployments must use `BACKUP_STORAGE_PROVIDER=B2` with the B2 credentials and
+authenticated Orthanc DICOMweb settings described above. `LOCAL` storage is
+for development only. Archives are available in Recently Deleted and are
+tenant-scoped for Managers.
+
+`MANUAL_DELETION_RETENTION_DAYS` controls how long an archive can be restored
+(default `30`, allowed range `1`–`3650`). Expired archives cannot be restored;
+an Admin must permanently purge them to remove their S3 objects. Purge requires
+explicit confirmation and is retryable after partial object deletion.
+
+Endpoints are `POST /api/manual-deletions/studies`,
+`GET /api/manual-deletions`, `POST /api/manual-deletions/:id/restore`, and
+Admin-only `POST /api/manual-deletions/:id/purge`.
+
 ### DICOM recovery model
 
 The B2 DICOM artifact contains the original DICOM instance bytes and the UID
@@ -527,6 +550,7 @@ See `.env.example` for the full annotated list. Key Phase 7 variables:
 | `B2_S3_ENDPOINT` / `B2_REGION` | B2 S3 endpoint and region for the bucket. |
 | `B2_PREFIX` | Object key prefix (default `backups`). |
 | `BACKUP_RETENTION_ENABLED` / `BACKUP_RETENTION_COUNT` | B2 verified FULL-pair retention (defaults `true` / `7`). |
+| `MANUAL_DELETION_RETENTION_DAYS` | Recently Deleted recovery window (default `30`, range `1`–`3650`). |
 | `AXIS_RETENTION_DAYS` | Clinical archival retention window (default `90`). |
 | `AXIS_RETENTION_REQUIRE_BACKUP` | Require a verified backup before archival (default `true`). |
 | `INITIAL_RETENTION_DAYS` / `CANCEL_MAX_COUNT` / `IGNORE_MAX_COUNT` | Lifecycle notification thresholds (see retention configuration above). |

@@ -732,6 +732,36 @@ model RetentionJob {
   @@index([leaseUntil])
 }
 
+model ManualDeletionArchive {
+  id                 String                    @id @default(cuid())
+  status             ManualDeletionArchiveStatus @default(ARCHIVING)
+  hospitalId         String
+  hospitalName       String
+  studyInstanceUid   String
+  accessionNumber    String
+  patientId          String
+  patientName        String
+  deletedById        String
+  deletedByName      String
+  deletedByRole      UserRole
+  deletedAt          DateTime                  @default(now())
+  expiresAt          DateTime
+  metadataObjectKey  String?
+  metadataChecksum   String?
+  dicomObjectKey     String?
+  dicomChecksum      String?
+  fileObjects        Json?
+  restoredAt         DateTime?
+  purgedAt           DateTime?
+  lastError          String?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  @@index([hospitalId, deletedAt])
+  @@index([status, expiresAt])
+  @@index([studyInstanceUid, status])
+}
+
 enum UserRole {
   ADMIN
   MANAGER
@@ -906,6 +936,9 @@ enum AuditAction {
   RETENTION_LOCK_APPLIED
   RETENTION_LOCK_RELEASED
   DELETION_FAILED
+  MANUAL_DATA_DELETED
+  MANUAL_DATA_RESTORED
+  MANUAL_DATA_PURGED
 }
 
 enum AuditResource {
@@ -926,6 +959,18 @@ enum AuditResource {
   RETENTION_NOTIFICATION
   RETENTION_ARCHIVE
   LEGAL_HOLD
+  MANUAL_DELETION
+}
+
+enum ManualDeletionArchiveStatus {
+  ARCHIVING
+  ARCHIVED
+  RESTORING
+  RESTORED
+  PURGING
+  PURGE_FAILED
+  PURGED
+  FAILED
 }
 
 enum DeliveryStatus {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Settings, Users, GitBranch, ClipboardList, Brain, ClipboardCheck, Building2, FileText, Loader2 } from "lucide-react";
+import { Settings, Users, GitBranch, ClipboardList, Brain, ClipboardCheck, Building2, FileText, Loader2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { apiClient } from "@/lib/api-client";
 
@@ -58,6 +58,12 @@ const OVERVIEW_LINKS: {
     description: "Monitor AI processing tasks and job status",
     icon: <Brain size={20} />,
     href: "/settings/ai",
+  },
+  {
+    label: "Recently Deleted",
+    description: "Restore archived studies or permanently purge archives",
+    icon: <Trash2 size={20} />,
+    href: "/settings/recently-deleted",
   },
 ];
 
