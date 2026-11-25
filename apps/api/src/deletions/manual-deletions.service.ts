@@ -101,6 +101,12 @@ const ACTIVE_ARCHIVE_STATUSES: ManualDeletionArchiveStatus[] = [
   ManualDeletionArchiveStatus.FAILED,
 ];
 
+const PURGEABLE_ARCHIVE_STATUSES: ManualDeletionArchiveStatus[] = [
+  ManualDeletionArchiveStatus.ARCHIVED,
+  ManualDeletionArchiveStatus.PURGE_FAILED,
+  ManualDeletionArchiveStatus.FAILED,
+];
+
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -382,13 +388,7 @@ export class ManualDeletionsService {
     if (archive.status === ManualDeletionArchiveStatus.PURGED) {
       return { data: { id: archive.id, status: archive.status, alreadyPurged: true } };
     }
-    if (
-      ![
-        ManualDeletionArchiveStatus.ARCHIVED,
-        ManualDeletionArchiveStatus.PURGE_FAILED,
-        ManualDeletionArchiveStatus.FAILED,
-      ].includes(archive.status)
-    ) {
+    if (!PURGEABLE_ARCHIVE_STATUSES.includes(archive.status)) {
       throw new ConflictException('This archive cannot be permanently purged now');
     }
 
